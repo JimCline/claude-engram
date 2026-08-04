@@ -161,6 +161,66 @@ public class TelemetrySummarizerTests
     }
 
     [Fact]
+    public void Summarize_CompactionSurvivalFixture_CountsExactEventsAndSessions()
+    {
+        var records = new List<TelemetryRecord>
+        {
+            new("2026-08-04T08:00:00Z", "m1", TelemetryEventKind.ServerStart),
+            new("2026-08-04T08:01:00Z", "m1", TelemetryEventKind.Remember),
+            new("2026-08-04T08:02:00Z", "h1", TelemetryEventKind.PreCompact),
+            new("2026-08-04T08:03:00Z", "m1", TelemetryEventKind.Recall, Query: "q", FactCount: 1, TokensReturned: 10, Coverage: "partial", SessionFactCount: 1, LongTermFactCount: 0),
+            new("2026-08-04T08:04:00Z", "m1", TelemetryEventKind.Recall, Query: "q", FactCount: 2, TokensReturned: 20, Coverage: "high", SessionFactCount: 2, LongTermFactCount: 0),
+
+            new("2026-08-04T09:00:00Z", "m2", TelemetryEventKind.ServerStart),
+            new("2026-08-04T09:01:00Z", "h2", TelemetryEventKind.PreCompact),
+            new("2026-08-04T09:02:00Z", "m2", TelemetryEventKind.Remember),
+            new("2026-08-04T09:03:00Z", "m2", TelemetryEventKind.Recall, Query: "q", FactCount: 1, TokensReturned: 10, Coverage: "partial", SessionFactCount: 1, LongTermFactCount: 0),
+
+            new("2026-08-04T10:00:00Z", "m3", TelemetryEventKind.ServerStart),
+            new("2026-08-04T10:01:00Z", "m3", TelemetryEventKind.Remember),
+            new("2026-08-04T10:02:00Z", "m3", TelemetryEventKind.Recall, Query: "q", FactCount: 1, TokensReturned: 10, Coverage: "partial", SessionFactCount: 0, LongTermFactCount: 1),
+
+            new("2026-08-04T11:00:00Z", "m4", TelemetryEventKind.ServerStart),
+            new("2026-08-04T11:01:00Z", "m4", TelemetryEventKind.Remember),
+            new("2026-08-04T11:02:00Z", "m4", TelemetryEventKind.Recall, Query: "q", FactCount: 1, TokensReturned: 10, Coverage: "partial", SessionFactCount: 1, LongTermFactCount: 0),
+        };
+
+        var report = TelemetrySummarizer.Summarize(records, skippedLines: 0);
+
+        Assert.NotNull(report);
+        Assert.Equal(2, report!.CompactionSurvival.Events);
+        Assert.Equal(1, report.CompactionSurvival.Sessions);
+        Assert.False(string.IsNullOrWhiteSpace(report.CompactionSurvival.Note));
+
+        Assert.Equal(4, report.SessionsWithSessionFactWrite.Count);
+        Assert.Equal(100.0, report.SessionsWithSessionFactWrite.Percent);
+
+        Assert.Equal(3, report.SessionsWithSessionFactRecall.Count);
+        Assert.Equal(75.0, report.SessionsWithSessionFactRecall.Percent);
+    }
+
+    [Fact]
+    public void Summarize_PriorSessionFactRecallAfterPreCompact_DoesNotCountTowardCompactionSurvival()
+    {
+        var records = new List<TelemetryRecord>
+        {
+            new("2026-08-04T08:00:00Z", "m1", TelemetryEventKind.ServerStart),
+            new("2026-08-04T08:01:00Z", "m1", TelemetryEventKind.Remember),
+            new("2026-08-04T08:02:00Z", "h1", TelemetryEventKind.PreCompact),
+            new("2026-08-04T08:03:00Z", "m1", TelemetryEventKind.Recall, Query: "q", FactCount: 1, TokensReturned: 10, Coverage: "partial", SessionFactCount: 0, LongTermFactCount: 0, PriorSessionFactCount: 1),
+        };
+
+        var report = TelemetrySummarizer.Summarize(records, skippedLines: 0);
+
+        Assert.NotNull(report);
+        Assert.Equal(0, report!.CompactionSurvival.Events);
+        Assert.Equal(0, report.CompactionSurvival.Sessions);
+
+        Assert.Equal(1, report.SessionsWithPriorSessionFactRecall.Count);
+        Assert.Equal(100.0, report.SessionsWithPriorSessionFactRecall.Percent);
+    }
+
+    [Fact]
     public void Summarize_ZeroServerStartRecords_McpSessionsZero_NoDivideByZero()
     {
         var records = new List<TelemetryRecord>

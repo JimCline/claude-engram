@@ -23,7 +23,9 @@ public sealed class EngramMcpTools
         [Description("Maximum tokens to spend on the response. Defaults to 500.")] int? budget_tokens = null)
     {
         var budget = budget_tokens is > 0 ? budget_tokens.Value : RecallEngine.DefaultBudgetTokens;
-        var result = RecallEngine.Pack(query, CannedFacts.All, budget);
+        var currentSessionFacts = SessionFactStore.ReadAll(home, session.Value);
+        var priorSessionFacts = SessionFactStore.ReadAllExcept(home, session.Value);
+        var result = RecallEngine.Pack(query, CannedFacts.All, currentSessionFacts, priorSessionFacts, budget);
 
         Telemetry.Append(home, new TelemetryRecord(
             Timestamp: DateTime.UtcNow.ToString("o"),
@@ -32,25 +34,32 @@ public sealed class EngramMcpTools
             Query: query,
             FactCount: result.FactCount,
             TokensReturned: result.TokensUsed,
-            Coverage: RecallEngine.ToText(result.Coverage)));
+            Coverage: RecallEngine.ToText(result.Coverage),
+            SessionFactCount: result.SessionFactCount,
+            LongTermFactCount: result.LongTermFactCount,
+            PriorSessionFactCount: result.PriorSessionFactCount));
 
         return result.Text;
     }
 
     [McpServerTool(Name = "engram_remember")]
     [Description(
-        "Record a durable fact you just learned so a future session gets a memory hit instead of " +
-        "rediscovering it — call it whenever you learn something worth remembering next time. This " +
-        "milestone does not persist facts yet; the call only confirms what would be stored, to measure " +
-        "whether the agent writes back at all.")]
+        "Save a durable note to this session's working memory — state you would otherwise have to keep " +
+        "repeating in context, and would lose to compaction or to a subagent returning an incomplete " +
+        "report. Call it whenever you learn something worth keeping for the rest of this session: a " +
+        "decision, a constraint, a partial result, a dead end already ruled out. If you are a subagent, " +
+        "pass your own name in `agent` so the note is attributed to whichever worker learned it. " +
+        "`engram_recall` surfaces these notes first, ranked above long-term memory, for the rest of the " +
+        "session.")]
     public static string Remember(
         EngramHome home,
         McpSessionId session,
         [Description("The fact to remember, as a short, self-contained statement.")] string statement,
         [Description("What or who the fact is about, if not obvious from the statement.")] string? subject = null,
-        [Description("Where this was learned — a file path, PR, or command output.")] string? evidence = null)
+        [Description("Where this was learned — a file path, PR, or command output.")] string? evidence = null,
+        [Description("Your own name, if you are a subagent recording this fact rather than the main agent.")] string? agent = null)
     {
-        var factId = "fnew-" + Guid.NewGuid().ToString("N")[..6];
+        var handle = SessionFactStore.Append(home, session.Value, statement, subject, evidence, agent);
 
         Telemetry.Append(home, new TelemetryRecord(
             Timestamp: DateTime.UtcNow.ToString("o"),
@@ -59,9 +68,9 @@ public sealed class EngramMcpTools
 
         var subjectText = string.IsNullOrWhiteSpace(subject) ? "(unspecified subject)" : subject;
         var evidenceText = string.IsNullOrWhiteSpace(evidence) ? string.Empty : $" (evidence: {evidence})";
+        var agentText = string.IsNullOrWhiteSpace(agent) ? string.Empty : $" [via {agent}]";
 
-        return $"[{factId}] would remember: {subjectText} — \"{statement}\"{evidenceText}\n" +
-               "Not persisted in this milestone (no database yet) — this call only measures write-back adoption.";
+        return $"[{handle}] remembered: {subjectText} — \"{statement}\"{evidenceText}{agentText}";
     }
 
     [McpServerTool(Name = "engram_digest")]

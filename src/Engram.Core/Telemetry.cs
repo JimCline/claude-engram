@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Text;
 using System.Text.Json.Serialization;
 
@@ -22,7 +21,10 @@ public sealed record TelemetryRecord(
     [property: JsonPropertyName("query")] string? Query = null,
     [property: JsonPropertyName("fact_count")] int? FactCount = null,
     [property: JsonPropertyName("tokens_returned")] int? TokensReturned = null,
-    [property: JsonPropertyName("coverage")] string? Coverage = null);
+    [property: JsonPropertyName("coverage")] string? Coverage = null,
+    [property: JsonPropertyName("session_fact_count")] int? SessionFactCount = null,
+    [property: JsonPropertyName("long_term_fact_count")] int? LongTermFactCount = null,
+    [property: JsonPropertyName("prior_session_fact_count")] int? PriorSessionFactCount = null);
 
 [JsonSerializable(typeof(TelemetryRecord))]
 internal sealed partial class TelemetryJsonContext : JsonSerializerContext;
@@ -33,13 +35,6 @@ public static class Telemetry
 
     private const int MaxRecordBytes = 4096;
     private static readonly TimeSpan AppendRetryBudget = TimeSpan.FromMilliseconds(500);
-    private const int MaxRetryDelayMs = 20;
-
-    // FileMode.Append is seek-then-write, not POSIX O_APPEND: two processes can resolve the
-    // same end-of-file offset and one silently overwrites the other's record. FileShare.None
-    // turns that lost update into a refused open (IOException), which the retry loop below
-    // treats as contention to back off from instead of a race to lose. This lock only closes
-    // the same gap between threads in *this* process, which don't get that refusal from the OS.
     private static readonly object AppendLock = new();
 
     public static string ResolvePath(EngramHome home) => Path.Combine(home.Root, TelemetryFileName);
@@ -51,39 +46,7 @@ public static class Telemetry
 
         lock (AppendLock)
         {
-            var elapsed = Stopwatch.StartNew();
-            while (true)
-            {
-                try
-                {
-                    Directory.CreateDirectory(home.Root);
-
-                    using var stream = new FileStream(
-                        path,
-                        FileMode.Append,
-                        FileAccess.Write,
-                        FileShare.None,
-                        bufferSize: payload.Length);
-                    stream.Write(payload, 0, payload.Length);
-                    return;
-                }
-                catch (IOException) when (elapsed.Elapsed < AppendRetryBudget)
-                {
-                    Thread.Sleep(Random.Shared.Next(1, MaxRetryDelayMs));
-                }
-                catch (UnauthorizedAccessException) when (elapsed.Elapsed < AppendRetryBudget)
-                {
-                    Thread.Sleep(Random.Shared.Next(1, MaxRetryDelayMs));
-                }
-                catch (IOException)
-                {
-                    return;
-                }
-                catch (UnauthorizedAccessException)
-                {
-                    return;
-                }
-            }
+            DurableAppend.TryAppend(path, payload, AppendRetryBudget);
         }
     }
 

@@ -132,4 +132,131 @@ public class RecallEngineTests
 
         Assert.NotEmpty(ranked);
     }
+
+    [Fact]
+    public void Pack_SessionFactAlwaysRanksAboveLongTermFact_EvenWhenLongTermFactScoresHigher()
+    {
+        var longTermFacts = new List<CannedFact>
+        {
+            new("f900", "wal-starvation", "decided", "WAL starvation retry backoff decided after incident review.", "project", 0),
+        };
+        var sessionFacts = new List<SessionFactRecord>
+        {
+            new("s001", "2026-08-04T00:00:00Z", "sess-1", "Checked the WAL theory, not the cause."),
+        };
+
+        var ranked = RecallEngine.RankSessionFacts("wal starvation retry backoff", sessionFacts);
+        var rankedLongTerm = RecallEngine.Rank("wal starvation retry backoff", longTermFacts);
+        Assert.True(rankedLongTerm[0].Score > ranked[0].Score, "fixture must have the long-term fact score higher than the session fact");
+
+        var result = RecallEngine.Pack("wal starvation retry backoff", longTermFacts, sessionFacts, RecallEngine.DefaultBudgetTokens);
+
+        Assert.Equal(1, result.SessionFactCount);
+        Assert.Equal(1, result.LongTermFactCount);
+
+        var sessionIndex = result.Text.IndexOf("[s001]", StringComparison.Ordinal);
+        var longTermIndex = result.Text.IndexOf("[f900]", StringComparison.Ordinal);
+
+        Assert.True(sessionIndex >= 0);
+        Assert.True(longTermIndex >= 0);
+        Assert.True(sessionIndex < longTermIndex);
+    }
+
+    [Fact]
+    public void Pack_SessionFactLine_ShowsSessionScopeAndAgentName()
+    {
+        var sessionFacts = new List<SessionFactRecord>
+        {
+            new("s001", "2026-08-04T00:00:00Z", "sess-1", "Ran the migration dry-run against staging.", Agent: "migration-worker"),
+        };
+
+        var result = RecallEngine.Pack("migration dry-run staging", [], sessionFacts, RecallEngine.DefaultBudgetTokens);
+
+        Assert.Contains("[s001] Ran the migration dry-run against staging. (session · migration-worker)", result.Text);
+    }
+
+    [Fact]
+    public void Pack_CurrentSessionFactAlwaysRanksAbovePriorSessionFact_EvenWhenPriorSessionFactScoresHigher()
+    {
+        var currentSessionFacts = new List<SessionFactRecord>
+        {
+            new("s001", "2026-08-04T00:00:00Z", "sess-current", "Checked the WAL theory, not the cause."),
+        };
+        var priorSessionFacts = new List<SessionFactRecord>
+        {
+            new("s001", "2026-07-01T00:00:00Z", "sess-prior", "WAL starvation retry backoff decided after incident review."),
+        };
+
+        var rankedCurrent = RecallEngine.RankSessionFacts("wal starvation retry backoff", currentSessionFacts);
+        var rankedPrior = RecallEngine.RankSessionFacts("wal starvation retry backoff", priorSessionFacts);
+        Assert.True(rankedPrior[0].Score > rankedCurrent[0].Score, "fixture must have the prior-session fact score higher than the current-session fact");
+
+        var result = RecallEngine.Pack("wal starvation retry backoff", [], currentSessionFacts, priorSessionFacts, RecallEngine.DefaultBudgetTokens);
+
+        Assert.Equal(1, result.SessionFactCount);
+        Assert.Equal(1, result.PriorSessionFactCount);
+
+        var currentIndex = result.Text.IndexOf("[s001] ", StringComparison.Ordinal);
+        var priorIndex = result.Text.IndexOf("[s001@p1]", StringComparison.Ordinal);
+
+        Assert.True(currentIndex >= 0);
+        Assert.True(priorIndex >= 0);
+        Assert.True(currentIndex < priorIndex);
+    }
+
+    [Fact]
+    public void Pack_PriorSessionFactCanOutrankAWeaklyMatchingLongTermFact()
+    {
+        var longTermFacts = new List<CannedFact>
+        {
+            new("f900", "storage-engine", "states", "The WAL is flushed to disk before commit.", "code", 0),
+        };
+        var priorSessionFacts = new List<SessionFactRecord>
+        {
+            new("s001", "2026-07-01T00:00:00Z", "sess-prior", "WAL starvation retry backoff decided after incident review."),
+        };
+
+        var rankedLongTerm = RecallEngine.Rank("wal starvation retry backoff", longTermFacts);
+        var rankedPrior = RecallEngine.RankSessionFacts("wal starvation retry backoff", priorSessionFacts);
+        Assert.True(rankedPrior[0].Score > rankedLongTerm[0].Score, "fixture must have the prior-session fact score higher than the long-term fact");
+
+        var result = RecallEngine.Pack("wal starvation retry backoff", longTermFacts, [], priorSessionFacts, RecallEngine.DefaultBudgetTokens);
+
+        var priorIndex = result.Text.IndexOf("[s001@p1]", StringComparison.Ordinal);
+        var longTermIndex = result.Text.IndexOf("[f900]", StringComparison.Ordinal);
+
+        Assert.True(priorIndex >= 0);
+        Assert.True(longTermIndex >= 0);
+        Assert.True(priorIndex < longTermIndex);
+    }
+
+    [Fact]
+    public void Pack_PriorSessionFactLine_ShowsAgeInDaysAndAgentName()
+    {
+        var timestamp = DateTimeOffset.UtcNow.AddDays(-3).ToString("o");
+        var priorSessionFacts = new List<SessionFactRecord>
+        {
+            new("s001", timestamp, "sess-prior", "Ran the migration dry-run against staging.", Agent: "migration-worker"),
+        };
+
+        var result = RecallEngine.Pack("migration dry-run staging", [], [], priorSessionFacts, RecallEngine.DefaultBudgetTokens);
+
+        Assert.Contains("[s001@p1] Ran the migration dry-run against staging. (session · migration-worker · 3d)", result.Text);
+    }
+
+    [Fact]
+    public void Pack_TwoDistinctPriorSessionsShareAHandleNumber_DiscriminatorsKeepThemDistinguishable()
+    {
+        var priorSessionFacts = new List<SessionFactRecord>
+        {
+            new("s001", "2026-08-01T00:00:00Z", "sess-alpha", "Alpha session noted the backup window."),
+            new("s001", "2026-08-02T00:00:00Z", "sess-beta", "Beta session also noted the backup window."),
+        };
+
+        var result = RecallEngine.Pack("backup window", [], [], priorSessionFacts, RecallEngine.DefaultBudgetTokens);
+
+        Assert.Contains("[s001@p1]", result.Text);
+        Assert.Contains("[s001@p2]", result.Text);
+        Assert.Equal(2, result.PriorSessionFactCount);
+    }
 }

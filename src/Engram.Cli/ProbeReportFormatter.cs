@@ -20,6 +20,22 @@ internal static class ProbeReportFormatter
         }
 
         stdout.WriteLine();
+        if (report.McpSessions == 0)
+        {
+            stdout.WriteLine("  COMPACTION SURVIVAL: no MCP sessions recorded");
+        }
+        else
+        {
+            stdout.WriteLine(
+                $"  COMPACTION SURVIVAL: {report.CompactionSurvival.Events} event(s) across " +
+                $"{report.CompactionSurvival.Sessions} session(s) — a recall returned a current-session fact after a pre-compact moment");
+            stdout.WriteLine($"    wrote a session fact             {report.SessionsWithSessionFactWrite.Count}/{report.McpSessions}  ({FormatPercent(report.SessionsWithSessionFactWrite.Percent)})");
+            stdout.WriteLine($"    recalled a current-session fact  {report.SessionsWithSessionFactRecall.Count}/{report.McpSessions}  ({FormatPercent(report.SessionsWithSessionFactRecall.Percent)})");
+            stdout.WriteLine($"    recalled a prior-session fact    {report.SessionsWithPriorSessionFactRecall.Count}/{report.McpSessions}  ({FormatPercent(report.SessionsWithPriorSessionFactRecall.Percent)})");
+            stdout.WriteLine($"    {report.CompactionSurvival.Note}");
+        }
+
+        stdout.WriteLine();
         stdout.WriteLine($"Records:  {report.TotalRecords} total · {report.DateRange.From:O} .. {report.DateRange.To:O}");
         stdout.WriteLine($"Sessions: {report.McpSessions} MCP · {report.HookSessions} hook");
         stdout.WriteLine($"  recall    {report.SessionsWithRecall.Count}/{report.McpSessions}  ({FormatPercent(report.SessionsWithRecall.Percent)})");

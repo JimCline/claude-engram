@@ -29,6 +29,11 @@ public sealed record TelemetryHookGapWarning(
     [property: JsonPropertyName("difference")] int Difference,
     [property: JsonPropertyName("message")] string Message);
 
+public sealed record TelemetryCompactionSurvivalStat(
+    [property: JsonPropertyName("events")] int Events,
+    [property: JsonPropertyName("sessions")] int Sessions,
+    [property: JsonPropertyName("note")] string Note);
+
 public sealed record TelemetryProbeReport(
     [property: JsonPropertyName("date_range")] TelemetryDateRange DateRange,
     [property: JsonPropertyName("total_records")] int TotalRecords,
@@ -39,6 +44,10 @@ public sealed record TelemetryProbeReport(
     [property: JsonPropertyName("sessions_with_recall")] TelemetryAdoptionStat SessionsWithRecall,
     [property: JsonPropertyName("sessions_with_remember")] TelemetryAdoptionStat SessionsWithRemember,
     [property: JsonPropertyName("sessions_with_digest")] TelemetryAdoptionStat SessionsWithDigest,
+    [property: JsonPropertyName("sessions_with_session_fact_write")] TelemetryAdoptionStat SessionsWithSessionFactWrite,
+    [property: JsonPropertyName("sessions_with_session_fact_recall")] TelemetryAdoptionStat SessionsWithSessionFactRecall,
+    [property: JsonPropertyName("sessions_with_prior_session_fact_recall")] TelemetryAdoptionStat SessionsWithPriorSessionFactRecall,
+    [property: JsonPropertyName("compaction_survival")] TelemetryCompactionSurvivalStat CompactionSurvival,
     [property: JsonPropertyName("median_recalls_per_session")] double MedianRecallsPerSession,
     [property: JsonPropertyName("max_recalls_per_session")] int MaxRecallsPerSession,
     [property: JsonPropertyName("coverage")] TelemetryCoverageStat Coverage,
@@ -136,6 +145,10 @@ public static class TelemetrySummarizer
                 Message: $"{hookSessionCount - mcpSessionCount} session(s) ran without Engram's MCP server reachable; memory was unavailable in those sessions.")
             : null;
 
+        var sessionFactRecalls = recalls.Where(r => (r.SessionFactCount ?? 0) > 0).ToList();
+        var priorSessionFactRecalls = recalls.Where(r => (r.PriorSessionFactCount ?? 0) > 0).ToList();
+        var compactionSurvival = ComputeCompactionSurvival(records, remembers, recalls);
+
         return new TelemetryProbeReport(
             DateRange: dateRange,
             TotalRecords: records.Count,
@@ -146,6 +159,10 @@ public static class TelemetrySummarizer
             SessionsWithRecall: AdoptionStat(recalls, mcpSessionSet, mcpSessionCount),
             SessionsWithRemember: AdoptionStat(remembers, mcpSessionSet, mcpSessionCount),
             SessionsWithDigest: AdoptionStat(digests, mcpSessionSet, mcpSessionCount),
+            SessionsWithSessionFactWrite: AdoptionStat(remembers, mcpSessionSet, mcpSessionCount),
+            SessionsWithSessionFactRecall: AdoptionStat(sessionFactRecalls, mcpSessionSet, mcpSessionCount),
+            SessionsWithPriorSessionFactRecall: AdoptionStat(priorSessionFactRecalls, mcpSessionSet, mcpSessionCount),
+            CompactionSurvival: compactionSurvival,
             MedianRecallsPerSession: Median(recallCountsPerSession),
             MaxRecallsPerSession: recallCountsPerSession.Count == 0 ? 0 : recallCountsPerSession.Max(),
             Coverage: new TelemetryCoverageStat(
@@ -164,6 +181,53 @@ public static class TelemetrySummarizer
             .Distinct(StringComparer.Ordinal)
             .Count(mcpSessionIds.Contains);
         return new TelemetryAdoptionStat(count, Percent(count, mcpSessionCount));
+    }
+
+    private const string CompactionSurvivalNote =
+        "Approximate: pre-compact events carry Claude Code's hook session id, a different id-space " +
+        "than MCP's, so a compaction moment is matched to a session's recalls by timestamp only, " +
+        "not by session identity.";
+
+    private static TelemetryCompactionSurvivalStat ComputeCompactionSurvival(
+        IReadOnlyList<TelemetryRecord> records,
+        List<TelemetryRecord> remembers,
+        List<TelemetryRecord> recalls)
+    {
+        var preCompactTimestamps = records
+            .Where(r => r.Kind == TelemetryEventKind.PreCompact)
+            .Select(r => ParseTimestamp(r.Timestamp))
+            .OrderBy(t => t)
+            .ToList();
+
+        var firstFactTimeBySession = remembers
+            .GroupBy(r => r.SessionId, StringComparer.Ordinal)
+            .ToDictionary(g => g.Key, g => g.Min(r => ParseTimestamp(r.Timestamp)), StringComparer.Ordinal);
+
+        var events = 0;
+        var sessions = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var recall in recalls)
+        {
+            if ((recall.SessionFactCount ?? 0) <= 0)
+            {
+                continue;
+            }
+
+            if (!firstFactTimeBySession.TryGetValue(recall.SessionId, out var firstFactTime))
+            {
+                continue;
+            }
+
+            var recallTime = ParseTimestamp(recall.Timestamp);
+            var survivedACompaction = preCompactTimestamps.Any(t => t > firstFactTime && t < recallTime);
+            if (survivedACompaction)
+            {
+                events++;
+                sessions.Add(recall.SessionId);
+            }
+        }
+
+        return new TelemetryCompactionSurvivalStat(events, sessions.Count, CompactionSurvivalNote);
     }
 
     private static double Percent(int part, int whole) =>
