@@ -9,15 +9,38 @@ public static class PrimerBuilder
         "use engram_remember for durable facts you learn; flush learnings via engram_digest " +
         "before the session ends.";
 
+    private static readonly string[] PreferredScopeOrder = ["user", "project", "code", "session"];
+
     public static string Build(IReadOnlyList<CannedFact> facts)
     {
         var lines = new List<string> { Instruction };
         var tokens = TokenEstimator.Estimate(Instruction);
 
-        AppendSection(lines, ref tokens, "User:", facts.Where(f => f.Scope == "user").Take(5));
-        AppendSection(lines, ref tokens, "Project:", facts.Where(f => f.Scope == "project").Take(5));
+        foreach (var scope in OrderedScopes(facts))
+        {
+            var header = char.ToUpperInvariant(scope[0]) + scope[1..] + ":";
+            AppendSection(lines, ref tokens, header, facts.Where(f => f.Scope == scope).Take(5));
+        }
 
         return string.Join('\n', lines);
+    }
+
+    private static IEnumerable<string> OrderedScopes(IReadOnlyList<CannedFact> facts)
+    {
+        var present = facts.Select(f => f.Scope).Distinct().ToHashSet(StringComparer.Ordinal);
+
+        foreach (var scope in PreferredScopeOrder)
+        {
+            if (present.Remove(scope))
+            {
+                yield return scope;
+            }
+        }
+
+        foreach (var scope in present.OrderBy(s => s, StringComparer.Ordinal))
+        {
+            yield return scope;
+        }
     }
 
     private static void AppendSection(List<string> lines, ref int tokens, string header, IEnumerable<CannedFact> facts)
@@ -34,19 +57,27 @@ public static class PrimerBuilder
             return;
         }
 
-        lines.Add(header);
-        tokens += headerTokens;
-
+        var fittingLines = new List<string>();
+        var fittingTokens = 0;
         foreach (var line in factLines)
         {
             var lineTokens = TokenEstimator.Estimate(line);
-            if (tokens + lineTokens > MaxTokens)
+            if (tokens + headerTokens + fittingTokens + lineTokens > MaxTokens)
             {
                 break;
             }
 
-            lines.Add(line);
-            tokens += lineTokens;
+            fittingLines.Add(line);
+            fittingTokens += lineTokens;
         }
+
+        if (fittingLines.Count == 0)
+        {
+            return;
+        }
+
+        lines.Add(header);
+        lines.AddRange(fittingLines);
+        tokens += headerTokens + fittingTokens;
     }
 }

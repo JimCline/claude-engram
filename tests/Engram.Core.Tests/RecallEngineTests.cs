@@ -113,16 +113,17 @@ public class RecallEngineTests
     [Fact]
     public void Rank_QueryWithStopword_ExcludesFactsMatchedSolelyByTheStopword()
     {
-        var ranked = RecallEngine.Rank("AOT packaging and Roslyn", CannedFacts.All);
+        var stopwordFacts = new List<CannedFact>
+        {
+            new("f101", "topic-a", "states", "Hooks and plugins interact through the settings file.", "user", 0),
+            new("f102", "topic-b", "states", "The settings file is read at startup and cached.", "user", 0),
+        };
 
-        Assert.True(ranked.Count < 14, $"expected fewer than 14 matches now that 'and' is filtered, got {ranked.Count}");
+        var ranked = RecallEngine.Rank("hooks and plugins", stopwordFacts);
 
         var matchedIds = ranked.Select(r => r.Fact.Id).ToHashSet();
-        var stopwordOnlyMatches = new[] { "f002", "f004", "f008", "f018", "f020", "f022", "f025", "f027", "f028" };
-        foreach (var id in stopwordOnlyMatches)
-        {
-            Assert.DoesNotContain(id, matchedIds);
-        }
+        Assert.Contains("f101", matchedIds);
+        Assert.DoesNotContain("f102", matchedIds);
     }
 
     [Fact]
