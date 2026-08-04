@@ -265,10 +265,34 @@ design fails quietly:
   settings — already built, and the pattern for everything that touches user files.
 - **Migration.** Every schema version bump ships with a test that opens a database
   written by the previous version and reads it correctly.
+- **Hard latency deadlines belong in tier 4, not tier 3.** A wall-clock assertion in the
+  every-push tier competes with whatever else that tier happens to be running, so a
+  hardcoded deadline there is unsound by construction. Tier 3 asserts a median over
+  repeated samples as a smoke check; tier 4 owns real percentiles under controlled load.
 
 Cross-platform matters too: the spec promises four RIDs, so CI runs the full suite on
 osx-arm64 and linux-x64 at minimum. A test that only ever ran on the author's Mac is a
 claim, not evidence.
+
+---
+
+## PreCompact cannot inject context
+
+Spec §10.1 assumes `PreCompact` can "inject one instruction" the same way `SessionStart`
+injects the primer via `hookSpecificOutput.additionalContext`. It cannot. Per the
+[Claude Code hooks reference](https://docs.claude.com/en/docs/claude-code/hooks),
+`additionalContext` injection is documented only for `SessionStart`, `UserPromptSubmit`,
+`PostToolUse`, and a handful of other events — `PreCompact` is not among them. The only
+`PreCompact` output that reaches the model is the top-level `decision`/`reason` pair, and
+`"decision": "block"` does not annotate the compaction — it refuses it outright. Emitting
+that on every `PreCompact` call blocks the user's every compaction, which is not what the
+spec intended.
+
+> **Erratum (spec §10.1):** no injection channel exists for `PreCompact`. `engram hook
+> pre-compact` now only records its telemetry event and exits 0, emitting nothing on
+> stdout. The "flush durable learnings via `engram_digest`" nudge moves to the session
+> primer (`PrimerBuilder`) and the recall output footer, both already seen by the model
+> on every session and every recall.
 
 ---
 

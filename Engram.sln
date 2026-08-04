@@ -15,6 +15,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Engram.Core.Tests", "tests\
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Engram.Integration.Tests", "tests\Engram.Integration.Tests\Engram.Integration.Tests.csproj", "{DF5B90EE-5439-46D6-91CB-FAC435B7E548}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Engram.EndToEnd.Tests", "tests\Engram.EndToEnd.Tests\Engram.EndToEnd.Tests.csproj", "{E1B95465-5B7B-4151-9345-BE35BE2BCD07}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -73,6 +75,18 @@ Global
 		{DF5B90EE-5439-46D6-91CB-FAC435B7E548}.Release|x64.Build.0 = Release|Any CPU
 		{DF5B90EE-5439-46D6-91CB-FAC435B7E548}.Release|x86.ActiveCfg = Release|Any CPU
 		{DF5B90EE-5439-46D6-91CB-FAC435B7E548}.Release|x86.Build.0 = Release|Any CPU
+		{E1B95465-5B7B-4151-9345-BE35BE2BCD07}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{E1B95465-5B7B-4151-9345-BE35BE2BCD07}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{E1B95465-5B7B-4151-9345-BE35BE2BCD07}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{E1B95465-5B7B-4151-9345-BE35BE2BCD07}.Debug|x64.Build.0 = Debug|Any CPU
+		{E1B95465-5B7B-4151-9345-BE35BE2BCD07}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{E1B95465-5B7B-4151-9345-BE35BE2BCD07}.Debug|x86.Build.0 = Debug|Any CPU
+		{E1B95465-5B7B-4151-9345-BE35BE2BCD07}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{E1B95465-5B7B-4151-9345-BE35BE2BCD07}.Release|Any CPU.Build.0 = Release|Any CPU
+		{E1B95465-5B7B-4151-9345-BE35BE2BCD07}.Release|x64.ActiveCfg = Release|Any CPU
+		{E1B95465-5B7B-4151-9345-BE35BE2BCD07}.Release|x64.Build.0 = Release|Any CPU
+		{E1B95465-5B7B-4151-9345-BE35BE2BCD07}.Release|x86.ActiveCfg = Release|Any CPU
+		{E1B95465-5B7B-4151-9345-BE35BE2BCD07}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -82,5 +96,6 @@ Global
 		{5F384C94-15C2-43E3-9781-6D5D577B087A} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
 		{52924454-06BF-4C0E-AAE2-53D1B55645FE} = {0AB3BF05-4346-4AA6-1389-037BE0695223}
 		{DF5B90EE-5439-46D6-91CB-FAC435B7E548} = {0AB3BF05-4346-4AA6-1389-037BE0695223}
+		{E1B95465-5B7B-4151-9345-BE35BE2BCD07} = {0AB3BF05-4346-4AA6-1389-037BE0695223}
 	EndGlobalSection
 EndGlobal

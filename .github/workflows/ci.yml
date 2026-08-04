@@ -25,3 +25,8 @@ jobs:
         run: |
           dotnet publish src/Engram.Cli -c Release -r osx-arm64 -o ci-out
           ./ci-out/engram home
+
+      - name: End-to-end tests
+        run: dotnet test tests/Engram.EndToEnd.Tests -c Release
+        env:
+          ENGRAM_TEST_BINARY: ${{ github.workspace }}/ci-out/engram

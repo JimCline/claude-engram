@@ -14,6 +14,11 @@
   </ItemGroup>
 
   <ItemGroup>
+    <PackageReference Include="ModelContextProtocol" />
+    <PackageReference Include="Microsoft.Extensions.Hosting" />
+  </ItemGroup>
+
+  <ItemGroup>
     <InternalsVisibleTo Include="Engram.Integration.Tests" />
   </ItemGroup>
 

@@ -40,6 +40,8 @@ public static class CliApp
             "init" => InitCommand.Run(homePath, rest, stdout, stderr),
             "install" => RunClaudeCodeVerb(rest, install: true, stdout, stderr),
             "uninstall" => RunClaudeCodeVerb(rest, install: false, stdout, stderr),
+            "mcp" => McpCommand.Run(homePath, rest, stdout, stderr),
+            "hook" => HookCommand.Run(homePath, rest, stdout, stderr),
             _ => Usage(stderr),
         };
     }
@@ -120,6 +122,8 @@ public static class CliApp
         writer.WriteLine("  init                              create the Engram home directory structure and default config");
         writer.WriteLine("  install claude-code [options]     install Claude Code hooks and MCP server registration");
         writer.WriteLine("  uninstall claude-code [options]   remove Claude Code hooks and MCP server registration");
+        writer.WriteLine("  mcp                                run the MCP server on stdio");
+        writer.WriteLine("  hook <event>                       hook entrypoint: session-start|pre-compact|file-touched");
         writer.WriteLine();
         writer.WriteLine("install/uninstall claude-code options:");
         writer.WriteLine("  --settings-path <file>            settings file to modify (defaults to the user's Claude Code settings)");
