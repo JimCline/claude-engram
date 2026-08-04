@@ -1,0 +1,405 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ENGRAM — Design Sheet · Rev D</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;500;600&family=Barlow:wght@400;500&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{
+  --paper:#123A5C; --paper-deep:#0D2C47; --panel:#0F3253;
+  --line:#9FC3E2; --line-faint:rgba(159,195,226,.28); --grid:rgba(159,195,226,.07);
+  --chalk:#EAF4FC; --dim:#A9C4DC;
+  --amber:#FFB454; --amber-deep:#E89A33; --ghost:#6C8FB0;
+  --mono:'IBM Plex Mono',monospace; --disp:'Barlow Condensed',sans-serif; --body:'Barlow',sans-serif;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{
+  background:var(--paper-deep); color:var(--chalk); font-family:var(--body);
+  font-size:16px; line-height:1.55; padding:18px;
+}
+.sheet{
+  max-width:1180px; margin:0 auto; background:var(--paper);
+  background-image:
+    linear-gradient(var(--grid) 1px, transparent 1px),
+    linear-gradient(90deg, var(--grid) 1px, transparent 1px);
+  background-size:28px 28px;
+  border:1.5px solid var(--line); outline:1px solid var(--line-faint); outline-offset:5px;
+  padding:0 0 0 0; position:relative;
+}
+/* zone letters down the left frame, like drawing zones */
+.zone{border-top:1px solid var(--line-faint); padding:48px 56px; position:relative}
+.zone:first-of-type{border-top:none}
+.zone::before{
+  content:attr(data-zone); position:absolute; left:14px; top:44px;
+  font-family:var(--disp); font-weight:600; font-size:15px; letter-spacing:.18em;
+  color:var(--ghost); writing-mode:vertical-rl; text-orientation:mixed;
+}
+.eyebrow{
+  font-family:var(--mono); font-size:11.5px; letter-spacing:.22em; text-transform:uppercase;
+  color:var(--amber); margin-bottom:10px;
+}
+h1{
+  font-family:var(--disp); font-weight:600; text-transform:uppercase;
+  font-size:clamp(52px,8vw,96px); letter-spacing:.03em; line-height:.95; color:var(--chalk);
+}
+h2{
+  font-family:var(--disp); font-weight:600; text-transform:uppercase;
+  font-size:clamp(26px,3.4vw,38px); letter-spacing:.06em; color:var(--chalk); margin-bottom:14px;
+}
+p.lede{max-width:70ch; color:var(--dim); margin-bottom:6px}
+p.lede strong{color:var(--chalk); font-weight:500}
+.mono{font-family:var(--mono)}
+.tag{
+  display:inline-block; font-family:var(--mono); font-size:11px; letter-spacing:.12em;
+  border:1px solid var(--line-faint); color:var(--dim); padding:3px 9px; margin:3px 6px 0 0;
+  text-transform:uppercase;
+}
+/* HERO */
+.hero{padding:64px 56px 44px}
+.hero .rule{height:1px; background:var(--line-faint); margin:26px 0 22px; position:relative}
+.hero .rule::after{content:""; position:absolute; left:0; top:-2px; width:130px; height:5px; background:var(--amber)}
+.hero-grid{display:grid; grid-template-columns:1.5fr 1fr; gap:40px; align-items:end}
+.directive{
+  border:1px solid var(--line-faint); background:var(--panel); padding:20px 22px;
+}
+.directive .k{font-family:var(--mono); font-size:11px; letter-spacing:.2em; color:var(--amber); text-transform:uppercase}
+.directive .v{font-family:var(--disp); font-size:24px; line-height:1.15; margin-top:8px; letter-spacing:.02em}
+.directive .s{font-size:14px; color:var(--dim); margin-top:8px}
+/* SVG shared */
+svg text{font-family:var(--mono)}
+.svgwrap{overflow-x:auto; margin-top:18px}
+.svgwrap svg{min-width:720px; width:100%; height:auto; display:block}
+.caption{font-family:var(--mono); font-size:12px; color:var(--ghost); margin-top:10px; letter-spacing:.06em}
+/* tables */
+table{width:100%; border-collapse:collapse; margin-top:16px; font-size:14.5px}
+th{
+  font-family:var(--mono); font-size:11px; letter-spacing:.18em; text-transform:uppercase;
+  color:var(--amber); text-align:left; padding:8px 12px; border-bottom:1px solid var(--line-faint);
+}
+td{padding:9px 12px; border-bottom:1px solid rgba(159,195,226,.14); color:var(--dim); vertical-align:top}
+td:first-child{color:var(--chalk); font-family:var(--mono); font-size:13.5px; white-space:nowrap}
+tr:hover td{background:rgba(255,180,84,.05)}
+/* pipeline steps */
+.pipe{display:grid; grid-template-columns:repeat(5,1fr); gap:0; margin-top:20px; border:1px solid var(--line-faint)}
+.pipe .step{padding:16px 14px; border-left:1px solid var(--line-faint); position:relative; background:var(--panel)}
+.pipe .step:first-child{border-left:none}
+.pipe .n{font-family:var(--disp); font-weight:600; font-size:26px; color:var(--amber)}
+.pipe .t{font-family:var(--mono); font-size:11.5px; letter-spacing:.14em; text-transform:uppercase; margin:2px 0 8px}
+.pipe .d{font-size:13px; color:var(--dim); line-height:1.45}
+/* storage tree */
+pre.tree{
+  font-family:var(--mono); font-size:13.5px; line-height:1.7; color:var(--dim);
+  background:var(--panel); border:1px solid var(--line-faint); padding:20px 24px; margin-top:16px;
+  overflow-x:auto;
+}
+pre.tree b{color:var(--chalk); font-weight:500}
+pre.tree i{color:var(--amber); font-style:normal}
+/* legend */
+.legend{display:flex; gap:22px; flex-wrap:wrap; margin-top:12px; font-family:var(--mono); font-size:12px; color:var(--dim)}
+.legend span{display:inline-flex; align-items:center; gap:7px}
+.sw{width:22px; height:0; border-top:3px solid var(--amber)}
+.sw.g{border-top:3px dashed var(--ghost)}
+.sw.l{border-top:1.5px solid var(--line)}
+/* title block */
+.titleblock{
+  border-top:1.5px solid var(--line); display:grid; grid-template-columns:2fr 1fr 1fr 1fr 1fr;
+  font-family:var(--mono); font-size:12px;
+}
+.titleblock div{padding:12px 16px; border-left:1px solid var(--line-faint)}
+.titleblock div:first-child{border-left:none}
+.titleblock .k{display:block; font-size:10px; letter-spacing:.2em; color:var(--ghost); text-transform:uppercase; margin-bottom:4px}
+.titleblock .v{color:var(--chalk)}
+/* interactions */
+.node-hit{cursor:pointer}
+.node-hit:hover .nodebox{stroke:var(--amber)}
+@media (max-width:860px){
+  .zone{padding:36px 26px}
+  .hero{padding:44px 26px 30px}
+  .hero-grid{grid-template-columns:1fr}
+  .pipe{grid-template-columns:1fr 1fr}
+  .pipe .step{border-top:1px solid var(--line-faint)}
+  .titleblock{grid-template-columns:1fr 1fr}
+  td:first-child{white-space:normal}
+}
+@media (prefers-reduced-motion:no-preference){
+  .trace{stroke-dasharray:6 6; animation:march 1.6s linear infinite}
+  @keyframes march{to{stroke-dashoffset:-24}}
+}
+:focus-visible{outline:2px solid var(--amber); outline-offset:2px}
+</style>
+</head>
+<body>
+<div class="sheet">
+
+  <!-- ============ HERO ============ -->
+  <header class="hero">
+    <div class="eyebrow">Design Sheet · Local Temporal Memory Engine · Rev D</div>
+    <h1>Engram</h1>
+    <div class="rule"></div>
+    <div class="hero-grid">
+      <div>
+        <p class="lede">A single-binary, fully local memory system for coding agents. One temporal knowledge graph holds <strong>code structure</strong>, <strong>project decisions</strong>, and <strong>user preferences</strong> — facts are never deleted, only superseded, with the reasoning path preserved.</p>
+        <div style="margin-top:14px">
+          <span class="tag">C# · Native AOT</span><span class="tag">SQLite + FTS5 + vec</span><span class="tag">MCP over stdio</span><span class="tag">Claude Code hooks</span><span class="tag">Zero services</span>
+        </div>
+      </div>
+      <div class="directive">
+        <span class="k">Prime directive</span>
+        <div class="v">Tokens the LLM did not have to load.</div>
+        <div class="s">Memory substitutes for context. Recall → use → amend → re-store; discovery is the fallback learning path, and its findings are written back.</div>
+      </div>
+    </div>
+  </header>
+
+  <!-- ============ ZONE A · ARCHITECTURE ============ -->
+  <section class="zone" data-zone="A — ARCHITECTURE">
+    <div class="eyebrow">Zone A</div>
+    <h2>System Architecture</h2>
+    <p class="lede">One AOT binary, three entry modes: CLI command, fast-exit hook, session-scoped MCP server. SQLite WAL coordinates all concurrent access — no daemon, no lock server.</p>
+    <div class="svgwrap">
+    <svg viewBox="0 0 920 380" role="img" aria-label="Component diagram: Claude Code connects via hooks and MCP to the Engram binary, which contains the memory, retrieval, indexing and embedding subsystems over SQLite storage">
+      <!-- host -->
+      <rect x="20" y="20" width="880" height="70" fill="none" stroke="var(--line)" stroke-width="1.4"/>
+      <text x="40" y="48" fill="var(--chalk)" font-size="15">CLAUDE CODE (host)</text>
+      <text x="40" y="70" fill="var(--dim)" font-size="12">hooks: SessionStart · PostToolUse · PreCompact · SessionEnd</text>
+      <text x="560" y="70" fill="var(--dim)" font-size="12">MCP client (stdio) · subagents inherit server</text>
+      <!-- arrows down -->
+      <line x1="180" y1="90" x2="180" y2="130" stroke="var(--amber)" stroke-width="2" class="trace"/>
+      <text x="192" y="115" fill="var(--amber)" font-size="11">engram hook &lt;event&gt;</text>
+      <line x1="660" y1="90" x2="660" y2="130" stroke="var(--amber)" stroke-width="2" class="trace"/>
+      <text x="672" y="115" fill="var(--amber)" font-size="11">engram mcp · 9 tools</text>
+      <!-- engram binary -->
+      <rect x="20" y="130" width="880" height="150" fill="var(--panel)" stroke="var(--line)" stroke-width="1.4"/>
+      <text x="40" y="158" fill="var(--chalk)" font-size="15">ENGRAM · single binary</text>
+      <g font-size="12">
+        <rect x="40"  y="175" width="150" height="80" fill="none" stroke="var(--line-faint)"/>
+        <text x="52" y="198" fill="var(--chalk)">CLI layer</text>
+        <text x="52" y="218" fill="var(--dim)">init · index · search</text>
+        <text x="52" y="234" fill="var(--dim)">doctor · report</text>
+        <rect x="210" y="175" width="160" height="80" fill="none" stroke="var(--line-faint)"/>
+        <text x="222" y="198" fill="var(--chalk)">Memory engine</text>
+        <text x="222" y="218" fill="var(--dim)">temporal facts</text>
+        <text x="222" y="234" fill="var(--dim)">supersession · salience</text>
+        <rect x="390" y="175" width="160" height="80" fill="none" stroke="var(--line-faint)"/>
+        <text x="402" y="198" fill="var(--chalk)">Retrieval engine</text>
+        <text x="402" y="218" fill="var(--dim)">FTS5 + vec + graph</text>
+        <text x="402" y="234" fill="var(--dim)">RRF → token-packed</text>
+        <rect x="570" y="175" width="150" height="80" fill="none" stroke="var(--line-faint)"/>
+        <text x="582" y="198" fill="var(--chalk)">Indexer</text>
+        <text x="582" y="218" fill="var(--dim)">universal: any lang + docs</text>
+        <text x="582" y="234" fill="var(--dim)">deep tiers: Roslyn (C#)</text>
+        <rect x="740" y="175" width="140" height="80" fill="none" stroke="var(--line-faint)"/>
+        <text x="752" y="198" fill="var(--chalk)">IEmbedder</text>
+        <text x="752" y="218" fill="var(--dim)">None default</text>
+        <text x="752" y="234" fill="var(--dim)">LLamaSharp · HTTP</text>
+      </g>
+      <!-- storage -->
+      <line x1="460" y1="280" x2="460" y2="310" stroke="var(--line)" stroke-width="1.4"/>
+      <rect x="20" y="310" width="880" height="52" fill="none" stroke="var(--line)" stroke-width="1.4"/>
+      <text x="40" y="332" fill="var(--chalk)" font-size="14">~/.engram</text>
+      <text x="40" y="350" fill="var(--dim)" font-size="12">engram.db — one memory tree (user · projects · code) · models/ · engram.log</text>
+    </svg>
+    </div>
+    <div class="legend"><span><span class="sw"></span>agent traffic</span><span><span class="sw l"></span>internal</span></div>
+  </section>
+
+  <!-- ============ ZONE B · STORAGE ============ -->
+  <section class="zone" data-zone="B — STORAGE">
+    <div class="eyebrow">Zone B</div>
+    <h2>One Database · One Memory Tree</h2>
+    <p class="lede">A single SQLite file holds the whole memory tree. Every fact lives on a rooted path from broad to specific — the path is the storage key, a retrieval lane, and the agent's structured way to recall by category. Deleting a repo on disk deletes nothing here. Copy <span class="mono">~/.engram</span> to move machines.</p>
+    <pre class="tree">~/.engram/<b>engram.db</b> — one memory tree, broad → specific
+
+<b>/machine</b>                        host · OS · filesystem · installed tools
+<b>/code</b>/acme-api/src/Auth/AuthService.cs<i>#ValidateToken</i>
+                                mirrors real repo structure down to symbols
+<b>/code</b>/acme-api/README.md<i>#Install</i>   docs carry gist impressions, never contents
+<b>/projects</b>/acme/decisions/…    decisions · conventions · status (may span repos)
+<b>/people</b>/jim/preferences/…     style · tone · formatting · workflow
+<b>/concepts</b>/auth/jwt            cross-cutting knowledge
+
+hierarchy organizes · graph edges associate across branches
+<i>engram_browse(path)</i> → table of contents, never a dump</pre>
+    <p class="lede" style="margin-top:14px">Recall narrows with <span class="mono">path_prefix</span>; cross-cutting questions omit it. Auto-routing files new facts by kind + context (preferences → <span class="mono">/people/jim/…</span>, repo learnings → <span class="mono">/code/&lt;repo&gt;/…</span>); an explicit <span class="mono">path</span> always wins.</p>
+  </section>
+
+  <!-- ============ ZONE C · TEMPORAL MODEL (signature) ============ -->
+  <section class="zone" data-zone="C — TEMPORAL MODEL">
+    <div class="eyebrow">Zone C · Signature Detail</div>
+    <h2>Temporal Supersession Chain</h2>
+    <p class="lede">Facts are append-only. A revision closes the old fact (<span class="mono">valid_to</span>, <span class="mono">superseded_by</span>) and records <strong>why</strong> in the supersession table. Current-state queries read only the live head; the whole belief path stays one <span class="mono">expand(id, history)</span> away.</p>
+    <div class="svgwrap">
+    <svg viewBox="0 0 920 300" role="img" aria-label="Timeline showing three superseded facts leading to one live fact, each transition labeled with its supersession reason">
+      <!-- baseline -->
+      <line x1="40" y1="150" x2="880" y2="150" stroke="var(--line-faint)" stroke-width="1.2"/>
+      <text x="40" y="285" fill="var(--ghost)" font-size="11">t →   subject: AuthService · predicate: "handles token refresh"</text>
+
+      <!-- ghost fact 1 -->
+      <g class="node-hit"><title>f102 · closed 2026-03-14 · superseded_by f210</title>
+        <rect class="nodebox" x="60" y="110" width="180" height="80" fill="var(--paper-deep)" stroke="var(--ghost)" stroke-dasharray="5 4" stroke-width="1.4"/>
+        <text x="74" y="134" fill="var(--ghost)" font-size="12">[f102] SUPERSEDED</text>
+        <text x="74" y="156" fill="var(--dim)" font-size="12">"refresh inline in</text>
+        <text x="74" y="172" fill="var(--dim)" font-size="12"> AuthService.Login"</text>
+      </g>
+      <!-- reason edge 1 -->
+      <line x1="240" y1="150" x2="330" y2="150" stroke="var(--ghost)" stroke-width="1.6" marker-end="url(#arrG)"/>
+      <text x="246" y="138" fill="var(--amber)" font-size="10.5">reason: "extracted in PR #61"</text>
+
+      <!-- ghost fact 2 -->
+      <g class="node-hit"><title>f210 · closed 2026-06-02 · superseded_by f388</title>
+        <rect class="nodebox" x="332" y="110" width="180" height="80" fill="var(--paper-deep)" stroke="var(--ghost)" stroke-dasharray="5 4" stroke-width="1.4"/>
+        <text x="346" y="134" fill="var(--ghost)" font-size="12">[f210] SUPERSEDED</text>
+        <text x="346" y="156" fill="var(--dim)" font-size="12">"refresh in TokenHelper,</text>
+        <text x="346" y="172" fill="var(--dim)" font-size="12"> called by AuthService"</text>
+      </g>
+      <line x1="512" y1="150" x2="602" y2="150" stroke="var(--ghost)" stroke-width="1.6" marker-end="url(#arrG)"/>
+      <text x="516" y="138" fill="var(--amber)" font-size="10.5">reason: "user corrected: moved</text>
+      <text x="516" y="200" fill="var(--amber)" font-size="10.5">to RefreshWorker (commit 9e4f)"</text>
+
+      <!-- live fact -->
+      <g class="node-hit"><title>f388 · live · valid_to = NULL</title>
+        <rect class="nodebox" x="604" y="100" width="210" height="100" fill="var(--panel)" stroke="var(--amber)" stroke-width="2"/>
+        <rect x="604" y="100" width="210" height="6" fill="var(--amber)"/>
+        <text x="620" y="132" fill="var(--amber)" font-size="12">[f388] LIVE · valid_to = NULL</text>
+        <text x="620" y="154" fill="var(--chalk)" font-size="12.5">"token refresh handled in</text>
+        <text x="620" y="171" fill="var(--chalk)" font-size="12.5"> RefreshWorker, NOT AuthService"</text>
+        <text x="620" y="190" fill="var(--dim)" font-size="10.5">ev: commit 9e4f · session #84 · salience 0.91</text>
+      </g>
+
+      <!-- history walk annotation -->
+      <path d="M 700 100 Q 700 46 460 46 Q 150 46 150 104" fill="none" stroke="var(--amber)" stroke-width="1.4" class="trace" marker-end="url(#arrA)"/>
+      <text x="352" y="36" fill="var(--amber)" font-size="11">expand(f388, history) walks the chain with reasons</text>
+
+      <defs>
+        <marker id="arrG" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="var(--ghost)"/></marker>
+        <marker id="arrA" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="var(--amber)"/></marker>
+      </defs>
+    </svg>
+    </div>
+    <div class="legend">
+      <span><span class="sw"></span>live fact (valid_to = NULL)</span>
+      <span><span class="sw g"></span>superseded fact — kept forever</span>
+      <span class="mono">contradictions stored + flagged ⚠ until revised</span>
+    </div>
+  </section>
+
+  <!-- ============ ZONE D · RETRIEVAL ============ -->
+  <section class="zone" data-zone="D — RETRIEVAL">
+    <div class="eyebrow">Zone D</div>
+    <h2>Context-Frugal Recall</h2>
+    <p class="lede">Three lanes seed, the graph expands, fusion ranks, packing enforces the budget. Output is distilled statements with handles — never raw source. A <span class="mono">gaps</span> line names what memory doesn't know, steering the agent to discover and <span class="mono">remember()</span>.</p>
+    <div class="pipe">
+      <div class="step"><div class="n">1</div><div class="t">Seed</div><div class="d">FTS5 BM25 · vec KNN · entity match — live facts, optional path_prefix</div></div>
+      <div class="step"><div class="n">2</div><div class="t">Expand</div><div class="d">Graph walk ≤ 2 hops from seed subjects; edge weight × relation prior</div></div>
+      <div class="step"><div class="n">3</div><div class="t">Fuse</div><div class="d">Reciprocal Rank Fusion × salience × scope prior (repo vs global context)</div></div>
+      <div class="step"><div class="n">4</div><div class="t">Pack</div><div class="d">Dedupe by subject+predicate; truncate to budget (default 500 tokens)</div></div>
+      <div class="step"><div class="n">5</div><div class="t">Reinforce</div><div class="d">Bump access counts → salience; log recall to session provenance</div></div>
+    </div>
+    <pre class="tree" style="margin-top:22px">RECALL "token validation" · repo:acme-api · 7 facts · <i>214/500 tokens</i> · coverage: high
+<b>[f412]</b> AuthService.ValidateToken decided → use Result&lt;Claims&gt;, never throw  (project · 12d)
+<b>[f388]</b> token refresh handled in RefreshWorker, NOT AuthService  (project · 30d)
+<b>[f501]</b> ⚠ conflicts with [f388] — unresolved, settle with engram_revise
+<b>[e77]</b>  AuthService — class, 14 members, src/Auth/AuthService.cs
+<i>gaps:</i> no facts about rate limiting on token endpoints
+→ expand(id) for history / related / evidence · remember() what you discover</pre>
+  </section>
+
+  <!-- ============ ZONE E · MCP TOOLS ============ -->
+  <section class="zone" data-zone="E — MCP SURFACE">
+    <div class="eyebrow">Zone E</div>
+    <h2>MCP Tool Surface — 10 Tools</h2>
+    <table>
+      <tr><th>Tool</th><th>Purpose</th><th>Frugality rule</th></tr>
+      <tr><td>engram_recall</td><td>Query memory across scopes</td><td>Hard token budget · handles, never source</td></tr>
+      <tr><td>engram_remember</td><td>Write a durable fact</td><td>Collision ⇒ supersession; reason required</td></tr>
+      <tr><td>engram_browse</td><td>Walk the memory tree by category (children · counts · top facts)</td><td>Table of contents, never a dump</td></tr>
+      <tr><td>engram_revise</td><td>Explicit belief revision</td><td>Reason + evidence recorded in chain</td></tr>
+      <tr><td>engram_forget</td><td>Tombstone with reason</td><td>Nothing hard-deleted, ever</td></tr>
+      <tr><td>engram_expand</td><td>History · related · evidence · source for one handle</td><td>One handle, bounded snippet</td></tr>
+      <tr><td>engram_code</td><td>Graph lookup: definition · references · callers</td><td>Structural answer, entity handles</td></tr>
+      <tr><td>engram_digest</td><td>Batch end-of-session learnings (≤ 25)</td><td>One call flushes a whole session</td></tr>
+      <tr><td>engram_share / join</td><td>Scoped subagent memory sharing</td><td>Parent-minted token; provenance tagged via_subagent</td></tr>
+      <tr><td>engram_status</td><td>Index freshness · counts · embedder state</td><td>One screen</td></tr>
+    </table>
+  </section>
+
+  <!-- ============ ZONE F · CLAUDE CODE ============ -->
+  <section class="zone" data-zone="F — HOST WIRING">
+    <div class="eyebrow">Zone F</div>
+    <h2>Claude Code Session Flow</h2>
+    <div class="svgwrap">
+    <svg viewBox="0 0 920 240" role="img" aria-label="Session lifecycle: SessionStart hook indexes and injects primer, agent recalls before exploring, edits queue reindex, PreCompact and SessionEnd flush a digest">
+      <g font-size="12">
+        <rect x="20" y="30" width="170" height="72" fill="var(--panel)" stroke="var(--line)" stroke-width="1.4"/>
+        <text x="34" y="55" fill="var(--chalk)">SessionStart</text>
+        <text x="34" y="74" fill="var(--dim)">index Δ (≤1.5 s sync)</text>
+        <text x="34" y="90" fill="var(--amber)">primer ≤ 300 tokens</text>
+
+        <line x1="190" y1="66" x2="252" y2="66" stroke="var(--amber)" stroke-width="2" class="trace" marker-end="url(#arrA2)"/>
+
+        <rect x="254" y="30" width="200" height="72" fill="var(--panel)" stroke="var(--line)" stroke-width="1.4"/>
+        <text x="268" y="55" fill="var(--chalk)">Agent works</text>
+        <text x="268" y="74" fill="var(--dim)">recall() before exploring</text>
+        <text x="268" y="90" fill="var(--dim)">edits → PostToolUse queue</text>
+
+        <!-- hit/miss branch -->
+        <line x1="454" y1="50" x2="530" y2="50" stroke="var(--line)" stroke-width="1.4" marker-end="url(#arrL)"/>
+        <text x="462" y="42" fill="var(--dim)" font-size="11">hit</text>
+        <rect x="532" y="24" width="170" height="50" fill="none" stroke="var(--line-faint)"/>
+        <text x="546" y="45" fill="var(--chalk)">use handles</text>
+        <text x="546" y="62" fill="var(--dim)">expand() only if needed</text>
+
+        <line x1="454" y1="86" x2="530" y2="86" stroke="var(--ghost)" stroke-width="1.4" marker-end="url(#arrG2)"/>
+        <text x="462" y="102" fill="var(--dim)" font-size="11">miss</text>
+        <rect x="532" y="84" width="170" height="50" fill="none" stroke="var(--ghost)" stroke-dasharray="5 4"/>
+        <text x="546" y="105" fill="var(--chalk)">discover naturally</text>
+        <text x="546" y="122" fill="var(--amber)">→ remember()</text>
+
+        <!-- writeback loop -->
+        <path d="M 702 110 Q 780 110 780 66 Q 780 20 460 20 Q 354 20 354 30" fill="none" stroke="var(--amber)" stroke-width="1.4" class="trace" marker-end="url(#arrA2)"/>
+        <text x="640" y="14" fill="var(--amber)" font-size="11">next session: memory hit</text>
+
+        <rect x="20" y="160" width="880" height="56" fill="var(--panel)" stroke="var(--line)" stroke-width="1.4"/>
+        <text x="34" y="184" fill="var(--chalk)">PreCompact / SessionEnd</text>
+        <text x="34" y="202" fill="var(--dim)">engram_digest(learnings[]) — one call flushes the session · session row closed · memory grew</text>
+        <line x1="354" y1="102" x2="354" y2="158" stroke="var(--line)" stroke-width="1.4" marker-end="url(#arrL)"/>
+      </g>
+      <defs>
+        <marker id="arrA2" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="var(--amber)"/></marker>
+        <marker id="arrL" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="var(--line)"/></marker>
+        <marker id="arrG2" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="var(--ghost)"/></marker>
+      </defs>
+    </svg>
+    </div>
+    <div class="legend"><span class="mono">install: engram init && engram install claude-code → hooks + .mcp.json written · --dry-run available</span></div>
+  </section>
+
+  <!-- ============ ZONE G · MILESTONES ============ -->
+  <section class="zone" data-zone="G — BUILD ORDER">
+    <div class="eyebrow">Zone G</div>
+    <h2>Milestones</h2>
+    <table>
+      <tr><th>Rev</th><th>Deliverable</th><th>Exit criterion</th></tr>
+      <tr><td>M1 Core</td><td>Temporal store · CLI · MCP · lexical retrieval</td><td>remember → recall → revise → history shows reasoned chain</td></tr>
+      <tr><td>M2 Claude Code</td><td>Hooks · installer · primer · digest · share/join</td><td>Fresh machine → agent uses memory unprompted</td></tr>
+      <tr><td>M3 Code graph</td><td>Universal + doc analyzers + gist impressions · Roslyn deep tier (C#)</td><td>Any-language repo indexes day one · deleted symbols close their facts with reason</td></tr>
+      <tr><td>M4 Embeddings</td><td>IEmbedder providers · vec lane · RRF</td><td>Paraphrase recall improves · zero idle cost</td></tr>
+      <tr><td>M5 Polish</td><td>Salience tuning · compact · export · report · doctor</td><td>Coverage-rate trend visible in report</td></tr>
+    </table>
+  </section>
+
+  <!-- ============ TITLE BLOCK ============ -->
+  <footer class="titleblock">
+    <div><span class="k">Project</span><span class="v">ENGRAM — Temporal Memory &amp; Code Knowledge Graph</span></div>
+    <div><span class="k">Sheet</span><span class="v">1 / 1</span></div>
+    <div><span class="k">Rev</span><span class="v">D</span></div>
+    <div><span class="k">Date</span><span class="v">2026-08-04</span></div>
+    <div><span class="k">Companion</span><span class="v">engram-spec.md</span></div>
+  </footer>
+
+</div>
+</body>
+</html>
