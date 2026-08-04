@@ -217,6 +217,59 @@ belief, `repair` reports it and stops — that is the user's decision, not the t
 database corrupted beyond that rule is a restore-from-backup situation, which is why
 `export` and the pre-repair snapshot exist.
 
+### D9 — Testing: five tiers, and the integration tier is the one that matters
+
+Unit tests cannot establish the things most likely to break Engram. Its risks are
+temporal invariants over long histories, several OS processes contending for one SQLite
+file, an AOT binary behaving differently from the JIT build that passed CI, and an MCP
+tool surface whose *output text* is a contract with a language model. All four are
+integration concerns. So the integration tier is the primary tier, not a supplement.
+
+| Tier | Runs | Scope |
+|---|---|---|
+| **1 · Unit** | every build | Pure logic — path resolution, salience math, token estimation, packing. Fast, no I/O. |
+| **2 · Integration** | every build | Real SQLite files in a disposable home. Temporal semantics, FTS sync, retrieval fusion, doctor/repair, installer merges. **The bulk of the suite lives here.** |
+| **3 · End-to-end** | every push | Drives the *published AOT binary* as a subprocess — CLI verbs, `engram mcp` over real stdio JSON-RPC, `engram hook …` emitting real hook payloads. |
+| **4 · Stress & concurrency** | nightly + before release | N processes against one database; hook latency percentiles under bulk index; WAL growth; kill-mid-write recovery. |
+| **5 · Adoption telemetry** | continuous, real sessions | Not pass/fail. Recall coverage rate over time — §12 of the spec calls this *the* health metric. |
+
+Tier 3 gets its own project (`tests/Engram.EndToEnd.Tests`) because it depends on a
+publish step and is too slow for the inner loop. It is not optional: the JIT build
+passing proves nothing about the artifact that actually ships, and trimming failures are
+exactly the kind that appear only in the published binary.
+
+Specific things that must have integration tests, because each is a known way this
+design fails quietly:
+
+- **Temporal invariants, property-based.** Generate random sequences of
+  remember/revise/forget/reindex and assert after every step: no fact ever disappears;
+  at most one live fact per (subject, predicate); every closed fact has exactly one
+  supersession row; every `superseded_by` resolves; history chains terminate. Chosen
+  examples will not find the ordering bug that a thousand generated sequences will.
+- **Concurrency, with real processes.** Not threads — processes, because that is what
+  ships: several `engram mcp` servers, hook invocations, and a detached indexer against
+  one database. Assert no `SQLITE_BUSY` surfaces to a caller, hook p99 stays under
+  budget during a bulk index, and the WAL gets truncated rather than growing without
+  bound (D4's watched failure mode).
+- **Crash recovery.** `SIGKILL` mid-write, reopen, assert the database is consistent and
+  no partial fact is visible. WAL should handle this; asserting it is cheap.
+- **The recall output contract.** §6.2's format is read by a model, so it is an
+  interface. Golden-file tests, changed deliberately and reviewed as an API change.
+- **MCP conformance.** Drive the real server over stdio: `initialize`, `tools/list`,
+  every tool called with valid and invalid arguments, and the `remember`-without-reason
+  soft error that §9 says must be structurally enforced.
+- **Repair drills.** Corrupt the FTS index, the salience table, and `fact.path`
+  independently; assert `doctor` names each and `repair --apply` fixes it with every
+  fact body and supersession row bit-identical afterward.
+- **Installer round-trips** against fixtures carrying foreign hooks and unrelated
+  settings — already built, and the pattern for everything that touches user files.
+- **Migration.** Every schema version bump ships with a test that opens a database
+  written by the previous version and reads it correctly.
+
+Cross-platform matters too: the spec promises four RIDs, so CI runs the full suite on
+osx-arm64 and linux-x64 at minimum. A test that only ever ran on the author's Mac is a
+claim, not evidence.
+
 ---
 
 ## 1.5 Spike results (2026-08-04, measured)
@@ -365,8 +418,10 @@ engram/
     Engram.Cli/                # the `engram` binary: cli | mcp | hook verbs  (AOT publish)
     Engram.Analyzer.Roslyn/    # sidecar binary (self-contained R2R)
   tests/
-    Engram.Core.Tests/         # unit: temporal semantics, packing, salience
-    Engram.Integration.Tests/  # real DB files, concurrency, hook latency, AOT smoke
+    Engram.Core.Tests/         # tier 1 — pure logic, no I/O
+    Engram.Integration.Tests/  # tier 2 — real SQLite in a disposable home (the bulk)
+    Engram.EndToEnd.Tests/     # tier 3 — drives the published AOT binary
+    Engram.Stress.Tests/       # tier 4 — multi-process contention, nightly
   docs/
 ```
 
