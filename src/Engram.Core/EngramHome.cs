@@ -2,6 +2,8 @@ namespace Engram.Core;
 
 public sealed class EngramHome
 {
+    public const string DirectoryName = ".engram";
+
     public string Root { get; }
     public string DatabasePath { get; }
     public string ConfigPath { get; }
@@ -50,7 +52,7 @@ public sealed class EngramHome
         }
         else
         {
-            chosen = Path.Combine(userProfileDirectory, ".engram");
+            chosen = Path.Combine(userProfileDirectory, DirectoryName);
         }
 
         var expanded = ExpandTilde(chosen, userProfileDirectory);
@@ -71,10 +73,12 @@ public sealed class EngramHome
         {
             ["ENGRAM_HOME"] = Environment.GetEnvironmentVariable("ENGRAM_HOME"),
         };
-        var userProfileDirectory = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
 
-        return Resolve(explicitPath, environment, userProfileDirectory, Environment.CurrentDirectory);
+        return Resolve(explicitPath, environment, UserProfileDirectory(), Environment.CurrentDirectory);
     }
+
+    public static string UserProfileDirectory() =>
+        Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
 
     private static string ExpandTilde(string path, string userProfileDirectory)
     {

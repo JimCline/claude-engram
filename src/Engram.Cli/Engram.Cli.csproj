@@ -13,4 +13,8 @@
     <ProjectReference Include="../Engram.Core/Engram.Core.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="Engram.Integration.Tests" />
+  </ItemGroup>
+
 </Project>
