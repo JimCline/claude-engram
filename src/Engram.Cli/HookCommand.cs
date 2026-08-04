@@ -5,8 +5,6 @@ namespace Engram.Cli;
 
 internal static class HookCommand
 {
-    private const string SpoolFileName = "touched.log";
-
     public static int Run(string? homePath, string[] rest, TextWriter stdout, TextWriter stderr)
     {
         if (rest.Length != 1)
@@ -76,13 +74,13 @@ internal static class HookCommand
             var home = EngramHome.ResolveFromProcess(homePath);
             Directory.CreateDirectory(home.QueueDir);
 
-            using var stream = new FileStream(
-                Path.Combine(home.QueueDir, SpoolFileName),
-                FileMode.Append,
-                FileAccess.Write,
-                FileShare.ReadWrite);
+            var now = DateTime.UtcNow;
+            var spoolFileName = $"{now.Ticks}-{Environment.ProcessId}-{Guid.NewGuid().ToString("N")[..8]}.spool";
+            var spoolPath = Path.Combine(home.QueueDir, spoolFileName);
+
+            using var stream = new FileStream(spoolPath, FileMode.CreateNew, FileAccess.Write, FileShare.None);
             using var writer = new StreamWriter(stream);
-            writer.WriteLine(DateTime.UtcNow.ToString("o"));
+            writer.WriteLine(now.ToString("o"));
         }
         catch
         {

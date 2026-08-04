@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Globalization;
 
 namespace Engram.EndToEnd.Tests;
 
@@ -11,7 +12,7 @@ public class HookExecutionCollection
 public class HookFileTouchedTests
 {
     [Fact]
-    public void FileTouched_ExitsZero_FiveRunsYieldFiveSpoolLines()
+    public void FileTouched_ExitsZero_FiveRunsYieldFiveSpoolFiles()
     {
         Assert.SkipUnless(EndToEndBinary.Path is not null, EndToEndBinary.SkipReason);
 
@@ -25,9 +26,34 @@ public class HookFileTouchedTests
         }
 
         var queueDir = Path.Combine(home.Root, "queue");
-        var spoolFile = Directory.GetFiles(queueDir).Single();
-        var lines = File.ReadAllLines(spoolFile);
-        Assert.Equal(5, lines.Length);
+        var spoolFiles = Directory.GetFiles(queueDir);
+        Assert.Equal(5, spoolFiles.Length);
+    }
+
+    [Fact(Timeout = 300_000)]
+    public async Task FileTouched_FiftyConcurrentProcesses_ProduceFiftyDistinctSpoolFiles_EachWithAParseableTimestamp()
+    {
+        Assert.SkipUnless(EndToEndBinary.Path is not null, EndToEndBinary.SkipReason);
+
+        using var home = new TestHome();
+
+        var runs = Enumerable.Range(0, 50)
+            .Select(_ => Task.Run(() => EngramProcess.Run(home.Root, "hook", "file-touched")));
+        var results = await Task.WhenAll(runs);
+
+        Assert.All(results, r => Assert.Equal(0, r.ExitCode));
+
+        var queueDir = Path.Combine(home.Root, "queue");
+        var spoolFiles = Directory.GetFiles(queueDir);
+        Assert.Equal(50, spoolFiles.Length);
+
+        foreach (var file in spoolFiles)
+        {
+            var content = File.ReadAllText(file).Trim();
+            Assert.True(
+                DateTime.TryParse(content, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out _),
+                $"spool file '{file}' did not contain a parseable ISO-8601 timestamp: '{content}'");
+        }
     }
 
     [Fact]
@@ -51,9 +77,8 @@ public class HookFileTouchedTests
         }
 
         var queueDir = Path.Combine(home.Root, "queue");
-        var spoolFile = Directory.GetFiles(queueDir).Single();
-        var lines = File.ReadAllLines(spoolFile);
-        Assert.Equal(totalRuns, lines.Length);
+        var spoolFiles = Directory.GetFiles(queueDir);
+        Assert.Equal(totalRuns, spoolFiles.Length);
 
         var samples = elapsedMs.Skip(1).Order().ToList();
         var min = samples[0];

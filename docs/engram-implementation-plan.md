@@ -119,10 +119,13 @@ For M0/M1, ship all four of these together — they only work as a set:
    intermittent failures.
 3. The background indexer commits in chunks capped at ~50 ms / a few hundred rows.
    No long write transactions, ever.
-4. **The `file-touched` hook does not open the database.** It appends one line to a
-   spool file under `~/.engram/queue/`, drained by the MCP server or the indexer. This
-   makes the < 10 ms budget unconditional rather than "true unless an indexer chunk is
-   committing."
+4. **The `file-touched` hook does not open the database.** It writes one spool file per
+   invocation under `~/.engram/queue/`, drained by the MCP server or the indexer, rather
+   than appending to a single shared spool file: `FileMode.Append` is seek-then-write,
+   not POSIX `O_APPEND`, so two concurrent hooks appending to one file can resolve the
+   same end-of-file offset and lose a record, and the hook's < 10 ms budget rules out
+   fixing that with lock-and-retry. This makes the < 10 ms budget unconditional rather
+   than "true unless an indexer chunk is committing."
 
 Salience bumps are batched in memory and flushed best-effort — a dropped bump is
 harmless, and it is not worth contending for the write lock.

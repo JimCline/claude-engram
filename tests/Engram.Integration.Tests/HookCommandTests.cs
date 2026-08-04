@@ -55,7 +55,7 @@ public class HookCommandTests
     }
 
     [Fact]
-    public void FileTouched_ExitsZero_AppendsOneLinePerInvocation()
+    public void FileTouched_ExitsZero_CreatesOneSpoolFilePerInvocation()
     {
         using var sandbox = new SandboxHome();
 
@@ -65,9 +65,26 @@ public class HookCommandTests
             Assert.Equal(0, exitCode);
         }
 
-        var spoolFile = Directory.GetFiles(sandbox.Home.QueueDir).Single();
-        var lines = File.ReadAllLines(spoolFile);
-        Assert.Equal(5, lines.Length);
+        var spoolFiles = Directory.GetFiles(sandbox.Home.QueueDir);
+        Assert.Equal(5, spoolFiles.Length);
+    }
+
+    [Fact(Timeout = 300_000)]
+    public async Task FileTouched_FiftyConcurrentInProcessCalls_ProduceFiftyDistinctSpoolFiles()
+    {
+        using var sandbox = new SandboxHome();
+
+        var runs = Enumerable.Range(0, 50)
+            .Select(_ => Task.Run(() => CliApp.Run(["--home", sandbox.Home.Root, "hook", "file-touched"], new StringWriter(), new StringWriter())));
+        var exitCodes = await Task.WhenAll(runs);
+
+        Assert.All(exitCodes, code => Assert.Equal(0, code));
+
+        var spoolFiles = Directory.GetFiles(sandbox.Home.QueueDir);
+        Assert.Equal(50, spoolFiles.Length);
+
+        var distinctNames = spoolFiles.Select(Path.GetFileName).Distinct().Count();
+        Assert.Equal(50, distinctNames);
     }
 
     [Fact]
