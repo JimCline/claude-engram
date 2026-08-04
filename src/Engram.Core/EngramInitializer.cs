@@ -34,7 +34,7 @@ public static class EngramInitializer
             return new InitializedPath(path, Created: false);
         }
 
-        File.WriteAllText(path, DefaultConfig.Content + "\n");
+        AtomicFile.Write(path, DefaultConfig.Content + "\n");
         return new InitializedPath(path, Created: true);
     }
 }

@@ -1,5 +1,6 @@
 using System.Text.Json.Nodes;
 using Engram.Cli;
+using Engram.Core;
 
 namespace Engram.Integration.Tests;
 
@@ -429,6 +430,83 @@ public class ClaudeCodeInstallUninstallTests
         Assert.True(
             JsonNode.DeepEquals(originalNode, roundTrippedNode),
             $"expected:\n{originalNode!.ToJsonString()}\nactual:\n{roundTrippedNode!.ToJsonString()}");
+    }
+
+    [Fact]
+    public void Write_FileModifiedBetweenReadAndWrite_AbortsWithExitCodeTwo_AndLeavesFileUnchanged()
+    {
+        using var dir = new TempDirectory();
+        var settingsPath = Path.Combine(dir.Path, "settings.json");
+        var mcpPath = Path.Combine(dir.Path, "mcp.json");
+
+        const string original = """{ "theme": "dark" }""";
+        File.WriteAllText(settingsPath, original);
+        File.WriteAllText(mcpPath, "{}");
+
+        var settingsFreshness = JsonFileEditor.FileFreshness.Capture(settingsPath);
+        var mcpFreshness = JsonFileEditor.FileFreshness.Capture(mcpPath);
+
+        JsonFileEditor.TryReadObject(settingsPath, out var settings, out _);
+        JsonFileEditor.TryReadObject(mcpPath, out var mcpConfig, out _);
+        ClaudeCodeSettingsEditor.ApplyInstall(settings, EngramBinaryPath);
+        ClaudeMcpConfigEditor.ApplyInstall(mcpConfig, EngramBinaryPath);
+
+        const string externallyModified = """{ "theme": "dark", "externally": "modified" }""";
+        File.WriteAllText(settingsPath, externallyModified);
+
+        var stderr = new StringWriter();
+        var exitCode = ClaudeCodeFileWriter.Write(
+            settingsPath, settings, settingsFreshness,
+            mcpPath, mcpConfig, mcpFreshness,
+            dryRun: false, new StringWriter(), stderr);
+
+        Assert.Equal(2, exitCode);
+        Assert.Contains("changed while it was being edited", stderr.ToString());
+        Assert.Equal(externallyModified, File.ReadAllText(settingsPath));
+        Assert.Equal("{}", File.ReadAllText(mcpPath));
+    }
+
+    [Fact]
+    public void Install_TenConcurrentInstalls_NoUnhandledException_AndSettingsHasExactlyOneEntryPerEvent()
+    {
+        using var dir = new TempDirectory();
+        var settingsPath = Path.Combine(dir.Path, "settings.json");
+        var mcpPath = Path.Combine(dir.Path, "mcp.json");
+
+        File.WriteAllText(settingsPath, """{ "theme": "dark" }""");
+        File.WriteAllText(mcpPath, "{}");
+
+        var exceptions = new System.Collections.Concurrent.ConcurrentBag<Exception>();
+
+        Parallel.For(0, 10, _ =>
+        {
+            try
+            {
+                ClaudeCodeInstallCommand.Run(settingsPath, mcpPath, dryRun: false, EngramBinaryPath, new StringWriter(), new StringWriter());
+            }
+            catch (Exception ex)
+            {
+                exceptions.Add(ex);
+            }
+        });
+
+        Assert.Empty(exceptions);
+
+        var root = (JsonObject)JsonNode.Parse(File.ReadAllText(settingsPath))!;
+        var hooks = (JsonObject)root["hooks"]!;
+        Assert.Equal(
+            new HashSet<string> { "SessionStart", "PreCompact", "PostToolUse" },
+            hooks.Select(kvp => kvp.Key).ToHashSet());
+
+        foreach (var eventName in new[] { "SessionStart", "PreCompact", "PostToolUse" })
+        {
+            var groups = (JsonArray)hooks[eventName]!;
+            var engramEntries = groups
+                .SelectMany(group => (JsonArray)group!["hooks"]!)
+                .Count(entry => entry!["command"]!.GetValue<string>().Contains($"{EngramBinaryPath} hook", StringComparison.Ordinal));
+
+            Assert.Equal(1, engramEntries);
+        }
     }
 
     private static List<string> ExtractJsonBlocks(string text)

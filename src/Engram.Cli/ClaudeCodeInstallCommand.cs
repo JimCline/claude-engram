@@ -12,11 +12,15 @@ internal static class ClaudeCodeInstallCommand
             return 2;
         }
 
+        var settingsFreshness = JsonFileEditor.FileFreshness.Capture(settingsPath);
+
         if (!JsonFileEditor.TryReadObject(mcpConfigPath, out var mcpConfig, out var mcpError))
         {
             stderr.WriteLine($"error: {mcpConfigPath} contains invalid JSON and was not modified ({mcpError})");
             return 2;
         }
+
+        var mcpFreshness = JsonFileEditor.FileFreshness.Capture(mcpConfigPath);
 
         try
         {
@@ -38,6 +42,6 @@ internal static class ClaudeCodeInstallCommand
             return 2;
         }
 
-        return ClaudeCodeFileWriter.Write(settingsPath, settings, mcpConfigPath, mcpConfig, dryRun, stdout);
+        return ClaudeCodeFileWriter.Write(settingsPath, settings, settingsFreshness, mcpConfigPath, mcpConfig, mcpFreshness, dryRun, stdout, stderr);
     }
 }

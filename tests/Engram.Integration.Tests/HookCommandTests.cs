@@ -6,7 +6,7 @@ namespace Engram.Integration.Tests;
 public class HookCommandTests
 {
     [Fact]
-    public void SessionStart_ExitsZero_EmitsSessionStartJson_AndWritesSessionCurrent()
+    public void SessionStart_ExitsZero_EmitsSessionStartJson()
     {
         using var sandbox = new SandboxHome();
         var stdout = new StringWriter();
@@ -21,8 +21,6 @@ public class HookCommandTests
         var hookSpecificOutput = doc.RootElement.GetProperty("hookSpecificOutput");
         Assert.Equal("SessionStart", hookSpecificOutput.GetProperty("hookEventName").GetString());
         Assert.False(string.IsNullOrWhiteSpace(hookSpecificOutput.GetProperty("additionalContext").GetString()));
-
-        Assert.True(File.Exists(Path.Combine(sandbox.Home.Root, "session-current")));
     }
 
     [Fact]

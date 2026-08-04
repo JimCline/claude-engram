@@ -28,51 +28,7 @@ internal sealed partial class TelemetryJsonContext : JsonSerializerContext;
 
 public static class Telemetry
 {
-    private const string UnknownSessionId = "unknown";
-    private const string SessionFileName = "session-current";
     private const string TelemetryFileName = "telemetry.jsonl";
-
-    public static string OpenSession(EngramHome home)
-    {
-        var sessionId = Guid.NewGuid().ToString("N");
-
-        try
-        {
-            Directory.CreateDirectory(home.Root);
-            File.WriteAllText(Path.Combine(home.Root, SessionFileName), sessionId);
-        }
-        catch (IOException)
-        {
-        }
-        catch (UnauthorizedAccessException)
-        {
-        }
-
-        return sessionId;
-    }
-
-    public static string CurrentSessionId(EngramHome home)
-    {
-        try
-        {
-            var path = Path.Combine(home.Root, SessionFileName);
-            if (!File.Exists(path))
-            {
-                return UnknownSessionId;
-            }
-
-            var text = File.ReadAllText(path).Trim();
-            return text.Length == 0 ? UnknownSessionId : text;
-        }
-        catch (IOException)
-        {
-            return UnknownSessionId;
-        }
-        catch (UnauthorizedAccessException)
-        {
-            return UnknownSessionId;
-        }
-    }
 
     private const int MaxRecordBytes = 4096;
     private static readonly TimeSpan AppendRetryBudget = TimeSpan.FromMilliseconds(500);

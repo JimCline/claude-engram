@@ -13,6 +13,10 @@ internal sealed record PreCompactHookOutput(
     [property: JsonPropertyName("decision")] string Decision,
     [property: JsonPropertyName("reason")] string Reason);
 
+internal sealed record HookStdinInput(
+    [property: JsonPropertyName("session_id")] string? SessionId);
+
 [JsonSerializable(typeof(SessionStartHookOutput))]
 [JsonSerializable(typeof(PreCompactHookOutput))]
+[JsonSerializable(typeof(HookStdinInput))]
 internal sealed partial class HookJsonContext : JsonSerializerContext;

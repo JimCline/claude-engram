@@ -16,10 +16,12 @@ internal static class McpCommand
         }
 
         var home = EngramHome.ResolveFromProcess(homePath);
+        var session = new McpSessionId(Guid.NewGuid().ToString("N"));
 
         var builder = Host.CreateApplicationBuilder([]);
         builder.Logging.AddConsole(options => options.LogToStandardErrorThreshold = LogLevel.Trace);
         builder.Services.AddSingleton(home);
+        builder.Services.AddSingleton(session);
         builder.Services.AddMcpServer()
             .WithStdioServerTransport()
             .WithTools<EngramMcpTools>();

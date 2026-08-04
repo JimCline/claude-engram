@@ -5,25 +5,6 @@ namespace Engram.Integration.Tests;
 public class TelemetryTests
 {
     [Fact]
-    public void OpenSession_WritesSessionCurrentFile_AndCurrentSessionIdReadsItBack()
-    {
-        using var sandbox = new SandboxHome();
-
-        var sessionId = Telemetry.OpenSession(sandbox.Home);
-
-        Assert.True(File.Exists(Path.Combine(sandbox.Home.Root, "session-current")));
-        Assert.Equal(sessionId, Telemetry.CurrentSessionId(sandbox.Home));
-    }
-
-    [Fact]
-    public void CurrentSessionId_NoSessionFile_ReturnsUnknown()
-    {
-        using var sandbox = new SandboxHome();
-
-        Assert.Equal("unknown", Telemetry.CurrentSessionId(sandbox.Home));
-    }
-
-    [Fact]
     public void Append_WritesOneJsonLinePerCall()
     {
         using var sandbox = new SandboxHome();

@@ -31,11 +31,11 @@ internal static class HookCommand
     private static int RunSessionStart(string? homePath, TextWriter stdout)
     {
         var primer = PrimerBuilder.Build(CannedFacts.All);
+        var sessionId = ResolveSessionId();
 
         try
         {
             var home = EngramHome.ResolveFromProcess(homePath);
-            var sessionId = Telemetry.OpenSession(home);
             Telemetry.Append(home, new TelemetryRecord(
                 Timestamp: DateTime.UtcNow.ToString("o"),
                 SessionId: sessionId,
@@ -52,12 +52,14 @@ internal static class HookCommand
 
     private static int RunPreCompact(string? homePath)
     {
+        var sessionId = ResolveSessionId();
+
         try
         {
             var home = EngramHome.ResolveFromProcess(homePath);
             Telemetry.Append(home, new TelemetryRecord(
                 Timestamp: DateTime.UtcNow.ToString("o"),
-                SessionId: Telemetry.CurrentSessionId(home),
+                SessionId: sessionId,
                 Kind: TelemetryEventKind.PreCompact));
         }
         catch
@@ -65,6 +67,33 @@ internal static class HookCommand
         }
 
         return 0;
+    }
+
+    // Claude Code pipes a JSON payload with a "session_id" field on the hook's stdin
+    // (https://code.claude.com/docs/en/hooks). Only read it when stdin is actually
+    // redirected, so a plain interactive invocation never blocks waiting on a terminal.
+    private static string ResolveSessionId()
+    {
+        if (Console.IsInputRedirected)
+        {
+            try
+            {
+                var input = Console.In.ReadToEnd();
+                if (!string.IsNullOrWhiteSpace(input))
+                {
+                    var payload = JsonSerializer.Deserialize(input, HookJsonContext.Default.HookStdinInput);
+                    if (payload?.SessionId is { Length: > 0 } sessionId)
+                    {
+                        return sessionId;
+                    }
+                }
+            }
+            catch
+            {
+            }
+        }
+
+        return Guid.NewGuid().ToString("N");
     }
 
     private static int RunFileTouched(string? homePath)

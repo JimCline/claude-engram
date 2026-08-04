@@ -70,6 +70,56 @@ public class McpServerTests
         Assert.Equal(1, kinds.Count(k => k == "digest"));
     }
 
+    [Fact]
+    public async Task McpServer_SessionId_SharedWithinProcess_DifferentAcrossProcesses()
+    {
+        Assert.SkipUnless(EndToEndBinary.Path is not null, EndToEndBinary.SkipReason);
+
+        var cancellationToken = TestContext.Current.CancellationToken;
+
+        using var homeA = new TestHome();
+        var sessionIdsA = await CallRecallTwiceAndGetSessionIds(homeA.Root, cancellationToken);
+        Assert.Equal(2, sessionIdsA.Count);
+        Assert.Equal(sessionIdsA[0], sessionIdsA[1]);
+
+        using var homeB = new TestHome();
+        var sessionIdsB = await CallRecallTwiceAndGetSessionIds(homeB.Root, cancellationToken);
+        Assert.Equal(2, sessionIdsB.Count);
+        Assert.Equal(sessionIdsB[0], sessionIdsB[1]);
+
+        Assert.NotEqual(sessionIdsA[0], sessionIdsB[0]);
+    }
+
+    private static async Task<List<string>> CallRecallTwiceAndGetSessionIds(string home, CancellationToken cancellationToken)
+    {
+        var transport = new StdioClientTransport(new()
+        {
+            Name = "engram-e2e-test",
+            Command = EndToEndBinary.Path!,
+            Arguments = ["mcp"],
+            InheritEnvironmentVariables = true,
+            EnvironmentVariables = new Dictionary<string, string?> { ["ENGRAM_HOME"] = home },
+        });
+
+        await using var client = await McpClient.CreateAsync(transport, cancellationToken: cancellationToken);
+
+        await client.CallToolAsync(
+            "engram_recall",
+            new Dictionary<string, object?> { ["query"] = "first call" },
+            cancellationToken: cancellationToken);
+        await client.CallToolAsync(
+            "engram_recall",
+            new Dictionary<string, object?> { ["query"] = "second call" },
+            cancellationToken: cancellationToken);
+
+        var telemetryPath = Path.Combine(home, "telemetry.jsonl");
+        var lines = File.ReadAllLines(telemetryPath);
+
+        return lines
+            .Select(line => JsonDocument.Parse(line).RootElement.GetProperty("session_id").GetString()!)
+            .ToList();
+    }
+
     private static string ExtractText(CallToolResult result) =>
         string.Concat(result.Content.OfType<TextContentBlock>().Select(c => c.Text));
 }

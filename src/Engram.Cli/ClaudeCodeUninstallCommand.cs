@@ -12,15 +12,19 @@ internal static class ClaudeCodeUninstallCommand
             return 2;
         }
 
+        var settingsFreshness = JsonFileEditor.FileFreshness.Capture(settingsPath);
+
         if (!JsonFileEditor.TryReadObject(mcpConfigPath, out var mcpConfig, out var mcpError))
         {
             stderr.WriteLine($"error: {mcpConfigPath} contains invalid JSON and was not modified ({mcpError})");
             return 2;
         }
 
+        var mcpFreshness = JsonFileEditor.FileFreshness.Capture(mcpConfigPath);
+
         ClaudeCodeSettingsEditor.ApplyUninstall(settings);
         ClaudeMcpConfigEditor.ApplyUninstall(mcpConfig);
 
-        return ClaudeCodeFileWriter.Write(settingsPath, settings, mcpConfigPath, mcpConfig, dryRun, stdout);
+        return ClaudeCodeFileWriter.Write(settingsPath, settings, settingsFreshness, mcpConfigPath, mcpConfig, mcpFreshness, dryRun, stdout, stderr);
     }
 }
