@@ -41,8 +41,13 @@ or llama.cpp, so AOT's cold-start budget is preserved where it is actually spent
 Indexing tolerates a ~300 ms sidecar start amortized over a batch.
 
 Cost accepted: the release artifact is two binaries and "single file, no runtime"
-softens to *"single file for the core; optional features populate `~/.engram`."*
+softens to *"single file for the core; optional features populate the home directory."*
 A protocol version is embedded in both binaries; mismatch is a hard refusal.
+
+**Status: verified by measurement (2026-08-04).** See §1.5 — the AOT core is viable and
+the MCP SDK is AOT-clean, so no hand-rolled JSON-RPC fallback is needed. Roslyn itself
+was *not* tested under AOT; the sidecar stands on the general reflection/MSBuild
+argument, and is the one part of D1 still resting on reasoning rather than a number.
 
 > **Erratum (spec §5.2):** "AOT-compatible workspace loading" for Roslyn is not a real
 > thing. `MSBuildWorkspace` is MEF/reflection-driven and hostile to trimming. The
@@ -159,6 +164,98 @@ on that question. So the plan inserts an **M0 adoption probe** ahead of it, and 
 M3 (the most expensive milestone, and the one carrying the D1 sidecar risk) behind
 adoption data. See §3.
 
+### D7 — Isolation: nothing is ever hardcoded to the installed instance
+
+Every filesystem path in Engram derives from a single resolved **home root**, in this
+precedence order: `--home <path>` flag → `ENGRAM_HOME` env var → `~/.engram`. There is
+one resolver, and no other code may compute a path from `$HOME`.
+
+This makes a fully isolated instance a one-liner (`ENGRAM_HOME=/tmp/e1 engram init`) and
+makes every layer testable without risking the user's real memory:
+
+- **The installer takes explicit targets.** `engram install claude-code
+  --settings-path <file> --mcp-config <file>`, so a sandbox install writes hook and MCP
+  registration into a throwaway settings file, never `~/.claude/settings.json`. The
+  real paths are defaults, not assumptions.
+- **Integration tests each get a fresh temp home** and assert against real database
+  files, not mocks — temporal semantics and WAL concurrency cannot be honestly tested
+  against an in-memory fake.
+- **A hard test guard:** the test fixture refuses to run if the resolved home is the
+  real `~/.engram`, failing loudly rather than writing a byte. The failure mode here is
+  destroying the user's accumulated memory, so it gets a belt and braces.
+- **A lint test** scans the sources for hardcoded `.engram`, `$HOME`, and `~/.claude`
+  literals outside the one resolver and the one installer default, and fails the build.
+  This is the only thing that keeps the rule true after month one.
+- **End-to-end agent tests** additionally set `CLAUDE_CONFIG_DIR` to a temp directory,
+  so a test session's hooks, MCP registration, and transcripts are all disposable.
+
+Portability (spec §2.2, "copy the directory to move machines") falls out of the same
+resolver for free.
+
+### D8 — Diagnostics and repair, split along the derived/authored line
+
+The spec has `doctor` but no repair. Both ship, and the boundary between them is the
+one `compact` already uses: **derived state is repairable, authored truth is not.**
+
+`engram doctor` — read-only, exit code reflects severity, one screen of actionable
+output. Checks: `PRAGMA integrity_check`; FTS `'integrity-check'`; schema version vs.
+binary; orphan facts (subject with no entity) and orphan salience rows; facts closed
+with no `supersession` row and vice versa; `superseded_by` pointing at a missing fact;
+`fact.path` disagreeing with its subject entity's path; WAL size and last checkpoint;
+stale spool-queue entries; hook registration present *and* its binary path still valid;
+config lint; embedder state; facts well over the 60-token target.
+
+`engram repair` — **dry-run by default**, `--apply` to execute, and it snapshots the
+database first regardless. It may only rebuild what can be derived again: the FTS index
+(`INSERT INTO fact_fts(fact_fts) VALUES('rebuild')`), salience scores, `fact.path`
+re-derived from the owning entity, orphan salience rows, WAL checkpoint and VACUUM, and
+re-attaching a repo whose disk location moved.
+
+It may **never** create, alter, or delete a fact body, a predicate, a validity window,
+or a supersession row. If the only way to fix something is to invent or destroy a
+belief, `repair` reports it and stops — that is the user's decision, not the tool's. A
+database corrupted beyond that rule is a restore-from-backup situation, which is why
+`export` and the pre-repair snapshot exist.
+
+---
+
+## 1.5 Spike results (2026-08-04, measured)
+
+Three day-1 spikes, all on macOS arm64 / .NET SDK 10.0.301 / Apple clang 21. Every
+number below is measured, not estimated.
+
+**Spike A — AOT startup.** Publish succeeded, zero trim/AOT warnings.
+
+| | min | median | p95 | max | binary | publish dir |
+|---|---|---|---|---|---|---|
+| Native AOT | 2.82 ms | **3.44 ms** | 4.34 ms | 4.55 ms | 1.06 MB | 6.6 MB |
+| Self-contained, no AOT | 17.52 ms | 18.51 ms | 19.39 ms | 19.73 ms | 122 KB stub | 83 MB |
+
+The hook budget is < 100 ms cold and < 10 ms for `file-touched`. AOT clears both with an
+order of magnitude to spare; the non-AOT build would burn roughly twice the entire
+`file-touched` budget doing nothing but starting. **D1's premise holds.**
+
+**Spike B — MCP SDK under AOT.** `ModelContextProtocol` 2.0.0 with
+`Microsoft.Extensions.Hosting` 10.0.10. Publish succeeded with **zero IL2xxx/IL3xxx
+warnings**, confirmed non-collapsed (`TrimmerSingleWarn=false`, and the generated
+`ilc.rsp` suppresses only routine codes). `initialize`, `tools/list`, and `tools/call`
+all round-trip from the published binary. Independently re-verified: `Mach-O 64-bit
+executable arm64`, linking only system libraries with no .NET runtime in the output
+directory, returning `pong: hi`. Binary 10 MB. **The hand-rolled JSON-RPC fallback is
+not needed — use the SDK.**
+
+**Spike C — SQLite and the D3 FTS5 schema under AOT.** `Microsoft.Data.Sqlite` 10.0.10
+with `SQLitePCLRaw.bundle_e_sqlite3` 3.0.5, bundled SQLite **3.53.4**. Publish
+succeeded, zero warnings, binary 2.7 MB. All 11 assertions passed from the AOT binary —
+including the three that actually mattered: closing a fact via `valid_to` evicts it from
+the live lane (6), the `WHEN` guard stops a second close from double-deleting (8), and
+`'integrity-check'` stays clean after both a close and a hard delete (9, 10). Porter
+stemming, `bm25()`, and `snippet()` all work. **D3 ships as written.**
+
+Two build notes for the real projects: the 10 MB MCP binary sits comfortably inside the
+spec's 15–40 MB budget, and `.dSYM` bundles (39.8 MB for Spike B) must be kept out of
+release artifacts.
+
 ---
 
 ## 2. Riskiest assumption, and how it gets tested first
@@ -176,12 +273,14 @@ if it will, the rest of the build is justified.
 written.
 
 Secondary risks, in order:
-1. AOT publish breaks on a dependency (mitigated by an AOT smoke test in CI from day 1,
-   not at M3 when it would be expensive).
-2. The MCP C# SDK is not AOT-friendly (mitigated by a day-1 spike; fallback is a
-   hand-rolled stdio JSON-RPC loop, which is a small amount of code).
+1. ~~AOT publish breaks on a dependency~~ — **retired by Spike A/B/C** (§1.5). The CI
+   AOT smoke test still runs on every push to keep it retired.
+2. ~~The MCP C# SDK is not AOT-friendly~~ — **retired by Spike B** (§1.5): zero trim
+   warnings, full stdio round-trip from the published binary.
 3. Agent-written fact quality is poor enough that recall output is noise (visible in
    M0 telemetry; the response is tool-description and primer wording, not code).
+4. Roslyn under AOT — *untested*, and the reason D1 puts it in a sidecar. It is only
+   reached in M3, and the sidecar means a negative result costs nothing.
 
 ---
 
@@ -189,8 +288,10 @@ Secondary risks, in order:
 
 ### M0 — Adoption probe · ~1 week + 2 weeks of real use
 
-**M0.0 (days):** stub MCP server, ~30 hand-written canned facts, SessionStart primer
-hook, PreCompact digest nudge. No database. Purpose: answer §2's question.
+**M0.0 (days):** the home resolver and sandbox installer flags (D7) — these come first
+because every later line of code depends on them and retrofitting is expensive — then a
+stub MCP server, ~30 hand-written canned facts, SessionStart primer hook, PreCompact
+digest nudge. No database. Purpose: answer §2's question.
 
 **M0.1 (rest of week):** minimal real store behind the same tool surface — `entity`,
 `fact`, `supersession`, `session`, live-only FTS5, D4's four concurrency rules. Three
@@ -212,12 +313,15 @@ salience, the CLI surface, embeddings, any code indexing.
 
 Full §4.1 schema including `edge`, `salience`, `file_state`, `schema_meta`. Salience
 scoring (§4.4). `MoveSubtree` cascade (D2). Remaining MCP tools: `browse`, `expand`,
-`revise`, `forget`, `status`. Full CLI (§11) minus indexing/embedding verbs. `doctor`,
-`export`/`import`. Migration framework keyed on `schema_meta.schema_version`.
+`revise`, `forget`, `status`. Full CLI (§11) minus indexing/embedding verbs.
+`doctor` **and `repair`** (D8), `export`/`import`. Migration framework keyed on
+`schema_meta.schema_version`.
 
 **Exit:** the spec's own criterion — remember → recall → revise → history shows a
 reasoned chain — plus the D4 concurrency test (hook p99 under concurrent bulk write)
-passing.
+passing, and a corruption drill: deliberately damage the FTS index and a salience table
+in a sandbox home, confirm `doctor` names both and `repair --apply` fixes them with
+every fact body and supersession row bit-identical afterwards.
 
 ### M2 — Claude Code integration complete
 
@@ -281,6 +385,10 @@ Cross-cutting engineering rules, decided now because retrofitting them is expens
 - **No `EF Core`, no ORM.** Hand-written SQL against `Microsoft.Data.Sqlite`. It keeps
   the AOT surface small and the query plans visible, which is the whole point of the
   prefix-range-scan design.
+- **One home resolver, no exceptions** (D7). Paths come from it or they are a bug, and
+  a lint test enforces that. Every test runs against a disposable home.
+- **Every destructive operation is dry-run first.** `repair`, `compact`, `forget`, and
+  the installer all print what they would do and require an explicit flag to act.
 
 ---
 
@@ -299,20 +407,22 @@ Per work item:
 4. Anything ambiguous comes back to me as a decision, never guessed at downstream.
 
 Verification I will not accept on report alone: temporal correctness (supersession
-chains and `valid_to` closure), the D4 concurrency rules, and anything touching
+chains and `valid_to` closure), the D4 concurrency rules, the D7 isolation guarantees,
+`repair`'s promise never to touch authored facts, and anything touching
 `~/.claude/settings.json`.
 
 ---
 
 ## 6. Immediate next steps
 
-1. `git init`; add `.gitignore`, `Directory.Build.props` (net10.0, nullable, warnings
-   as errors), solution skeleton.
-2. Day-1 spikes, both cheap and both able to invalidate D1: **(a)** publish a
-   hello-world `engram` with Native AOT on osx-arm64 and measure cold start;
-   **(b)** stand up the MCP C# SDK under AOT and confirm a stdio round-trip, or fall
-   back to hand-rolled JSON-RPC.
-3. Build **M0.0**, the stub adoption probe, and start using it in real sessions.
+1. ~~`git init` and first commit~~ — **done**, pushed to a private `JimCline/engram`.
+2. ~~Day-1 spikes~~ — **done**, all three green (§1.5). D1 and D3 confirmed by
+   measurement; the MCP SDK is used directly, no fallback needed.
+3. Scaffold the solution: `Directory.Build.props` (net10.0, nullable, warnings as
+   errors), the projects from §4, and CI running build + tests + an AOT publish smoke
+   test on every push.
+4. Build **M0.0** — home resolver and sandbox install flags first (D7), then the stub
+   adoption probe — and start using it in real sessions.
 
 ---
 
