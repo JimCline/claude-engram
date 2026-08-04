@@ -319,6 +319,26 @@ window is the session that wrote it.
 - **They age by salience, never by deletion.** A year-old session note still exists; it
   simply stops outranking anything. This is what keeps the branch from turning recall
   into an archaeology dig.
+- **Subagents need their own primer, and it has a trap.** Spec §8 says subagent sharing
+  is "about provenance and scope, not transport" because subagents inherit the MCP
+  server. That is transport-correct and adoption-blind: **`SessionStart` hooks do not
+  fire for subagents**, so a subagent inherits the tools while knowing nothing about
+  them. Under D12 — where adoption needs intervention even for the main agent — a
+  subagent that never saw a primer will not write session memory, which is most of D11's
+  point. So the hook suite gains `SubagentStart`, emitting a compact primer naming the
+  session and the tools.
+
+  The trap, confirmed first-hand by this user across two of their own plugin repos:
+  **`SubagentStart` silently discards plain stdout**; only the
+  `hookSpecificOutput.additionalContext` envelope is delivered, with no error and no log
+  line. `SessionStart` accepts bare stdout, so the habit formed on one event actively
+  misleads on the other. Our `session-start` already emits the envelope, which means
+  nothing in our own code would have warned us.
+
+  Note also that two plugins must not both rewrite the `Agent` tool's input via
+  `PreToolUse` to reach subagents — that is undefined when both fire, whereas multiple
+  hooks' `additionalContext` on one event aggregates safely. `SubagentStart` is the
+  supported channel; input rewriting is not.
 
 The payoff is testable in a way the rest of the design is not: write a fact, get
 compacted, recall it. That is the tool visibly paying for itself inside a single
