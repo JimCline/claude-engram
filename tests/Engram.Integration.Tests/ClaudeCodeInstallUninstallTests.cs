@@ -467,6 +467,56 @@ public class ClaudeCodeInstallUninstallTests
     }
 
     [Fact]
+    public void Write_FirstRenameFails_LeavesNoTempFilesBehind()
+    {
+        using var dir = new TempDirectory();
+        var settingsPath = Path.Combine(dir.Path, "settings.json");
+        var mcpPath = Path.Combine(dir.Path, "mcp.json");
+        Directory.CreateDirectory(settingsPath);
+
+        var settingsFreshness = JsonFileEditor.FileFreshness.Capture(settingsPath);
+        var mcpFreshness = JsonFileEditor.FileFreshness.Capture(mcpPath);
+        JsonFileEditor.TryReadObject(settingsPath, out var settings, out _);
+        JsonFileEditor.TryReadObject(mcpPath, out var mcpConfig, out _);
+
+        var stderr = new StringWriter();
+        var exitCode = ClaudeCodeFileWriter.Write(
+            settingsPath, settings, settingsFreshness,
+            mcpPath, mcpConfig, mcpFreshness,
+            dryRun: false, new StringWriter(), stderr);
+
+        Assert.Equal(2, exitCode);
+        Assert.Contains($"could not update {settingsPath}", stderr.ToString());
+        Assert.Empty(Directory.GetFiles(dir.Path, "*.tmp", SearchOption.AllDirectories));
+    }
+
+    [Fact]
+    public void Write_SecondRenameFails_CommitsFirstFile_AndLeavesNoTempFilesBehind()
+    {
+        using var dir = new TempDirectory();
+        var settingsPath = Path.Combine(dir.Path, "settings.json");
+        var mcpPath = Path.Combine(dir.Path, "mcp.json");
+        Directory.CreateDirectory(mcpPath);
+
+        var settingsFreshness = JsonFileEditor.FileFreshness.Capture(settingsPath);
+        var mcpFreshness = JsonFileEditor.FileFreshness.Capture(mcpPath);
+        JsonFileEditor.TryReadObject(settingsPath, out var settings, out _);
+        JsonFileEditor.TryReadObject(mcpPath, out var mcpConfig, out _);
+
+        var stderr = new StringWriter();
+        var exitCode = ClaudeCodeFileWriter.Write(
+            settingsPath, settings, settingsFreshness,
+            mcpPath, mcpConfig, mcpFreshness,
+            dryRun: false, new StringWriter(), stderr);
+
+        Assert.Equal(2, exitCode);
+        Assert.Contains($"{settingsPath} was updated but {mcpPath} was not", stderr.ToString());
+        Assert.True(File.Exists(settingsPath));
+        Assert.Equal(JsonFileEditor.ToIndentedJson(settings), File.ReadAllText(settingsPath));
+        Assert.Empty(Directory.GetFiles(dir.Path, "*.tmp", SearchOption.AllDirectories));
+    }
+
+    [Fact]
     public void Install_TenConcurrentInstalls_NoUnhandledException_AndSettingsHasExactlyOneEntryPerEvent()
     {
         using var dir = new TempDirectory();

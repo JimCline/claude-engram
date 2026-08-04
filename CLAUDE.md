@@ -18,6 +18,13 @@ disposable home. `SandboxHome` refuses to construct against the real one, and an
 assembly fixture redirects `ENGRAM_HOME` for the whole test run. Anything writing to
 `~/.claude` in a test is a bug regardless of whether the test passes.
 
+**Set `ENGRAM_HOME` before invoking the published binary by hand.** Those three guards
+protect *test code*. They do not constrain a shell running `./out/engram ...`, which
+resolves the default home and writes there — correctly, since that is its production
+behavior. A verification command that omits `ENGRAM_HOME` will litter the real
+`~/.engram`; this has already happened once. Pass `--home` or export `ENGRAM_HOME`
+first, every time, including in ad-hoc checks.
+
 **Facts are append-only.** Belief content — predicate, body, object, validity — is
 immutable once written. Only `valid_to` and `superseded_by` are ever updated, and only
 to close a fact. `path` is the sole exception: it is addressing metadata that follows
