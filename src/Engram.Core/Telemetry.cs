@@ -10,6 +10,7 @@ public static class TelemetryEventKind
     public const string Remember = "remember";
     public const string Digest = "digest";
     public const string SessionStart = "session-start";
+    public const string ServerStart = "server-start";
     public const string PreCompact = "pre-compact";
     public const string FileTouched = "file-touched";
 }
@@ -41,10 +42,12 @@ public static class Telemetry
     // the same gap between threads in *this* process, which don't get that refusal from the OS.
     private static readonly object AppendLock = new();
 
+    public static string ResolvePath(EngramHome home) => Path.Combine(home.Root, TelemetryFileName);
+
     public static void Append(EngramHome home, TelemetryRecord record)
     {
         var payload = BuildPayload(record);
-        var path = Path.Combine(home.Root, TelemetryFileName);
+        var path = ResolvePath(home);
 
         lock (AppendLock)
         {

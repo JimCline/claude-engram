@@ -18,6 +18,11 @@ internal static class McpCommand
         var home = EngramHome.ResolveFromProcess(homePath);
         var session = new McpSessionId(Guid.NewGuid().ToString("N"));
 
+        Telemetry.Append(home, new TelemetryRecord(
+            Timestamp: DateTime.UtcNow.ToString("o"),
+            SessionId: session.Value,
+            Kind: TelemetryEventKind.ServerStart));
+
         var builder = Host.CreateApplicationBuilder([]);
         builder.Logging.AddConsole(options => options.LogToStandardErrorThreshold = LogLevel.Trace);
         builder.Services.AddSingleton(home);

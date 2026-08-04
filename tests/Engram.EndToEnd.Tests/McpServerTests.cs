@@ -64,7 +64,8 @@ public class McpServerTests
             .Select(line => JsonDocument.Parse(line).RootElement.GetProperty("kind").GetString())
             .ToList();
 
-        Assert.Equal(4, kinds.Count);
+        Assert.Equal(5, kinds.Count);
+        Assert.Equal(1, kinds.Count(k => k == "server-start"));
         Assert.Equal(2, kinds.Count(k => k == "recall"));
         Assert.Equal(1, kinds.Count(k => k == "remember"));
         Assert.Equal(1, kinds.Count(k => k == "digest"));
@@ -116,7 +117,9 @@ public class McpServerTests
         var lines = File.ReadAllLines(telemetryPath);
 
         return lines
-            .Select(line => JsonDocument.Parse(line).RootElement.GetProperty("session_id").GetString()!)
+            .Select(line => JsonDocument.Parse(line).RootElement)
+            .Where(element => element.GetProperty("kind").GetString() == "recall")
+            .Select(element => element.GetProperty("session_id").GetString()!)
             .ToList();
     }
 

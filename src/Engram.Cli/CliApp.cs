@@ -42,6 +42,7 @@ public static class CliApp
             "uninstall" => RunClaudeCodeVerb(rest, install: false, stdout, stderr),
             "mcp" => McpCommand.Run(homePath, rest, stdout, stderr),
             "hook" => HookCommand.Run(homePath, rest, stdout, stderr),
+            "probe" => ProbeCommand.Run(homePath, rest, stdout, stderr),
             _ => Usage(stderr),
         };
     }
@@ -124,10 +125,15 @@ public static class CliApp
         writer.WriteLine("  uninstall claude-code [options]   remove Claude Code hooks and MCP server registration");
         writer.WriteLine("  mcp                                run the MCP server on stdio");
         writer.WriteLine("  hook <event>                       hook entrypoint: session-start|pre-compact|file-touched");
+        writer.WriteLine("  probe [options]                    summarize telemetry.jsonl for the M0 adoption probe");
         writer.WriteLine();
         writer.WriteLine("install/uninstall claude-code options:");
         writer.WriteLine("  --settings-path <file>            settings file to modify (defaults to the user's Claude Code settings)");
         writer.WriteLine("  --mcp-config <file>                JSON file holding MCP server registrations");
         writer.WriteLine("  --dry-run                          print the resulting JSON without writing anything");
+        writer.WriteLine();
+        writer.WriteLine("probe options:");
+        writer.WriteLine("  --json                             emit the summary as a JSON object instead of text");
+        writer.WriteLine("  --since <n>d                       only consider records from the last n days, e.g. --since 7d");
     }
 }
