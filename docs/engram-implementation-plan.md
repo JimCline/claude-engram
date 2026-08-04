@@ -277,6 +277,70 @@ Cross-platform matters too: the spec promises four RIDs, so CI runs the full sui
 osx-arm64 and linux-x64 at minimum. A test that only ever ran on the author's Mac is a
 claim, not evidence.
 
+### D10 — Zero manual init is a goal, not a side effect
+
+A primary reason this tool exists rather than an existing one is that memory must
+accrue without the user ever running an init command for a repository. The spec already
+has the machinery — SessionStart-triggered indexing, `auto_index_on_session_start`, a
+registry keyed on normalized git remote so a moved or re-cloned checkout reattaches —
+but it describes them as implementation detail. They are the requirement.
+
+Stated properly: **an unfamiliar repository must become useful memory with no user
+action, ever.** That has a consequence worth naming, because it is the cost of the
+virtue: a tool that indexes every repository you happen to open will accumulate memory
+about repositories you looked at once and never think about again. Manual init is at
+least a deliberate judgment about what deserves remembering; removing it means Engram
+owns that judgment. So zero-init requires a matching opt-*out* — a per-repo ignore that
+is one command and is honoured by the registry, plus `compact --path` to discard a
+branch that turned out not to matter.
+
+### D11 — Session memory: what the model would otherwise hold in context
+
+Long-term memory is not the only thing missing from existing tools. The model also
+needs somewhere to put **working state it would otherwise carry in context and lose** —
+to compaction, or to a subagent that returns an incomplete report, or to a subagent that
+dies. This is durable and later recallable like any other fact, but its primary read
+window is the session that wrote it.
+
+- **A new root, `/sessions/<session-id>/…`,** with subagent-written facts one level
+  deeper at `/sessions/<session-id>/<agent>/…`. `[taxonomy] roots` is config, so this
+  costs a config line and routing rules; the schema does not move.
+- **Keyed on the MCP server's session id.** §1.5's research established that the
+  server's process lifetime is exactly one Claude Code session, and subagents share the
+  parent's MCP connection — so they write under the same session key by construction.
+  Spec §8's `via_subagent` marker stops being provenance decoration and becomes the
+  thing that distinguishes which worker learned what.
+- **Recall needs a session lane.** Facts under the current session outrank everything
+  else by default. Working memory that competes on equal terms with a year of project
+  memory is not working memory.
+- **A different distillation bar.** *"Checked the WAL-starvation theory, not the cause"*
+  is a legitimate working note and not a ≤ 60-token durable truth. Session facts are
+  exempt from the distillation target, though not from the recall token budget.
+- **They age by salience, never by deletion.** A year-old session note still exists; it
+  simply stops outranking anything. This is what keeps the branch from turning recall
+  into an archaeology dig.
+
+The payoff is testable in a way the rest of the design is not: write a fact, get
+compacted, recall it. That is the tool visibly paying for itself inside a single
+session, rather than a bet on value that only materializes next week.
+
+### Reading the M0 numbers honestly
+
+Two documented behaviours distort the adoption metric, and both must be known before
+anyone concludes anything from it.
+
+**A crashed server is invisible.** Claude Code does not automatically reconnect stdio
+MCP servers. `server-start` has already been recorded by the time a crash happens, so a
+session whose server died halfway looks exactly like a session where the agent stopped
+bothering. Low adoption is therefore not evidence of disinterest until a crash has been
+ruled out — and optimizing primer wording for a process that was not running is a very
+easy way to waste a fortnight.
+
+**Web sessions may start servers lazily.** The eager-start guarantee that makes
+`server-start` a valid denominator is documented for interactive local sessions. A web
+session can start a plugin server on demand after an idle wake, which would under-count.
+The probe reports MCP and hook session counts separately partly for this reason.
+
 ---
 
 ## PreCompact cannot inject context
