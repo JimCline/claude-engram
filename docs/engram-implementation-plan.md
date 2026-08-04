@@ -324,6 +324,68 @@ The payoff is testable in a way the rest of the design is not: write a fact, get
 compacted, recall it. That is the tool visibly paying for itself inside a single
 session, rather than a bet on value that only materializes next week.
 
+### D12 — Adoption evidence from two sibling tools already on this machine
+
+Both were inspected directly (2026-08-04). The findings bear on the spec's central
+premise more than anything else in this plan.
+
+**Structured authoring is the part that goes unused.** MemPalace holds 67,936 drawers of
+unstructured capture. Its knowledge graph — append-only facts, supersession,
+invalidation, timeline, i.e. structurally the closest analogue to *all of Engram §4* —
+reports `{entities: 0, triples: 0, current_facts: 0, expired_facts: 0}`. Never called
+once, in a mature installation, despite the tool embedding its own usage protocol in
+every response. Meanwhile its "diary" room is the only room present in all 18 wings,
+including wings whose entire contents are diary entries.
+
+Set beside Codebase-Memory — auto-indexed, asks nothing of the model, 41 projects and up
+to 112k edges — a mechanism appears:
+
+| Asks of the model | Example | Usage |
+|---|---|---|
+| Nothing | auto-indexed code graph | heavy |
+| Almost nothing | freeform diary note | universal |
+| Distill, pick a predicate, justify a revision | structured fact + supersession | **zero** |
+
+**Adoption appears inversely proportional to what the tool demands of the model**, and
+Engram's authoring path is the most demanding of the three. This does not make the design
+wrong, but it moves the riskiest assumption: *"will the agent call recall"* is the
+question M0 was built to answer, and *"will the agent author structured facts"* is
+probably the harder one. Both must be measured separately — a tool can look adopted in
+aggregate while its authored core sits at zero. The probe already reports recall,
+remember, and digest independently; that separation is load-bearing, not cosmetic.
+
+**Every memory tool on this machine needed an external intervention to get used.**
+Verified from `~/.claude/settings.json`: the only configured hooks are a SessionStart
+reminder and a `PreToolUse` **gate that blocks `Grep|Glob`** until memory is consulted —
+both hand-built for Codebase-Memory. MemPalace ships only capture hooks
+(`Stop`/`SessionEnd`/`PreCompact`), no injection, which is why the user's global
+`CLAUDE.md` carries a hand-written instruction to search it before answering.
+
+Spec §6.3 states the primer "is the reason the LLM actually uses the tools." That is a
+hypothesis, and the evidence here says it is probably insufficient on its own. The
+intervention that demonstrably worked is the strongest one: a hard gate. So M0 should
+baseline primer-only *first* — a clean measurement of the weakest lever — and treat a
+`PreToolUse` gate as a planned, already-proven escalation rather than a last resort. The
+spec text should be softened to match the plan's own skepticism.
+
+**Three of our decisions are confirmed by other people's production scars**, which is
+the cheapest possible validation:
+
+- A **writer-lease** design produced exactly the liveness bugs D4 predicted, across five
+  patch rounds, plus a hook that deadlocked against an open database client and left the
+  host waiting on it. D4 rejected leases and forbade hooks touching the database; treat
+  that as a validated prediction rather than a hypothetical.
+- **Hardcoded and singleton path bugs** hit production three separate ways — a module
+  singleton reading the wrong database under a rotating path, a hardcoded filename
+  ignoring configured path, and symlinked/case-variant paths producing duplicate caches.
+  D7's lint test is the mechanical check that catches that class at build time.
+- A **contradiction detector documented as live but never wired up** was caught by public
+  audit. D5 cut ours and said so; that is the right shape.
+
+One place we are already better and should protect it: Codebase-Memory's `index_status`
+returns no timestamp and no freshness signal at all. Engram's `file_state.blob_sha` /
+`indexed_at` design (§5.3) is a genuine improvement over a real, actively used tool.
+
 ### Reading the M0 numbers honestly
 
 Two documented behaviours distort the adoption metric, and both must be known before
