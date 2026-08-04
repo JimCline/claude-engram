@@ -6,10 +6,10 @@ public class RecallEngineTests
 {
     private static readonly IReadOnlyList<CannedFact> Facts =
     [
-        new("f001", "aot-packaging", "measured", "Native AOT publish is zero-warning for the MCP SDK.", "code", 0),
-        new("f002", "aot-packaging", "decided", "The core stays AOT; Roslyn ships as a sidecar.", "project", 0),
-        new("f003", "roslyn-sidecar", "decided", "Roslyn never opens the database directly.", "project", 0),
-        new("f004", "unrelated-topic", "states", "Salience recomputes lazily on read.", "code", 0),
+        new("f001", "aot-packaging", "measured", "Native AOT publish is zero-warning for the MCP SDK.", "code", "topic", 0),
+        new("f002", "aot-packaging", "decided", "The core stays AOT; Roslyn ships as a sidecar.", "project", "topic", 0),
+        new("f003", "roslyn-sidecar", "decided", "Roslyn never opens the database directly.", "project", "topic", 0),
+        new("f004", "unrelated-topic", "states", "Salience recomputes lazily on read.", "code", "topic", 0),
     ];
 
     [Fact]
@@ -81,7 +81,7 @@ public class RecallEngineTests
     public void Pack_TruncatesToBudget_NeverExceedingIt()
     {
         var manyFacts = Enumerable.Range(1, 20)
-            .Select(i => new CannedFact($"f{i:D3}", "aot-packaging", "decided", $"AOT packaging fact number {i} about roslyn sidecars.", "project", 0))
+            .Select(i => new CannedFact($"f{i:D3}", "aot-packaging", "decided", $"AOT packaging fact number {i} about roslyn sidecars.", "project", "topic", 0))
             .ToList();
 
         var result = RecallEngine.Pack("aot packaging roslyn", manyFacts, budgetTokens: 50);
@@ -115,8 +115,8 @@ public class RecallEngineTests
     {
         var stopwordFacts = new List<CannedFact>
         {
-            new("f101", "topic-a", "states", "Hooks and plugins interact through the settings file.", "user", 0),
-            new("f102", "topic-b", "states", "The settings file is read at startup and cached.", "user", 0),
+            new("f101", "topic-a", "states", "Hooks and plugins interact through the settings file.", "user", "topic", 0),
+            new("f102", "topic-b", "states", "The settings file is read at startup and cached.", "user", "topic", 0),
         };
 
         var ranked = RecallEngine.Rank("hooks and plugins", stopwordFacts);
@@ -139,7 +139,7 @@ public class RecallEngineTests
     {
         var longTermFacts = new List<CannedFact>
         {
-            new("f900", "wal-starvation", "decided", "WAL starvation retry backoff decided after incident review.", "project", 0),
+            new("f900", "wal-starvation", "decided", "WAL starvation retry backoff decided after incident review.", "project", "topic", 0),
         };
         var sessionFacts = new List<SessionFactRecord>
         {
@@ -210,7 +210,7 @@ public class RecallEngineTests
     {
         var longTermFacts = new List<CannedFact>
         {
-            new("f900", "storage-engine", "states", "The WAL is flushed to disk before commit.", "code", 0),
+            new("f900", "storage-engine", "states", "The WAL is flushed to disk before commit.", "code", "topic", 0),
         };
         var priorSessionFacts = new List<SessionFactRecord>
         {

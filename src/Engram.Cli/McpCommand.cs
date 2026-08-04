@@ -17,16 +17,21 @@ internal static class McpCommand
 
         var home = EngramHome.ResolveFromProcess(homePath);
         var session = new McpSessionId(Guid.NewGuid().ToString("N"));
+        var homeState = new McpHomeState(File.Exists(home.ConfigPath));
 
-        Telemetry.Append(home, new TelemetryRecord(
-            Timestamp: DateTime.UtcNow.ToString("o"),
-            SessionId: session.Value,
-            Kind: TelemetryEventKind.ServerStart));
+        if (homeState.Initialized)
+        {
+            Telemetry.Append(home, new TelemetryRecord(
+                Timestamp: DateTime.UtcNow.ToString("o"),
+                SessionId: session.Value,
+                Kind: TelemetryEventKind.ServerStart));
+        }
 
         var builder = Host.CreateApplicationBuilder([]);
         builder.Logging.AddConsole(options => options.LogToStandardErrorThreshold = LogLevel.Trace);
         builder.Services.AddSingleton(home);
         builder.Services.AddSingleton(session);
+        builder.Services.AddSingleton(homeState);
         builder.Services.AddMcpServer()
             .WithStdioServerTransport()
             .WithTools<EngramMcpTools>();

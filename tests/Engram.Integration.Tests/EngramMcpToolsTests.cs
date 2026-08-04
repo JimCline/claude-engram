@@ -4,15 +4,17 @@ namespace Engram.Integration.Tests;
 
 public class EngramMcpToolsTests
 {
+    private static readonly McpHomeState Initialized = new(true);
+
     [Fact]
     public void Remember_ThenRecallSameSession_ReturnsTheFactWithASessionHandle()
     {
         using var sandbox = new SandboxHome();
         var session = new McpSessionId("session-a");
 
-        EngramMcpTools.Remember(sandbox.Home, session, "The build pipeline retries flaky uploads three times before failing.");
+        EngramMcpTools.Remember(sandbox.Home, session, Initialized, "The build pipeline retries flaky uploads three times before failing.");
 
-        var result = EngramMcpTools.Recall(sandbox.Home, session, "flaky uploads retries");
+        var result = EngramMcpTools.Recall(sandbox.Home, session, Initialized, "flaky uploads retries");
 
         Assert.Contains("[s001]", result);
         Assert.Contains("flaky uploads", result);
@@ -25,9 +27,9 @@ public class EngramMcpToolsTests
         var writer = new McpSessionId("session-a");
         var reader = new McpSessionId("session-b");
 
-        EngramMcpTools.Remember(sandbox.Home, writer, "The build pipeline retries flaky uploads three times before failing.");
+        EngramMcpTools.Remember(sandbox.Home, writer, Initialized, "The build pipeline retries flaky uploads three times before failing.");
 
-        var result = EngramMcpTools.Recall(sandbox.Home, reader, "flaky uploads retries");
+        var result = EngramMcpTools.Recall(sandbox.Home, reader, Initialized, "flaky uploads retries");
 
         Assert.DoesNotContain("[s001]", result);
         Assert.Contains("[s001@p1]", result);
@@ -42,10 +44,10 @@ public class EngramMcpToolsTests
         var priorSession = new McpSessionId("session-old");
         var currentSession = new McpSessionId("session-new");
 
-        EngramMcpTools.Remember(sandbox.Home, priorSession, "The nightly backup job runs at 2am UTC.");
-        EngramMcpTools.Remember(sandbox.Home, currentSession, "The nightly backup job now also verifies checksums.");
+        EngramMcpTools.Remember(sandbox.Home, priorSession, Initialized, "The nightly backup job runs at 2am UTC.");
+        EngramMcpTools.Remember(sandbox.Home, currentSession, Initialized, "The nightly backup job now also verifies checksums.");
 
-        var result = EngramMcpTools.Recall(sandbox.Home, currentSession, "nightly backup job");
+        var result = EngramMcpTools.Recall(sandbox.Home, currentSession, Initialized, "nightly backup job");
 
         var currentHandleIndex = result.IndexOf("[s001] ", StringComparison.Ordinal);
         var priorHandleIndex = result.IndexOf("[s001@p1]", StringComparison.Ordinal);
@@ -65,7 +67,7 @@ public class EngramMcpToolsTests
         Directory.CreateDirectory(sessionsDir);
         File.WriteAllText(Path.Combine(sessionsDir, "session-corrupt.jsonl"), "{not valid json at all\n");
 
-        var result = EngramMcpTools.Recall(sandbox.Home, session, "anything at all");
+        var result = EngramMcpTools.Recall(sandbox.Home, session, Initialized, "anything at all");
 
         Assert.Contains("RECALL", result);
     }
@@ -76,7 +78,7 @@ public class EngramMcpToolsTests
         using var sandbox = new SandboxHome();
         var session = new McpSessionId("session-a");
 
-        var response = EngramMcpTools.Remember(sandbox.Home, session, "Statement one.");
+        var response = EngramMcpTools.Remember(sandbox.Home, session, Initialized, "Statement one.");
 
         Assert.Contains("[s001]", response);
     }
@@ -87,10 +89,22 @@ public class EngramMcpToolsTests
         using var sandbox = new SandboxHome();
         var session = new McpSessionId("session-a");
 
-        EngramMcpTools.Remember(sandbox.Home, session, "Ran the migration dry-run against staging.", agent: "migration-worker");
+        EngramMcpTools.Remember(sandbox.Home, session, Initialized, "Ran the migration dry-run against staging.", agent: "migration-worker");
 
-        var result = EngramMcpTools.Recall(sandbox.Home, session, "migration dry-run staging");
+        var result = EngramMcpTools.Recall(sandbox.Home, session, Initialized, "migration dry-run staging");
 
         Assert.Contains("session · migration-worker", result);
+    }
+
+    [Fact]
+    public void Remember_UninitialisedHome_DoesNotPersistAndCreatesNoSessionFile()
+    {
+        using var sandbox = new SandboxHome(initialize: false);
+        var session = new McpSessionId("session-a");
+
+        var response = EngramMcpTools.Remember(sandbox.Home, session, new McpHomeState(false), "Statement one.");
+
+        Assert.DoesNotContain("[s001]", response);
+        Assert.False(Directory.Exists(Path.Combine(sandbox.Home.Root, "sessions")));
     }
 }

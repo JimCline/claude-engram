@@ -24,7 +24,7 @@ public class HookCommandTests
     }
 
     [Fact]
-    public void SessionStart_MissingHomeDirectory_StillExitsZeroAndEmitsJson()
+    public void SessionStart_MissingHomeDirectory_ExitsZeroAndWritesNothing()
     {
         using var sandbox = new SandboxHome();
         Directory.Delete(sandbox.Home.Root, recursive: true);
@@ -34,8 +34,41 @@ public class HookCommandTests
         var exitCode = CliApp.Run(["--home", sandbox.Home.Root, "hook", "session-start"], stdout, stderr);
 
         Assert.Equal(0, exitCode);
-        using var doc = JsonDocument.Parse(stdout.ToString());
-        Assert.Equal("SessionStart", doc.RootElement.GetProperty("hookSpecificOutput").GetProperty("hookEventName").GetString());
+        Assert.Equal(string.Empty, stdout.ToString());
+        Assert.Equal(string.Empty, stderr.ToString());
+    }
+
+    [Fact]
+    public void SessionStart_InitialisedHome_RecordsTelemetry()
+    {
+        using var sandbox = new SandboxHome();
+
+        var exitCode = CliApp.Run(["--home", sandbox.Home.Root, "hook", "session-start"], new StringWriter(), new StringWriter());
+
+        Assert.Equal(0, exitCode);
+        var telemetryPath = Path.Combine(sandbox.Home.Root, "telemetry.jsonl");
+        Assert.True(File.Exists(telemetryPath));
+        Assert.Contains("\"kind\":\"session-start\"", File.ReadAllText(telemetryPath));
+    }
+
+    [Fact]
+    public void UninitialisedHome_AllHookEvents_ExitZeroSilentlyAndCreateNoFiles()
+    {
+        using var sandbox = new SandboxHome(initialize: false);
+
+        foreach (var eventName in new[] { "session-start", "file-touched", "pre-compact" })
+        {
+            var stdout = new StringWriter();
+            var stderr = new StringWriter();
+
+            var exitCode = CliApp.Run(["--home", sandbox.Home.Root, "hook", eventName], stdout, stderr);
+
+            Assert.Equal(0, exitCode);
+            Assert.Equal(string.Empty, stdout.ToString());
+            Assert.Equal(string.Empty, stderr.ToString());
+        }
+
+        Assert.Empty(Directory.GetFileSystemEntries(sandbox.Home.Root));
     }
 
     [Fact]

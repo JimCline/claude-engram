@@ -6,7 +6,7 @@ public sealed class SandboxHome : IDisposable
 {
     public EngramHome Home { get; }
 
-    public SandboxHome()
+    public SandboxHome(bool initialize = true)
     {
         var userProfileDirectory = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
         var tempRoot = Path.Combine(Path.GetTempPath(), "engram-sandbox-" + Guid.NewGuid().ToString("N"));
@@ -14,7 +14,15 @@ public sealed class SandboxHome : IDisposable
 
         ThrowIfRealHome(home.Root, userProfileDirectory);
 
-        Directory.CreateDirectory(home.Root);
+        if (initialize)
+        {
+            EngramInitializer.Initialize(home);
+        }
+        else
+        {
+            Directory.CreateDirectory(home.Root);
+        }
+
         Home = home;
     }
 

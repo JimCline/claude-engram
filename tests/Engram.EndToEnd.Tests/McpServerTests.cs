@@ -72,6 +72,35 @@ public class McpServerTests
     }
 
     [Fact]
+    public async Task McpServer_UninitialisedHome_StillAnswersInitializeAndListTools_WritesNoTelemetryFile()
+    {
+        Assert.SkipUnless(EndToEndBinary.Path is not null, EndToEndBinary.SkipReason);
+
+        using var home = new TestHome(initialize: false);
+
+        var transport = new StdioClientTransport(new()
+        {
+            Name = "engram-e2e-test-uninitialised",
+            Command = EndToEndBinary.Path!,
+            Arguments = ["mcp"],
+            InheritEnvironmentVariables = true,
+            EnvironmentVariables = new Dictionary<string, string?> { ["ENGRAM_HOME"] = home.Root },
+        });
+
+        var cancellationToken = TestContext.Current.CancellationToken;
+
+        await using var client = await McpClient.CreateAsync(transport, cancellationToken: cancellationToken);
+
+        var tools = await client.ListToolsAsync(cancellationToken: cancellationToken);
+        Assert.Equal(
+            ["engram_digest", "engram_recall", "engram_remember"],
+            tools.Select(t => t.Name).OrderBy(name => name, StringComparer.Ordinal));
+
+        var telemetryPath = Path.Combine(home.Root, "telemetry.jsonl");
+        Assert.False(File.Exists(telemetryPath));
+    }
+
+    [Fact]
     public async Task McpServer_SessionId_SharedWithinProcess_DifferentAcrossProcesses()
     {
         Assert.SkipUnless(EndToEndBinary.Path is not null, EndToEndBinary.SkipReason);

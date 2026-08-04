@@ -6,6 +6,8 @@ namespace Engram.Cli;
 
 public sealed record McpSessionId(string Value);
 
+public sealed record McpHomeState(bool Initialized);
+
 [McpServerToolType]
 public sealed class EngramMcpTools
 {
@@ -19,6 +21,7 @@ public sealed class EngramMcpTools
     public static string Recall(
         EngramHome home,
         McpSessionId session,
+        McpHomeState homeState,
         [Description("What you want to know, as a few keywords or a short question.")] string query,
         [Description("Maximum tokens to spend on the response. Defaults to 500.")] int? budget_tokens = null)
     {
@@ -27,17 +30,20 @@ public sealed class EngramMcpTools
         var priorSessionFacts = SessionFactStore.ReadAllExcept(home, session.Value);
         var result = RecallEngine.Pack(query, CannedFacts.All, currentSessionFacts, priorSessionFacts, budget);
 
-        Telemetry.Append(home, new TelemetryRecord(
-            Timestamp: DateTime.UtcNow.ToString("o"),
-            SessionId: session.Value,
-            Kind: TelemetryEventKind.Recall,
-            Query: query,
-            FactCount: result.FactCount,
-            TokensReturned: result.TokensUsed,
-            Coverage: RecallEngine.ToText(result.Coverage),
-            SessionFactCount: result.SessionFactCount,
-            LongTermFactCount: result.LongTermFactCount,
-            PriorSessionFactCount: result.PriorSessionFactCount));
+        if (homeState.Initialized)
+        {
+            Telemetry.Append(home, new TelemetryRecord(
+                Timestamp: DateTime.UtcNow.ToString("o"),
+                SessionId: session.Value,
+                Kind: TelemetryEventKind.Recall,
+                Query: query,
+                FactCount: result.FactCount,
+                TokensReturned: result.TokensUsed,
+                Coverage: RecallEngine.ToText(result.Coverage),
+                SessionFactCount: result.SessionFactCount,
+                LongTermFactCount: result.LongTermFactCount,
+                PriorSessionFactCount: result.PriorSessionFactCount));
+        }
 
         return result.Text;
     }
@@ -54,11 +60,17 @@ public sealed class EngramMcpTools
     public static string Remember(
         EngramHome home,
         McpSessionId session,
+        McpHomeState homeState,
         [Description("The fact to remember, as a short, self-contained statement.")] string statement,
         [Description("What or who the fact is about, if not obvious from the statement.")] string? subject = null,
         [Description("Where this was learned — a file path, PR, or command output.")] string? evidence = null,
         [Description("Your own name, if you are a subagent recording this fact rather than the main agent.")] string? agent = null)
     {
+        if (!homeState.Initialized)
+        {
+            return "Engram home is not initialised (run 'engram init'); this statement was not saved.";
+        }
+
         var handle = SessionFactStore.Append(home, session.Value, statement, subject, evidence, agent);
 
         Telemetry.Append(home, new TelemetryRecord(
@@ -81,6 +93,7 @@ public sealed class EngramMcpTools
     public static string Digest(
         EngramHome home,
         McpSessionId session,
+        McpHomeState homeState,
         [Description("Up to 25 short, self-contained facts learned this session.")] string[] learnings,
         [Description("A one- or two-sentence summary of the session.")] string? session_summary = null)
     {
@@ -88,10 +101,13 @@ public sealed class EngramMcpTools
         var counted = Math.Min(total, 25);
         var overflow = total - counted;
 
-        Telemetry.Append(home, new TelemetryRecord(
-            Timestamp: DateTime.UtcNow.ToString("o"),
-            SessionId: session.Value,
-            Kind: TelemetryEventKind.Digest));
+        if (homeState.Initialized)
+        {
+            Telemetry.Append(home, new TelemetryRecord(
+                Timestamp: DateTime.UtcNow.ToString("o"),
+                SessionId: session.Value,
+                Kind: TelemetryEventKind.Digest));
+        }
 
         var summaryNote = string.IsNullOrWhiteSpace(session_summary) ? string.Empty : $" Summary noted: \"{session_summary}\"";
         var overflowNote = overflow > 0 ? $" ({overflow} additional learning(s) beyond the 25-cap were ignored.)" : string.Empty;

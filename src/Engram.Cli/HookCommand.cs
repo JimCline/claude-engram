@@ -13,12 +13,33 @@ internal static class HookCommand
             return 1;
         }
 
-        return rest[0] switch
+        var eventName = rest[0];
+        if (eventName is not ("session-start" or "pre-compact" or "file-touched"))
         {
-            "session-start" => RunSessionStart(homePath, stdout),
-            "pre-compact" => RunPreCompact(homePath),
-            "file-touched" => RunFileTouched(homePath),
-            _ => Usage(stderr),
+            return Usage(stderr);
+        }
+
+        EngramHome home;
+        try
+        {
+            home = EngramHome.ResolveFromProcess(homePath);
+        }
+        catch
+        {
+            return 0;
+        }
+
+        if (!File.Exists(home.ConfigPath))
+        {
+            return 0;
+        }
+
+        return eventName switch
+        {
+            "session-start" => RunSessionStart(home, stdout),
+            "pre-compact" => RunPreCompact(home),
+            "file-touched" => RunFileTouched(home),
+            _ => 0,
         };
     }
 
@@ -28,14 +49,13 @@ internal static class HookCommand
         return 1;
     }
 
-    private static int RunSessionStart(string? homePath, TextWriter stdout)
+    private static int RunSessionStart(EngramHome home, TextWriter stdout)
     {
-        var primer = PrimerBuilder.Build(CannedFacts.All);
         var sessionId = ResolveSessionId();
+        var primer = PrimerBuilder.Build(CannedFacts.All);
 
         try
         {
-            var home = EngramHome.ResolveFromProcess(homePath);
             Telemetry.Append(home, new TelemetryRecord(
                 Timestamp: DateTime.UtcNow.ToString("o"),
                 SessionId: sessionId,
@@ -50,13 +70,12 @@ internal static class HookCommand
         return 0;
     }
 
-    private static int RunPreCompact(string? homePath)
+    private static int RunPreCompact(EngramHome home)
     {
         var sessionId = ResolveSessionId();
 
         try
         {
-            var home = EngramHome.ResolveFromProcess(homePath);
             Telemetry.Append(home, new TelemetryRecord(
                 Timestamp: DateTime.UtcNow.ToString("o"),
                 SessionId: sessionId,
@@ -96,11 +115,10 @@ internal static class HookCommand
         return Guid.NewGuid().ToString("N");
     }
 
-    private static int RunFileTouched(string? homePath)
+    private static int RunFileTouched(EngramHome home)
     {
         try
         {
-            var home = EngramHome.ResolveFromProcess(homePath);
             Directory.CreateDirectory(home.QueueDir);
 
             var now = DateTime.UtcNow;
