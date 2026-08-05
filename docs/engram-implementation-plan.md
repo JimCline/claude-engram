@@ -1286,14 +1286,21 @@ implemented; D15–D18 are written but unbuilt.
 
 **A. Tool-surface work — small, independent, no spike needed**
 
-1. **D15** — move the durable guidance out of `PrimerBuilder` and into the
-   `engram_recall` / `engram_remember` descriptions in `EngramMcpTools.cs`. What stays in
-   the hook: only the live fact count and topic-coverage line.
-2. **D17** — tier-1 test asserting serialized `tools/list` stays under a stated ceiling.
-   Land it *with* item 1, because item 1 deliberately grows those descriptions and the
-   ceiling is what stops that from becoming a habit.
+1. ~~**D15** — move the durable guidance out of `PrimerBuilder`~~ — **done** (`195bb9d`).
+   It required no addition to the tool descriptions at all: the primer's instruction was
+   already stated nearly phrase for phrase across `engram_recall`, `engram_remember`, and
+   `engram_digest`, so the fix was deleting the duplicate from the channel that does not
+   survive compaction. `SubagentInstruction` deliberately stays in the hook — durable but
+   not *universal*, and a tool description is shared with a main agent that does not need
+   telling its report is lossy. `HookCommand` now declines to emit an empty primer.
+2. ~~**D17** — ceiling on the tool surface~~ — **done** (`195bb9d`), measured at **2,399
+   characters** across four tools, ceiling set to 2,600. Lives in
+   `tests/Engram.Integration.Tests/` rather than tier 1, because only that project
+   references `Engram.Cli`. Falsified before being kept: at a ceiling of 2,000 it fails
+   with the per-tool breakdown. A sibling test pins the tool count at four.
 3. Golden-file both tool descriptions under the D9 recall-contract treatment. They are a
-   model-facing interface now, not prose.
+   model-facing interface now, not prose. **Still outstanding** — the D17 ceiling catches
+   size drift but says nothing about wording, which is the part the model actually reads.
 
 **B. Spikes that gate M4 — these carry the real risk**
 
