@@ -14,10 +14,13 @@ substitute for context, not a supplement to it.
 - No containers, no runtime install, and nothing that leaves the machine: the server
   binds `127.0.0.1` only and rejects any request carrying an `Origin` header
 
-**Status:** M0 in progress. The CLI, the home resolver, and the Claude Code plugin
-exist; there is no database yet by design — M0 is an adoption probe that measures
-whether the agent calls the memory tools at all before anything is built on the
-assumption that it will.
+**Status:** M0 in progress. The CLI, the supervised HTTP daemon, the hooks, the installer
+and the Claude Code plugin all exist and are verified against a live Claude Code. There is
+no database yet **by design** — M0 is an adoption probe that measures whether the agent
+calls the memory tools at all, before anything is built on the assumption that it will.
+The evidence that this is the right order is in D12: a sibling tool on the same machine
+holds 67,936 unstructured notes and zero structured facts, because the structured half
+asks more of the model than the model volunteers.
 
 ## Documents
 
@@ -28,8 +31,9 @@ assumption that it will.
 | [`docs/engram-schema.sql`](docs/engram-schema.sql) | Canonical M1 database schema |
 | [`docs/engram-design.html`](docs/engram-design.html) | Visual design sheet |
 
-Start with the implementation plan — it records nine decisions resolving questions the
-spec left open, and the places where the spec contradicts itself.
+Start with the implementation plan — it records fourteen decisions (D1–D14) resolving
+questions the spec left open, the places where the spec contradicts itself, and for each
+one the argument or measurement that settled it.
 
 ## Building
 
@@ -41,47 +45,91 @@ dotnet test  -c Release
 dotnet publish src/Engram.Cli -c Release -r osx-arm64 -o out
 ```
 
-## Installing as a Claude Code plugin
+## Installing
 
-Engram ships as a plugin. The repository itself is the marketplace; the binary is a
-build artifact, not something committed to source control, so it has to be built once
-before the plugin has anything to run:
+`scripts/install.sh` builds the binary, installs it, puts it on your `PATH`, and
+initialises the Engram home. It **prints what it would do and changes nothing** unless
+you pass `--apply`:
 
 ```
-scripts/build-plugin.sh
+scripts/install.sh                # dry run — read this first
+scripts/install.sh --apply
+scripts/install.sh --apply --with-plugin   # also register the Claude Code plugin
+```
+
+| | |
+|---|---|
+| `--apply` | Actually do it. Without this it is a dry run. |
+| `--prefix DIR` | Install directory. Default `$HOME/.local/bin`. |
+| `--binary PATH` | Install an already-built binary instead of building one. |
+| `--no-path` | Do not put the binary on `PATH` by any means. |
+| `--with-plugin` | Also run the two `claude plugin` commands below. |
+
+Getting onto `PATH` is tried in order of how invasive it is. If the install directory is
+already on `PATH`, nothing happens at all. Otherwise a **symlink** goes into a directory
+that is already on `PATH` — one file, removed by one `rm`, and it will never overwrite
+something it did not create. Only if that fails does it edit a shell startup file, and
+then it backs the file up first and writes a delimited block the uninstaller removes
+exactly.
+
+Homebrew's `bin` is deliberately excluded from the symlink candidates: unbrewed symlinks
+there make `brew doctor` complain, and Homebrew may clobber them.
+
+Uninstalling is symmetric, and equally a dry run by default:
+
+```
+scripts/uninstall.sh              # dry run
+scripts/uninstall.sh --apply
+scripts/uninstall.sh --apply --purge   # ALSO deletes ~/.engram and all your memory
+```
+
+**`--purge` is the only thing that will ever touch `~/.engram`.** Without it the memory
+store is left completely alone, and the summary says so explicitly.
+
+### The Claude Code plugin
+
+The repository itself is the marketplace:
+
+```
 claude plugin marketplace add /Users/jimcline/git/repos/engram
 claude plugin install engram@engram
 ```
 
-Then, inside a running Claude Code session, `/reload-plugins` picks up the hooks and
-the MCP server registration — a full restart is not required.
+Then `/reload-plugins` in a running session picks up the hooks and the MCP registration;
+a full restart is not required.
 
-`plugin/.claude-plugin/plugin.json` carries a `version`. Claude Code's plugin cache is
-version-pinned at `~/.claude/plugins/cache/<marketplace>/<plugin>/<version>/` and is
-wholesale-replaced on a version bump, so after rebuilding the binary with
-`scripts/build-plugin.sh`, bump that `version` (and the matching entry in
-`.claude-plugin/marketplace.json`) or Claude Code keeps serving the previously cached
-copy.
+**The plugin ships no binary.** Its hooks resolve one — `$ENGRAM_BIN`, then
+`$HOME/.local/bin/engram`, then `PATH` — which is why the installer above is a
+prerequisite rather than a convenience. A plugin installed with no binary present says
+so at `SessionStart` instead of failing silently. This also means the plugin cache now
+holds only manifests and a few small scripts, so it can travel through a remote
+marketplace, and that the binary's path no longer changes when the plugin version does.
+
+`plugin/.claude-plugin/plugin.json` carries a `version`, and Claude Code's cache is
+version-pinned at `~/.claude/plugins/cache/<marketplace>/<plugin>/<version>/`, replaced
+wholesale on a bump. Editing `hooks/` or the manifests in a working-tree marketplace has
+no effect until you bump that version (and the matching entry in
+`.claude-plugin/marketplace.json`). Rebuilding the binary no longer needs a bump.
 
 ### How the plugin reaches the server
 
 `plugin/.mcp.json` is an `http` entry pointing at `http://127.0.0.1:7433/`. Nothing in
-that file can start a server, so the `SessionStart` hook runs `hooks/ensure-server.sh`
-first, which calls `engram start` — idempotent, silent, and always exit 0. The daemon
-outlives the session that started it, so only the first session after a reboot pays for
-a cold start.
+that file can start a server, so `SessionStart` runs `hooks/ensure-server.sh` ahead of
+the primer, which calls `engram start` — idempotent, silent, and always exit 0. The
+daemon outlives the session that started it, so only the first session after a reboot
+pays for a cold start. Measured: **132 ms cold, 16 ms warm.**
 
-**Two things here are built from the documentation and not yet confirmed against a
-running Claude Code**, and both fail closed rather than dangerously:
+Both of the things this design was unsure about have now been **confirmed against a
+running Claude Code 2.1.222**:
 
-- Whether Claude Code connects to the MCP entry *before* `SessionStart` hooks finish. If
-  it does, the very first session after a reboot may find no server and lose its memory
-  tools for that session; every later session finds the daemon already up.
-- Whether Claude Code's MCP client sends an `Origin` header. It should not — `Origin` is
-  a browser concept and Node's `fetch` does not add one — but the server rejects any
-  request that carries one, so if it does, every call returns 403.
+- **The hook wins the race.** The daemon bound at `07.641`, `engram start`'s health check
+  returned at `07.682`, and the client's `initialize` arrived at `08.396` — roughly 715 ms
+  of margin. Observed with room rather than proven ordered, and only the first session
+  after a reboot depends on it.
+- **No `Origin` header is sent.** `initialize`, `notifications/initialized`, the SSE
+  `GET`, and `tools/list` all succeeded; the rebinding guard never fired.
 
-Verify both in a single session without installing anything permanently:
+To try the plugin for one session without registering anything:
 
 ```
 claude --plugin-dir /Users/jimcline/git/repos/engram/plugin
@@ -93,9 +141,13 @@ Engram's data — the SQLite store, telemetry, everything under the Engram home 
 at `~/.engram`, resolved by the same `--home` / `ENGRAM_HOME` / `~/.engram` precedence
 described below. It is deliberately **not** inside the plugin's own data directory
 (`${CLAUDE_PLUGIN_DATA}`), because `claude plugin uninstall` deletes
-`${CLAUDE_PLUGIN_DATA}` by default. Uninstalling the plugin removes the hooks, the MCP
-server registration, and the binary; it does not touch `~/.engram`, and reinstalling
-the plugin later picks the same memory back up.
+`${CLAUDE_PLUGIN_DATA}` by default. Uninstalling the plugin removes the hooks and the
+MCP registration; it does not touch `~/.engram` or the installed binary, and reinstalling
+later picks the same memory back up.
+
+Nothing in the hooks does anything at all until `engram init` has run — every hook exits
+0 silently when the home has no `config.toml`. That is deliberate, and it is why a
+plugin loaded without an initialised home produces no telemetry and no primer.
 
 ## Testing against an isolated instance
 

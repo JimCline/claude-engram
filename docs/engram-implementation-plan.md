@@ -431,9 +431,9 @@ returns no timestamp and no freshness signal at all. Engram's `file_state.blob_s
 ### D13 — Distribution: a build artifact cannot ship in a remote marketplace
 
 Engram ships as a Claude Code plugin (marketplace at the repository root, plugin under
-`plugin/`). Locally that works: `scripts/build-plugin.sh` publishes the AOT binary into
-`plugin/bin/`, which is gitignored, and `.mcp.json` and `hooks.json` reference it through
-`${CLAUDE_PLUGIN_ROOT}`.
+`plugin/`). The original arrangement worked locally: a build script published the AOT
+binary into a gitignored `plugin/bin/`, and `.mcp.json` and `hooks.json` reached it
+through `${CLAUDE_PLUGIN_ROOT}`.
 
 That arrangement does not survive the move to a **remote** marketplace, which is the
 intended end state. Claude Code clones the repository, so anything the manifests

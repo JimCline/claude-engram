@@ -35,5 +35,6 @@ scratch/
 *.db-wal
 *.db-shm
 
-# Plugin binary is a build artifact, produced by scripts/build-plugin.sh
+# The plugin ships no binary — its hooks resolve an installed one (D13). Kept
+# ignored so a stale bundled copy from before that change can never be committed.
 plugin/bin/
