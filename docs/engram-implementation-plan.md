@@ -51,6 +51,12 @@ Six of them were adjudicated with Fable.
   loadable extension, so it goes in through `sqlite3_load_extension` —
   `SqliteConnection.EnableExtensions` then `LoadExtension(path)` — and registers a virtual
   table module on **that one connection**. Measured under AOT; see spike D in §1.5.
+  For `llama.cpp` specifically, "loaded from an explicit path" is not one call: the ggml
+  libraries must be `NativeLibrary.Load`-ed individually, in dependency order, *before*
+  `NativeLibraryConfig.LLama.WithLibrary` names `libllama`. Their install names carry a
+  version suffix (`@rpath/libggml.0.dylib`) that their filenames on disk do not, so a flat
+  directory alone cannot satisfy `libllama`'s `@loader_path` lookup — loading each one first
+  registers it under the name the lookup will use. Measured under AOT; see spike E in §1.5.
 
 Rationale: the latency-critical paths — hooks, MCP start, recall — never touch Roslyn
 or llama.cpp, so AOT's cold-start budget is preserved where it is actually spent.
@@ -1327,13 +1333,24 @@ order of attack is now a ladder, cheapest and least risky first:
 1. **Localhost providers** (Ollama, LM Studio) — no AOT exposure, no process to supervise,
    and per D18 already a supported configuration.
 2. **In-process LLamaSharp** — if it turns out AOT-clean, this becomes the default and the
-   ladder stops here.
+   ladder stops here. **Measured 2026-08-05: it is, and it does.** Spike E in §1.5.
 3. **An owned embedder sidecar** — only if LLamaSharp is AOT-hostile *and* we want embedding
    that does not require the user to install someone else's runtime.
 
 Step 3 exists because D20's rule binds here too: an opt-in feature that works only when a
 third-party tool is installed is weaker than one whose dependency we ship. It is third on
 the ladder because it is the most work, not because it is optional forever.
+
+**Step 3 is now unnecessary, and step 1 is what remains optional.** Spike E puts the
+in-process provider in the AOT binary, which is what step 3 existed to recover if it could
+not go there. The localhost providers stay — they are free capacity for a user already
+running Ollama or LM Studio, per D18 — but they are no longer load-bearing, so nothing about
+M4 waits on them. One correction to the reasoning above rather than the conclusion: the
+sidecar was framed as the fallback for AOT-hostility, and the thing that would actually have
+forced it is not hostility but the 6.5 s model load, which makes any per-batch process a
+non-starter. In-process inherits that constraint rather than escaping it — the weights load
+once into the long-lived daemon and unload on idle, which is what `idle_unload_minutes`
+already describes.
 
 This demotes the AOT spike from gating to informative: it decides *which rung* M4 lands on,
 not whether M4 happens. And it stays falsifiable — if the 10 ms hook budget is ever shown
@@ -1557,6 +1574,74 @@ Two build notes for the real projects: the 10 MB MCP binary sits comfortably ins
 spec's 15–40 MB budget, and `.dSYM` bundles (39.8 MB for Spike B) must be kept out of
 release artifacts.
 
+**Spike E — LLamaSharp under Native AOT (2026-08-05, measured).** Work-queue item B5, the
+one D25 demoted from gating to informative. LLamaSharp 0.27.0 with `LLamaSharp.Backend.Cpu`
+0.27.0 against `Qwen3-Embedding-0.6B-Q8_0.gguf` (610 MB — the exact model D18 names, already
+on the author's machine from the prior-art system D18 cites), in a spike project mirroring
+`Engram.Cli`'s publish settings so this is the shipped configuration. Publishes with one
+warning, 3.40 MB Mach-O arm64.
+
+**13 of 13 checks pass from the AOT binary, and the same 13 pass under JIT.** Cosines agree
+to three decimals between the two builds — one value differs by 1 in the fourth — so nothing
+about AOT perturbs the arithmetic. The model loads, embeds at 1024 dimensions as
+`[embedding] dim` claims, returns a bit-identical vector for a repeated string, and ranks
+D18's own examples the way D18 predicts:
+
+| query vs the fact that answers it | related | unrelated |
+|---|---|---|
+| *"what's my kid's name"* vs *"son is Liam"* | **0.5130** | 0.2373 |
+| *"how do we avoid database lock errors"* vs *"every write is `BEGIN IMMEDIATE`"* | **0.4372** | 0.3845 |
+| *"where does the home directory get resolved"* vs `EngramHome.Resolve(…)` | **0.6067** | 0.3774 |
+
+FTS5 scores zero on all three: no token is shared between any query and its answer. That is
+the capability D18 exists to buy, now demonstrated rather than argued — and the third row is
+the mixed code-and-prose case D18 calls "not an edge case here, it is the corpus".
+
+**So the ladder stops at rung 2.** D25's order of attack was localhost providers, then
+in-process LLamaSharp, then an owned sidecar. In-process is AOT-clean, so it can be the
+default and rung 3 is not needed.
+
+Throughput, which is item 5b: **24.9 ms per embedding, 40/sec** single-threaded, and AOT is
+*faster* here than JIT (29.8 ms). The 45-fact seeded corpus backfills in about a second and
+ten thousand facts in four minutes — on a background queue, off the write path, so neither
+is a latency figure.
+
+**Model load is 6.4–6.6 s, which is the number D25 was reasoning about without one.** D25
+argued the embedder must be long-lived rather than spawned per batch because loading the
+weights per batch "would dominate everything". Measured: a batch of 24 embeddings costs
+0.6 s against a 6.5 s load, so a per-batch process spends 91% of its life loading. It also
+prices `idle_unload_minutes = 5` — a user who embeds once every six minutes pays the full
+6.5 s each time, which is fine on a background queue and would not be fine on a query.
+
+**The finding worth more than the pass count: a flat `~/.engram/lib/` does not work by
+itself, and nothing in the filenames says why.** Every dylib the backend ships declares an
+install name one version-suffix from what it is called on disk — `libggml.dylib` announces
+itself as `@rpath/libggml.0.dylib` — and `libllama` asks for the suffixed name against an
+rpath of `@loader_path`. Copy the seven libraries into one directory, point
+`NativeLibraryConfig.LLama.WithLibrary` at `libllama.dylib`, and it fails: dlopen looks for
+`libggml.0.dylib` beside it and finds only `libggml.dylib`.
+
+What closes the gap is loading the ggml libraries first, by explicit path, in dependency
+order — `NativeLibrary.Load`, which is what D1's bullet already prescribes for llama.cpp.
+dyld registers an image under its own install name, so once `libggml.dylib` is in the
+process it *is* what `@rpath/libggml.0.dylib` resolves to. LLamaSharp's own probing does
+exactly this walk; `WithLibrary` skips it, because it documents that calling it makes "all
+the other configurations ignored" — and the dependency walk is one of them.
+
+Measured as a controlled pair: the same binary in the same otherwise-empty directory,
+differing only in whether the library path was supplied. Without it,
+`TypeInitializationException` → `RuntimeError: The native library cannot be correctly
+loaded`. With it, 13 of 13. The control is the part that matters — it rules out the
+treatment passing for some unrelated reason.
+
+**The single AOT warning is this same defect seen from the compiler.** `IL3000`, on
+`LLama.Native.NativeLibraryUtils.TryFindPath` reading `Assembly.Location`, which is the
+empty string in a single-file or AOT app. Left to its own probing the binary only finds its
+libraries when it happens to sit in its publish directory — D1's SQLite erratum wearing a
+different name, except warned about at compile time rather than discovered in the field.
+Engram sets the path explicitly regardless, so the warning is expected rather than
+suppressed, and suppressing it would hide the next wrapper that makes the same mistake.
+
 ---
 
 ## 2. Riskiest assumption, and how it gets tested first
@@ -1772,14 +1857,17 @@ which that project does not evidence**, and it is now the whole of this group.
    behind for M4 to honour: the extension is per-connection and pooling disguises that, and
    a database holding a `vec0` table stays fully usable from a connection that cannot load
    it.
-5. **Does LLamaSharp work under Native AOT?** It is a managed wrapper, not just a P/Invoke
-   surface, and trimming is where wrappers break. **Informative, not gating** — per D25 the
-   answer selects which rung of the provider ladder M4 lands on, and per D18 the localhost
-   providers carry the lane regardless. Worth measuring early for planning, not before
-   starting.
-5b. Only if both pass: confirm embedding throughput on the background queue is sufficient
-    to backfill the existing corpus in reasonable time. Not a latency deadline — embedding
-    is off the write path by construction (D4), so this is a throughput sanity check.
+5. ~~**Does LLamaSharp work under Native AOT?**~~ **Answered — yes.** Spike E in §1.5: 13 of
+   13 checks from the AOT binary, the same 13 under JIT, one `IL3000` warning that is real
+   and must be answered by configuration rather than suppressed. **The ladder stops at rung
+   2** — in-process is the default and the owned sidecar is not needed. What it leaves behind
+   for M4 to honour: the ggml libraries must be `NativeLibrary.Load`-ed by explicit path in
+   dependency order before `WithLibrary`, because their install names carry a version suffix
+   their filenames do not.
+5b. ~~Only if both pass: confirm embedding throughput…~~ **Answered.** 24.9 ms per embedding,
+    40/sec, AOT faster than JIT. The seeded corpus backfills in about a second. Model load is
+    6.5 s and paid once per process, which is what makes the embedder long-lived rather than
+    per-batch.
 
 **C. M4 proper, in dependency order (only after B is green)**
 
