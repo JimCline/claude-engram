@@ -1642,6 +1642,51 @@ different name, except warned about at compile time rather than discovered in th
 Engram sets the path explicitly regardless, so the warning is expected rather than
 suppressed, and suppressing it would hide the next wrapper that makes the same mistake.
 
+**Spike F — what SQL surface `vec0` actually exposes (2026-08-05, measured).** Not on the
+original work queue; added because step 7's design turned out to rest on operations spike D
+never exercised. Spike D proved a `vec0` table is creatable, insertable, and KNN-queryable —
+enough to *read* the lane and not enough to build the backfill queue or `embed --rebuild`
+around, since a virtual table is exactly the kind of thing that supports some of the obvious
+operations and not others. 17 of 18 probes passed, and the one failure is the useful part.
+
+**The backfill queue is a query, not a table.** Both `LEFT JOIN fact → fact_vec` and
+`id NOT IN (SELECT fact_id FROM fact_vec)` work, as does a plain `SELECT fact_id FROM
+fact_vec` scan and `COUNT(*)`. So "which live facts lack a vector" is answerable directly and
+there is no queue table to keep in sync — which is the right shape under D8 regardless:
+derived state that is recomputed from a join cannot drift from the thing it describes, and a
+queue table can.
+
+**`INSERT OR REPLACE` does not work.** It raises `UNIQUE constraint failed on fact_vec
+primary key` rather than replacing. This is the one that would have been discovered late,
+because it is the idiom a C# author reaches for by reflex and it fails only on the
+second write for a given fact. Re-embedding is `UPDATE fact_vec SET embedding = ?`, which
+does work in place, or delete-then-insert. `DELETE FROM fact_vec` with no predicate clears
+the table and `DROP TABLE` removes it, so both flavours of `--rebuild` — same width, and a
+width change that invalidates the table itself — have a path.
+
+**`vec0` is transactional.** An insert inside `BEGIN IMMEDIATE` survives commit and a
+rolled-back insert leaves nothing behind. So a vector write can ride the same transaction as
+the fact it describes. D18 still puts embedding on a background queue off the write path, and
+this does not reopen that — it means the *backfill* writer needs no special handling to stay
+consistent with D4.
+
+**A wrong-width vector is rejected, and says so precisely**: *"Expected 8 dimensions but
+received 16."* That is worth knowing because it bounds what the dimension pin in `schema_meta`
+is actually for. Width is self-defending at the row level; **the model is not**. Two models of
+the same width will both insert happily and rank meaninglessly against each other, which is
+D18's silent-degradation case. So `schema_meta` must record the model identifier, not merely
+the dimension, and the dimension pin is the cheap half of a check whose expensive half has no
+other source.
+
+`distance_metric=cosine` is accepted on the `CREATE VIRTUAL TABLE`, so the metric the ranking
+assumes is declared rather than defaulted — `vec0` defaults to L2.
+
+One flaw in the spike itself, recorded so the result is not read as stronger than it is: the
+KNN probe used vectors differing only by a small per-component offset, so every cosine
+distance collapsed to ~0 and the ordering it "confirmed" was degenerate. Spike D established
+KNN ordering with properly separated vectors; this run adds nothing on that point and should
+not be cited for it.
+
 ---
 
 ## 2. Riskiest assumption, and how it gets tested first
