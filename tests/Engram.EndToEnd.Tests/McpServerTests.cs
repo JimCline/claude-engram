@@ -27,7 +27,7 @@ public class McpServerTests
                 .Select(t => t!["name"]!.GetValue<string>())
                 .OrderBy(name => name, StringComparer.Ordinal)
                 .ToArray();
-            Assert.Equal(["engram_digest", "engram_recall", "engram_remember"], toolNames);
+            Assert.Equal(["engram_digest", "engram_recall", "engram_remember", "engram_start", "engram_status", "engram_stop"], toolNames);
 
             var hitText = await client.CallToolTextAsync(
                 "engram_recall", new JsonObject { ["query"] = "AOT packaging and Roslyn" }, cancellationToken);
@@ -90,7 +90,7 @@ public class McpServerTests
                 .Select(t => t!["name"]!.GetValue<string>())
                 .OrderBy(name => name, StringComparer.Ordinal)
                 .ToArray();
-            Assert.Equal(["engram_digest", "engram_recall", "engram_remember"], toolNames);
+            Assert.Equal(["engram_digest", "engram_recall", "engram_remember", "engram_start", "engram_status", "engram_stop"], toolNames);
 
             var telemetryPath = Path.Combine(home.Root, "telemetry.jsonl");
             Assert.False(File.Exists(telemetryPath));

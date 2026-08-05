@@ -567,6 +567,39 @@ registered, falling back to `Mcp-Session-Id` when absent or unrecognised. Whethe
 reliably passes parameters is something M0's telemetry can answer, so this waits for
 evidence rather than being adopted on the strength of the argument.
 
+#### How the plugin reaches the daemon, and what is still unverified
+
+`plugin/.mcp.json` is an `http` entry pointing at `http://127.0.0.1:7433/`. Nothing in that
+file can start a server, so `SessionStart` runs `hooks/ensure-server.sh` ahead of the primer
+hook. That script exists rather than a bare command for two reasons, both of which would be
+silent faults: on `SessionStart` anything a hook prints to stdout is injected into the
+model's context as `additionalContext`, so `engram started (pid 1234, port 7433)` would
+become a line of every session's prompt; and a memory server that fails to start makes a
+degraded session, not a broken one, so the script always exits 0.
+
+The cost is measured, not assumed: **cold start 132 ms, warm start 16 ms, status 15 ms.**
+Since the daemon outlives the session that started it, only the first session after a reboot
+pays the cold number, and 132 ms is far inside any hook budget. This was the one number that
+could have sunk the design — a hook that has to wait on a server is a hook that can time
+out — and it does not.
+
+Two things are built from documentation and remain unconfirmed against a running Claude
+Code. Both fail closed:
+
+- **Ordering.** Whether the MCP client connects before `SessionStart` hooks finish. If it
+  does, the first session after a reboot loses its memory tools; every later session finds
+  the daemon already up. Worst case is one degraded session, not a broken install.
+- **`Origin`.** The server rejects any request carrying an `Origin` header, which is the
+  standard DNS-rebinding defence for a localhost server. `Origin` is a browser concept and
+  Node's `fetch` does not add one, so this should never fire — but if Claude Code does send
+  it, every call returns 403. Verifiable in one session with `claude --plugin-dir`.
+
+Cold start is structurally out of reach of the `engram_start` MCP tool: a tool call cannot
+arrive when there is no server to receive it. That tool therefore reports and repairs a
+missing or disagreeing pid file rather than starting anything, and starting the daemon stays
+the hook's job. `engram_stop` schedules its shutdown ~500 ms out so the reply survives the
+connection it travels on.
+
 ### Reading the M0 numbers honestly
 
 Two documented behaviours distort the adoption metric, and both must be known before

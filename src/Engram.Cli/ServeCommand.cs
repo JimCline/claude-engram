@@ -38,8 +38,11 @@ internal static class ServeCommand
 
         var resolvedPort = ServerPort.Resolve(port);
         var home = EngramHome.ResolveFromProcess(homePath);
-        var pid = Environment.ProcessId;
-        var startTime = Process.GetCurrentProcess().StartTime.ToUniversalTime();
+        var identity = new ServerIdentity(
+            Environment.ProcessId,
+            resolvedPort,
+            EngramVersion.Current,
+            Process.GetCurrentProcess().StartTime.ToUniversalTime());
         var openedSessions = new ConcurrentDictionary<string, byte>();
 
         var builder = WebApplication.CreateSlimBuilder([]);
@@ -51,6 +54,7 @@ internal static class ServeCommand
 
         builder.Services.AddHttpContextAccessor();
         builder.Services.AddSingleton(home);
+        builder.Services.AddSingleton(identity);
         builder.Services.AddTransient(_ => new McpHomeState(File.Exists(home.ConfigPath)));
         builder.Services.AddTransient(services => ResolveSessionId(services, home, openedSessions));
 
@@ -62,7 +66,8 @@ internal static class ServeCommand
             // session's lifetime, so this must stay false. Do not "simplify" this to
             // the default — that silently drops session identity with no error anywhere.
             .WithHttpTransport(options => options.Stateless = false)
-            .WithTools<EngramMcpTools>();
+            .WithTools<EngramMcpTools>()
+            .WithTools<EngramServerTools>();
 
         var app = builder.Build();
 
@@ -78,9 +83,16 @@ internal static class ServeCommand
         });
 
         app.MapGet("/health", () =>
+            Results.Json(identity.ToHealthPayload(), HealthResponseJsonContext.Default.HealthResponsePayload));
+
+        // Leave no pid file behind claiming a process that has exited — but only ours.
+        // An orphan being replaced must not delete the record its replacement just wrote.
+        app.Lifetime.ApplicationStopping.Register(() =>
         {
-            var payload = new HealthResponsePayload(pid, resolvedPort, EngramVersion.Current, startTime);
-            return Results.Json(payload, HealthResponseJsonContext.Default.HealthResponsePayload);
+            if (PidFile.Read(home)?.Pid == identity.Pid)
+            {
+                PidFile.Delete(home);
+            }
         });
 
         app.MapMcp();

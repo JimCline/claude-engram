@@ -10,8 +10,9 @@ substitute for context, not a supplement to it.
 
 - C# / .NET 10, published as a Native AOT single-file binary
 - SQLite only (WAL), one database at `~/.engram/engram.db`
-- CLI for humans, MCP over stdio for agents
-- No services, no containers, no runtime install
+- CLI for humans, MCP over local HTTP for agents — `engram start` / `stop` / `status`
+- No containers, no runtime install, and nothing that leaves the machine: the server
+  binds `127.0.0.1` only and rejects any request carrying an `Origin` header
 
 **Status:** M0 in progress. The CLI, the home resolver, and the Claude Code plugin
 exist; there is no database yet by design — M0 is an adoption probe that measures
@@ -62,11 +63,25 @@ wholesale-replaced on a version bump, so after rebuilding the binary with
 `.claude-plugin/marketplace.json`) or Claude Code keeps serving the previously cached
 copy.
 
-**`${CLAUDE_PLUGIN_ROOT}` in `plugin/.mcp.json`, pointing at a local stdio binary
-(`command: "${CLAUDE_PLUGIN_ROOT}/bin/engram"`), is documented behavior but has not yet
-been verified working in practice** — it is built this way on the strength of the
-Claude Code plugin docs, not a confirmed working example. Before relying on it, verify
-in a single session without installing anything permanently:
+### How the plugin reaches the server
+
+`plugin/.mcp.json` is an `http` entry pointing at `http://127.0.0.1:7433/`. Nothing in
+that file can start a server, so the `SessionStart` hook runs `hooks/ensure-server.sh`
+first, which calls `engram start` — idempotent, silent, and always exit 0. The daemon
+outlives the session that started it, so only the first session after a reboot pays for
+a cold start.
+
+**Two things here are built from the documentation and not yet confirmed against a
+running Claude Code**, and both fail closed rather than dangerously:
+
+- Whether Claude Code connects to the MCP entry *before* `SessionStart` hooks finish. If
+  it does, the very first session after a reboot may find no server and lose its memory
+  tools for that session; every later session finds the daemon already up.
+- Whether Claude Code's MCP client sends an `Origin` header. It should not — `Origin` is
+  a browser concept and Node's `fetch` does not add one — but the server rejects any
+  request that carries one, so if it does, every call returns 403.
+
+Verify both in a single session without installing anything permanently:
 
 ```
 claude --plugin-dir /Users/jimcline/git/repos/engram/plugin
@@ -93,6 +108,15 @@ So a throwaway instance that cannot touch your real memory is one variable:
 ```
 export ENGRAM_HOME=$(mktemp -d)
 ./out/engram init
-ENGRAM_HOME=$ENGRAM_HOME ./out/engram mcp
+./out/engram start --port 7434
+./out/engram status
+./out/engram stop
 ```
+
+Pick a port other than the default when a real instance is already running, since the
+pid file lives in the home and the two instances would otherwise fight over one port.
+
+`engram start` refuses to touch a port held by anything it cannot prove is itself, and
+proves identity by executable path *and* recorded start time before it signals a
+process — so a recycled pid is forgotten, never killed.
 
