@@ -135,6 +135,39 @@ To try the plugin for one session without registering anything:
 claude --plugin-dir /Users/jimcline/git/repos/engram/plugin
 ```
 
+### Slash commands
+
+`plugin/commands/` adds seven, all namespaced `/engram:`:
+
+| Command | What it does |
+| --- | --- |
+| `/engram:recall <query>` | Query memory directly and show what it holds, verbatim, fact handles included. |
+| `/engram:remember <fact>` | Store a fact in the user's own words. |
+| `/engram:digest` | Flush the session's durable learnings before compaction or exit. |
+| `/engram:status` | Server pid, port, version, uptime, and whether the home is initialised. |
+| `/engram:start` | Start the server. |
+| `/engram:stop` | Stop it. |
+| `/engram:doctor` | Read-only diagnosis: resolved binary, port holder, home contents, telemetry, log tail. |
+
+The split in how they reach engram is deliberate. `recall`, `remember`, and `digest` go
+through the MCP tools, because that is where the ranking, the token budget, and the
+session store live. The four lifecycle and diagnostic commands shell out to the binary
+instead — when the server is down its MCP tools disappear along with it, so an
+MCP-backed `status` could only ever answer "running", and an MCP-backed `start` could
+never cold-start the thing it exists to start.
+
+They shell out through `scripts/engram-cli.sh` rather than `hooks/engram-exec.sh`. The
+two differ in exactly one way, and it is the reason both exist: a hook that fails is
+worse than a hook that does nothing, so `engram-exec.sh` swallows a missing binary in
+silence, while somebody who typed `/engram:status` is waiting for an answer and has to
+be told. Resolution itself is not duplicated — both go through `resolve-engram.sh`.
+
+Because commands are prompts, nothing compiles them and nothing validates them at load
+time; a command naming a moved script or a renamed MCP tool would fail for the first
+user who typed it. `PluginCommandTests` closes that gap in CI: every
+`${CLAUDE_PLUGIN_ROOT}` path must exist, every shell script must be executable, and
+every MCP tool a command names is checked against `tools/list` on a real running server.
+
 ### Where memory lives
 
 Engram's data — the SQLite store, telemetry, everything under the Engram home — lives
