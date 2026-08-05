@@ -8,7 +8,9 @@ superseded, with the reason for every revision recorded.
 The success metric is **tokens the host LLM did not have to load**. Memory is a
 substitute for context, not a supplement to it.
 
-- C# / .NET 10, published as a Native AOT single-file binary
+- C# / .NET 10, published as a Native AOT binary plus the SQLite library it loads at
+  runtime — the installer places both, and refuses to finish if the installed copy
+  cannot open a database
 - SQLite only (WAL), one database at `~/.engram/engram.db`
 - CLI for humans, MCP over local HTTP for agents — `engram start` / `stop` / `status`
 - No containers, no runtime install, and nothing that leaves the machine: the server

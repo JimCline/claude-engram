@@ -262,24 +262,54 @@ else
     binary_path="<built binary>"
 fi
 
+# The name is fixed rather than discovered by globbing the source directory: a bin
+# directory should receive exactly the files this installer meant to put there, and
+# uninstall has to be able to name what it removes. If the set ever grows, the
+# in-prefix verification in step 5 is what reports the omission.
+case "$(uname -s)" in
+    Darwin) sidecar_name="libe_sqlite3.dylib" ;;
+    *) sidecar_name="libe_sqlite3.so" ;;
+esac
+sidecar_source="$(dirname "$binary_path")/$sidecar_name"
+sidecar_target="$prefix/$sidecar_name"
+
 # --- 4. Verify the built binary runs before installing it ---
 
+# 'init' rather than 'home': home only prints paths, so it exits 0 on a binary that
+# cannot open a database at all. A check that never touches SQLite cannot notice the
+# one dependency this binary loads at runtime.
 if $apply; then
     verify_home=$(mktemp -d)
     cleanup_dirs+=("$verify_home")
     say "Verifying the binary runs (ENGRAM_HOME=$verify_home) ..."
-    if ! ENGRAM_HOME="$verify_home" "$binary_path" home >/dev/null; then
-        echo "error: '$binary_path home' did not exit 0 — refusing to install an unverified binary" >&2
+    if ! ENGRAM_HOME="$verify_home" "$binary_path" init >/dev/null; then
+        echo "error: '$binary_path init' did not exit 0 — refusing to install an unverified binary" >&2
         exit 1
     fi
 else
-    would "verify the binary runs (engram home) against a throwaway ENGRAM_HOME"
+    would "verify the binary runs (engram init) against a throwaway ENGRAM_HOME"
 fi
 
 # --- 5. Install ---
 
 if $apply; then
     mkdir -p "$prefix"
+
+    # engram is a single file everywhere except SQLite. SQLitePCLRaw ships a static
+    # e_sqlite3 only for browser-wasm, so on every RID engram actually targets the
+    # P/Invoke is resolved by dlopen against a library beside the executable, and
+    # installing the binary on its own yields something that runs right up until it
+    # opens the database. Measured: a lone copy dies with DllNotFoundException on
+    # 'e_sqlite3'. Absent is not an error — a statically linked build has no sidecar
+    # to carry, and the verification below is what decides whether the install works.
+    if [ -f "$sidecar_source" ]; then
+        tmp_sidecar="$sidecar_target.new-$$"
+        cp "$sidecar_source" "$tmp_sidecar"
+        chmod 644 "$tmp_sidecar"
+        mv "$tmp_sidecar" "$sidecar_target"
+        say "Installed $sidecar_target"
+    fi
+
     # cp rewrites $target in place; on macOS this succeeds even if a daemon
     # is still running from that path, so its pages would change underneath
     # it. Install to a sibling file and mv over the destination instead — mv
@@ -287,11 +317,30 @@ if $apply; then
     tmp_target="$target.new-$$"
     cp "$binary_path" "$tmp_target"
     chmod 755 "$tmp_target"
+
+    # Verify the copy, from inside $prefix, before it becomes $target. Step 4 runs the
+    # binary where it was built, with every native dependency sitting beside it, so it
+    # passes whether or not the install carried those across — which is precisely how
+    # a binary that could not open its own database once got installed. Running the
+    # staged file from its final directory is the only check that sees what the user
+    # will get. Failing here leaves the previous $target untouched.
+    installed_home=$(mktemp -d)
+    cleanup_dirs+=("$installed_home")
+    if ! ENGRAM_HOME="$installed_home" "$tmp_target" init >/dev/null; then
+        rm -f "$tmp_target"
+        echo "error: the staged binary could not initialise a home from $prefix — a native dependency did not survive the install; leaving $target as it was" >&2
+        exit 1
+    fi
+
     mv "$tmp_target" "$target"
     say "Installed $target"
 else
     would "mkdir -p $prefix"
+    if [ -f "$sidecar_source" ]; then
+        would "install $(basename "$sidecar_source") to $sidecar_target (mode 644, via atomic replace)"
+    fi
     would "install binary to $target (mode 755, via atomic replace)"
+    would "run the staged binary from $prefix against a throwaway ENGRAM_HOME, and abort the install if it cannot open a database"
 fi
 
 # --- 6. PATH ---

@@ -8,6 +8,9 @@ public class InstallerRoundTripTests
 
     private static readonly string RepoRoot = FindRepoRoot();
 
+    private static readonly string SidecarName =
+        OperatingSystem.IsMacOS() ? "libe_sqlite3.dylib" : "libe_sqlite3.so";
+
     [Fact]
     public void Install_Apply_Twice_Then_Uninstall_RoundTrips()
     {
@@ -45,6 +48,77 @@ public class InstallerRoundTripTests
         Assert.False(File.Exists(home.BinaryPath), "binary should be gone after uninstall");
         Assert.Equal(SeedZshrc, File.ReadAllText(home.ZshrcPath));
         Assert.True(Directory.Exists(Path.Combine(home.Root, ".engram")), ".engram home should still exist without --purge");
+    }
+
+    // The installed binary has to work from where it was installed, which is not the same
+    // claim as "the build works". engram's AOT image resolves SQLite by dlopen against a
+    // library beside the executable, so an install that carries only the executable
+    // produces something that runs right up until it opens the database — and every check
+    // performed in the staging directory passes, because the library is sitting there.
+    // This drives the installed copy, from the prefix, at a database-opening command.
+    [Fact]
+    public void Install_InstalledBinary_OpensItsDatabaseFromThePrefix()
+    {
+        Assert.SkipUnless(EndToEndBinary.Path is not null, EndToEndBinary.SkipReason);
+
+        using var home = new InstallerTestHome();
+        File.WriteAllText(home.ZshrcPath, SeedZshrc);
+
+        var install = RunScript("install.sh", home.Root, "--apply", "--binary", EndToEndBinary.Path!, "--prefix", home.Prefix);
+        Assert.True(install.ExitCode == 0, $"install failed: {install.Stderr}");
+
+        var probeHome = Path.Combine(home.Root, "probe-home");
+        var probe = RunBinary(home.BinaryPath, probeHome, "init");
+
+        Assert.True(probe.ExitCode == 0, $"the installed binary could not initialise a home: {probe.Stderr}");
+        Assert.True(File.Exists(Path.Combine(probeHome, "engram.db")), "the installed binary should have created a database");
+    }
+
+    // A stray native library left in somebody's bin directory forever is the cost of
+    // installing one, so uninstall owes it the same treatment as the binary.
+    [Fact]
+    public void Uninstall_RemovesTheNativeLibraryItInstalled()
+    {
+        Assert.SkipUnless(EndToEndBinary.Path is not null, EndToEndBinary.SkipReason);
+
+        using var home = new InstallerTestHome();
+        File.WriteAllText(home.ZshrcPath, SeedZshrc);
+
+        var install = RunScript("install.sh", home.Root, "--apply", "--binary", EndToEndBinary.Path!, "--prefix", home.Prefix);
+        Assert.True(install.ExitCode == 0, $"install failed: {install.Stderr}");
+
+        var sidecarPath = Path.Combine(home.Prefix, SidecarName);
+        Assert.True(File.Exists(sidecarPath), $"install should have placed {SidecarName} beside the binary");
+
+        var uninstall = RunScript("uninstall.sh", home.Root, "--apply", "--prefix", home.Prefix);
+        Assert.True(uninstall.ExitCode == 0, $"uninstall failed: {uninstall.Stderr}");
+
+        Assert.False(File.Exists(sidecarPath), $"uninstall should have removed {SidecarName}");
+    }
+
+    // A binary that answers 'home' but cannot open a database is the exact shape of the
+    // failure this installer shipped: 'home' only prints paths, so a pre-flight check
+    // written against it green-lights a binary that dies the moment it does real work.
+    // Checking with a database-opening command instead means such a build is rejected
+    // before the install directory is so much as created. Needs no real engram binary —
+    // the point is the installer's reaction, not any particular build's behaviour.
+    [Fact]
+    public void Install_BinaryThatCannotOpenADatabase_IsRejectedBeforeThePrefixIsCreated()
+    {
+        using var home = new InstallerTestHome();
+        File.WriteAllText(home.ZshrcPath, SeedZshrc);
+
+        var fakeBinary = Path.Combine(home.Root, "fake-engram");
+        File.WriteAllText(fakeBinary, "#!/bin/bash\ncase \"$1\" in\n  home) echo \"Root=$ENGRAM_HOME\"; exit 0 ;;\n  *) echo 'cannot open database' >&2; exit 1 ;;\nesac\n");
+#pragma warning disable CA1416 // engram only ships for macOS/Linux RIDs; this test never runs on Windows.
+        File.SetUnixFileMode(fakeBinary, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+#pragma warning restore CA1416
+
+        var install = RunScript("install.sh", home.Root, "--apply", "--binary", fakeBinary, "--prefix", home.Prefix);
+
+        Assert.True(install.ExitCode != 0, "install should refuse a binary that cannot open a database");
+        Assert.False(Directory.Exists(home.Prefix), "a rejected binary must not have caused the install directory to be created");
+        Assert.Equal(SeedZshrc, File.ReadAllText(home.ZshrcPath));
     }
 
     [Fact]
@@ -260,6 +334,38 @@ public class InstallerRoundTripTests
         {
             process.Kill(entireProcessTree: true);
             throw new TimeoutException($"{scriptName} did not exit within 60 seconds.");
+        }
+
+        return (process.ExitCode, stdout, stderr);
+    }
+
+    private static (int ExitCode, string Stdout, string Stderr) RunBinary(string binaryPath, string engramHome, params string[] args)
+    {
+        var startInfo = new ProcessStartInfo(binaryPath)
+        {
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            // Run from a directory that holds nothing of ours, so a native dependency can
+            // only be found beside the installed binary — not because the test happened to
+            // start the process somewhere that had a copy lying around.
+            WorkingDirectory = Path.GetTempPath(),
+        };
+        foreach (var arg in args)
+        {
+            startInfo.ArgumentList.Add(arg);
+        }
+
+        startInfo.Environment["ENGRAM_HOME"] = engramHome;
+
+        using var process = Process.Start(startInfo) ?? throw new InvalidOperationException($"failed to start {binaryPath}");
+        var stdout = process.StandardOutput.ReadToEnd();
+        var stderr = process.StandardError.ReadToEnd();
+
+        if (!process.WaitForExit(60_000))
+        {
+            process.Kill(entireProcessTree: true);
+            throw new TimeoutException($"{binaryPath} did not exit within 60 seconds.");
         }
 
         return (process.ExitCode, stdout, stderr);

@@ -26,9 +26,20 @@ option.
 
 ### D1 — Packaging: AOT core, Roslyn sidecar, native libs in the data directory
 
-- **`engram`** — Native AOT, single file. Contains CLI, MCP server, temporal store,
-  retrieval, and the universal + document analyzers. All pure managed. SQLite
-  statically linked via `SQLitePCLRaw.bundle_e_sqlite3`.
+- **`engram`** — Native AOT. Contains CLI, MCP server, temporal store, retrieval, and
+  the universal + document analyzers. All pure managed, plus one native library it does
+  not contain: SQLite. This paragraph used to claim SQLite was statically linked via
+  `SQLitePCLRaw.bundle_e_sqlite3`; that is false, and was believed for long enough to
+  ship an installer built on it. `SQLitePCLRaw.lib.e_sqlite3` 2.1.12 provides a static
+  `e_sqlite3.a` for `browser-wasm` and no other RID, and its targets file wires the
+  static reference under `'$(RuntimeIdentifier)' == 'browser-wasm'` alone. On every RID
+  engram ships, the P/Invoke is resolved at runtime by `dlopen` against a library beside
+  the executable. Measured: an `engram` copied away from its publish directory dies with
+  `DllNotFoundException: Unable to load shared library 'e_sqlite3'` on first database
+  open — `otool -L` does not show this, because a dlopen dependency is not a load
+  command. Anything that installs, copies, or packages the binary carries
+  `libe_sqlite3.dylib`/`.so` with it, and proves it did by running the *installed* copy
+  at a command that opens a database.
 - **`engram-analyzer-roslyn`** — separate self-contained trimmed/R2R binary. Spawned
   only by background indexing, speaks stdio JSON-lines, returns entities/edges/facts.
   **The core owns every DB write**; the sidecar never opens the database.

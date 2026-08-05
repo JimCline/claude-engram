@@ -21,10 +21,14 @@ jobs:
       - name: Test
         run: dotnet test -c Release --no-build
 
+      # 'home' only prints paths, so it exits 0 on an AOT image that cannot open a
+      # database at all — which is the failure mode AOT actually produces, since the
+      # SQLite P/Invoke is resolved at runtime rather than linked in. The smoke test
+      # has to do the thing that loads it.
       - name: AOT publish smoke test
         run: |
           dotnet publish src/Engram.Cli -c Release -r osx-arm64 -o ci-out
-          ./ci-out/engram home
+          ENGRAM_HOME="$(mktemp -d)" ./ci-out/engram init
 
       - name: End-to-end tests
         run: dotnet test tests/Engram.EndToEnd.Tests -c Release

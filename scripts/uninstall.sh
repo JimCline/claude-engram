@@ -173,6 +173,25 @@ else
     say "$target does not exist; nothing to remove."
 fi
 
+# engram's AOT build loads SQLite by dlopen from beside the executable, so install.sh
+# puts a copy of the library in the prefix. Leaving it behind would leave a stray
+# native library in somebody's bin directory forever. Named exactly, never globbed:
+# removing whatever else happens to be in a bin directory is not this script's business.
+case "$(uname -s)" in
+    Darwin) sidecar_name="libe_sqlite3.dylib" ;;
+    *) sidecar_name="libe_sqlite3.so" ;;
+esac
+sidecar_target="$prefix/$sidecar_name"
+
+if [ -f "$sidecar_target" ]; then
+    if $apply; then
+        rm -f "$sidecar_target"
+        say "Removed $sidecar_target"
+    else
+        would "remove $sidecar_target"
+    fi
+fi
+
 # --- Remove the PATH symlink, if we created one ---
 
 symlink_removed=false
