@@ -37,11 +37,13 @@ public static class DefaultConfig
 
         [taxonomy]
         # top-level roots of the memory tree; extendable without migration
-        roots = ["/knowledge", "/user", "/sessions", "/machine", "/code", "/projects", "/people", "/concepts"]
+        roots = ["/knowledge", "/user", "/sessions", "/machine", "/projects", "/people", "/concepts"]
         default_user = "jim"          # preference-kind facts route to /people/<default_user>/…
         # /knowledge holds the seeded corpus; /user holds what the user stated about
         # themselves, one entity per statement. Both were in use before they were listed
         # here — this list is documentation, not a constraint anything enforces yet.
+        # Code is not a root: a codebase belongs to a project, so it lands at
+        # /projects/<name>/code/<repo>/… beside that project's decisions (D27).
 
         [primer]
         max_tokens = 300

@@ -1392,6 +1392,53 @@ released binary carry the reader forever.
 
 ---
 
+### D27 — A codebase is addressed inside its project, not beside it
+
+`/code/<repo>/…` and `/projects/<name>/…` were siblings at the root, which gets the
+containment backwards: a project may hold several codebases, and a codebase always belongs
+to one project. Code now lands at `/projects/<name>/code/<repo>/…`, a sibling of
+`/projects/<name>/decisions/…`.
+
+Containment is the weaker half of the case. The stronger half is that the query this system
+runs most could not be expressed as a prefix. Recall's fusion already boosts project and
+code scope *together* whenever there is repo context, and the primer wants a project's
+decisions and its code in one pass — but under sibling roots that is a union of two prefixes
+plus a repo→project mapping to know which two. Nested, it is one indexed range scan, which
+is the operation §4.2 promises is cheap.
+
+It also settles a question the sibling layout had no answer for: where an indexed README or
+ADR goes. It is a file in a repo *and* it is prose about decisions, so under sibling roots
+the choice had to be adjudicated at write time, and different callers would adjudicate it
+differently. Inside a project both candidate homes are in the same subtree and the choice
+stops being load-bearing.
+
+**Siblings in the path, separate in lifecycle, and that separation is already carried
+elsewhere.** Code facts are regenerable and `compact` prunes them; decisions are authored
+truth it may never touch. That distinction rides on the `regenerable` column (D23), which is
+its own axis precisely so it is never inferred from location — so `compact --path
+/projects/<name>` still filters on the column and cannot reach a decision. Sharing a prefix
+costs nothing there, and the addressing implies nothing about storage layout.
+
+**`<repo>` stays even when a project has one codebase.** Eliding it reads better —
+`/projects/engram/code/src/Engram.Core/…` — but the day a second codebase joins, every fact
+under the first one changes address. `path` is mutable only to follow an entity on rename
+(D2); making it also move when an unrelated sibling appears turns a bounded rule into an
+open one. Predictable beats short.
+
+**Scope stops being derivable from the root**, which the spec claimed and the code never
+implemented. Code and decisions now share `/projects`, so the root cannot discriminate them.
+That is a correction, not a loss: `session` scope already had no root in the §4.2 list, and
+scope has been caller-supplied at every write path from the start. Scope is what kind of
+knowledge a fact is and how long it lives; the path is where its subject hangs. Conflating
+them was always going to break on the first root that held two kinds.
+
+Free to land now and expensive later: nothing writes `project` scope yet, code indexing is
+deferred out of M0, and the seeded corpus carries no paths at all — so this is a change to
+documentation and the default `[taxonomy] roots`, with no store to migrate. After a public
+release it would mean re-addressing every indexed fact in every installed store.
+
+---
+
 ## PreCompact cannot inject context
 
 Spec §10.1 assumes `PreCompact` can "inject one instruction" the same way `SessionStart`

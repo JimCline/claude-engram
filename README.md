@@ -34,7 +34,7 @@ memory tool writes to it — `engram_digest` was the last that did not.
 | [`docs/engram-schema.sql`](docs/engram-schema.sql) | Canonical M1 database schema |
 | [`docs/engram-design.html`](docs/engram-design.html) | Visual design sheet |
 
-Start with the implementation plan — it records twenty-six decisions (D1–D26) resolving
+Start with the implementation plan — it records twenty-seven decisions (D1–D27) resolving
 questions the spec left open, the places where the spec contradicts itself, and for each
 one the argument or measurement that settled it.
 

@@ -181,7 +181,8 @@ CREATE TABLE fact (
   body          TEXT NOT NULL,      -- distilled statement, target <= 60 tokens
   object_id     INTEGER REFERENCES entity(id),   -- optional: fact points at entity
   path          TEXT NOT NULL,      -- denormalized subject path (prefix-searchable)
-  scope         TEXT NOT NULL,      -- user | project | code (derived from root; kept for ergonomics)
+  scope         TEXT NOT NULL,      -- user | project | code | session (an axis of its own, not
+                                    -- derived from the root: code and decisions share /projects, D27)
   learned_via   TEXT NOT NULL,      -- stated | observed | derived | indexed
   confidence    REAL NOT NULL DEFAULT 0.8,
   evidence      TEXT,               -- "src/Auth.cs:120", "commit a1b2c3", tool ref
@@ -268,8 +269,8 @@ Every entity sits at exactly one rooted path in a single memory tree, running br
 
 ```
 /machine                             host, OS, filesystem, installed tools
-/code/<repo>/<dirs>/<file>#<symbol>  mirrors real repo structure down to symbols
-/projects/<name>/…                   decisions, conventions, status (may span repos)
+/projects/<name>/decisions/…         decisions, conventions, status
+/projects/<name>/code/<repo>/…       one codebase, mirrored down to <file>#<symbol>
 /people/<name>/…                     /people/jim/preferences/formatting · /people/jim/style
 /concepts/<topic>/…                  cross-cutting knowledge, e.g. /concepts/auth/jwt
 ```
@@ -277,10 +278,11 @@ Every entity sits at exactly one rooted path in a single memory tree, running br
 Rules:
 
 - **Broad → specific, always.** A parent path is a real place, not just a folder: facts attach at any depth (`/people/jim` holds identity facts; `/people/jim/preferences/testing` holds one preference).
+- **A codebase belongs to exactly one project; a project may hold several.** Code and the reasoning about it are siblings — `/projects/<name>/code/<repo>/…` next to `/projects/<name>/decisions/…` — so everything known about a project is one prefix, not a union of two roots plus a repo→project lookup. The `<repo>` segment is present even when a project has one codebase, so acquiring a second does not re-address the first (D27).
 - **Hierarchy organizes; the graph associates.** Edges (`relates_to`, `learned_with`, `contradicts`) cut across branches freely — categories give structured recall, associations give spreading activation. Both, like human memory.
-- **Auto-routing at write time.** `remember` accepts an explicit `path`; when omitted, Engram routes by kind + context: preference-kind → `/people/<user>/preferences/…`; facts about symbols/files in a repo session → `/code/<repo>/…`; decisions → `/projects/<current>/decisions/…`. Routing rules live in config, not code.
+- **Auto-routing at write time.** `remember` accepts an explicit `path`; when omitted, Engram routes by kind + context: preference-kind → `/people/<user>/preferences/…`; facts about symbols/files in a repo session → `/projects/<current>/code/<repo>/…`; decisions → `/projects/<current>/decisions/…`. Routing rules live in config, not code.
 - **Prefix operations are cheap.** A subtree query is an indexed range scan. `engram_browse(path)` returns children with fact counts and top-salience facts — a table of contents for memory, never a dump.
-- **Deleting a repo on disk deletes nothing in memory.** The `/code/<repo>` branch persists; the registry marks it detached (noted in the primer); `engram compact --path /code/<repo>` prunes only derived, rebuildable rows if the user chooses.
+- **Deleting a repo on disk deletes nothing in memory.** The `/projects/<name>/code/<repo>` branch persists; the registry marks it detached (noted in the primer); `engram compact --path /projects/<name>/code/<repo>` prunes only derived, rebuildable rows if the user chooses. The project's decisions are a sibling branch and are authored truth, so no prefix that reaches them is prunable.
 - **Roots are config** (`[taxonomy]`), so new top-level categories appear without a migration.
 
 ### 4.3 Temporal semantics
@@ -326,7 +328,7 @@ The indexer is language-agnostic by construction: the **universal tier handles e
 
 | Tier | Handles | Mechanism |
 |---|---|---|
-| **Universal** (always on) | every file, any language | File/module entities mirroring real structure into `/code/<repo>/…`; top-level symbol extraction via per-language regex packs (functions, classes, exports); import-graph edges. Zero external deps |
+| **Universal** (always on) | every file, any language | File/module entities mirroring real structure into `/projects/<name>/code/<repo>/…`; top-level symbol extraction via per-language regex packs (functions, classes, exports); import-graph edges. Zero external deps |
 | **Document** (always on) | md, txt, adoc, rst, org | Headings become child paths (`…/README.md#Installation`); links become `references` edges; code fences link to the code entities they mention; every doc and section gets a gist-level impression fact (§5.4) |
 | **Deep: Roslyn** | C#, VB | `Microsoft.CodeAnalysis` in-process: full semantic graph — signatures, references, call sites. AOT-compatible workspace loading |
 | **Deep: plugins** *(later)* | tree-sitter grammars, LSP-backed | Optional dynamically-loaded `IAnalyzer` implementations; never required |
