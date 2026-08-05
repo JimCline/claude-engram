@@ -13,7 +13,22 @@ public static class EngramInitializer
             EnsureDirectory(home.QueueDir),
             EnsureDirectory(home.ReportDir),
             EnsureConfig(home.ConfigPath),
+            EnsureDatabase(home),
         ];
+    }
+
+    /// <summary>
+    /// Creates the database if absent and applies the seed corpus once (D10: a usable
+    /// instance should not require the user to run anything else).
+    /// </summary>
+    private static InitializedPath EnsureDatabase(EngramHome home)
+    {
+        var existed = File.Exists(home.DatabasePath);
+
+        using var connection = EngramDatabase.OpenInitialized(home);
+        CannedFactSeeder.SeedOnce(connection, DateTimeOffset.UtcNow);
+
+        return new InitializedPath(home.DatabasePath, Created: !existed);
     }
 
     private static InitializedPath EnsureDirectory(string path)

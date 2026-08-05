@@ -32,8 +32,9 @@ public sealed class EngramMcpTools
         // What the user stated about themselves ranks in the same tier as the seeded
         // facts, not beside session notes: it is durable by nature and it did not come
         // from an agent's inference, so it is the most trustworthy thing in the pack.
-        var longTermFacts = new List<CannedFact>(CannedFacts.All);
-        longTermFacts.AddRange(UserFactStore.ToFacts(home, DateTime.UtcNow));
+        var now = DateTimeOffset.UtcNow;
+        var longTermFacts = new List<CannedFact>(FactCatalog.ReadLongTerm(home, now));
+        longTermFacts.AddRange(UserFactStore.ToFacts(home, now.UtcDateTime));
 
         var result = RecallEngine.Pack(query, longTermFacts, currentSessionFacts, priorSessionFacts, budget);
 

@@ -302,7 +302,7 @@ public class FactStoreTests
     {
         public const string SubjectPath = "/people/jim";
 
-        private readonly SandboxHome sandbox = new();
+        private readonly SandboxHome sandbox = new(initialize: false);
 
         public StoreFixture()
         {

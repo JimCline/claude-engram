@@ -12,6 +12,13 @@ public sealed record CannedFact(
 
 public static class CannedFacts
 {
+    /// <summary>
+    /// Bump when this corpus changes. Seeding records the version it applied, so a bump is
+    /// what lets a revised body reach a database that was already seeded — without one, the
+    /// seeder correctly declines to touch a store it has already populated.
+    /// </summary>
+    public const int Version = 1;
+
     public static readonly IReadOnlyList<CannedFact> All =
     [
         new("f001", "subagentstart-envelope", "requires", "SubagentStart delivers additionalContext only via the hookSpecificOutput envelope; bare stdout is silently discarded even though SessionStart accepts it.", "user", "claude-code hooks", 0, "docs/claude-code-hooks-reference.md"),

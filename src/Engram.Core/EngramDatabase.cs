@@ -111,6 +111,34 @@ public static class EngramDatabase
         return reader.ReadToEnd();
     }
 
+    public static string? ReadMeta(SqliteConnection connection, string key)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT value FROM schema_meta WHERE key = $key;";
+        command.Parameters.AddWithValue("$key", key);
+
+        return command.ExecuteScalar() as string;
+    }
+
+    public static void WriteMeta(
+        SqliteConnection connection,
+        SqliteTransaction? transaction,
+        string key,
+        string value)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText =
+            """
+            INSERT INTO schema_meta (key, value) VALUES ($key, $value)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value;
+            """;
+        command.Parameters.AddWithValue("$key", key);
+        command.Parameters.AddWithValue("$value", value);
+
+        command.ExecuteNonQuery();
+    }
+
     public static int ReadSchemaVersion(SqliteConnection connection)
     {
         using var command = connection.CreateCommand();

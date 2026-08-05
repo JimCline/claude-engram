@@ -30,8 +30,38 @@ public static class CannedFactSeeder
 
     public static string TopicPath(string topic) => $"{Root}/{Slug(topic)}";
 
+    public const string SeededVersionKey = "seed_corpus_version";
+
     public static int Seed(SqliteConnection connection, DateTimeOffset now) =>
         Seed(connection, CannedFacts.All, now);
+
+    /// <summary>
+    /// Seeds only if this database has not already had this corpus version applied, and
+    /// returns how many facts were written.
+    /// </summary>
+    /// <remarks>
+    /// The recorded version is what keeps seeding out of the read path. Deciding "is this
+    /// store already seeded?" by counting rows would be wrong in the one case that matters:
+    /// a user who has forgotten every seeded fact has an empty store, and re-seeding would
+    /// resurrect exactly what they asked to be rid of.
+    /// </remarks>
+    public static int SeedOnce(SqliteConnection connection, DateTimeOffset now)
+    {
+        var recorded = EngramDatabase.ReadMeta(connection, SeededVersionKey);
+        if (int.TryParse(recorded, out var applied) && applied >= CannedFacts.Version)
+        {
+            return 0;
+        }
+
+        var written = Seed(connection, CannedFacts.All, now);
+        EngramDatabase.WriteMeta(
+            connection,
+            transaction: null,
+            SeededVersionKey,
+            CannedFacts.Version.ToString(System.Globalization.CultureInfo.InvariantCulture));
+
+        return written;
+    }
 
     /// <summary>
     /// Writes every fact that is not already stored, and returns how many were written.

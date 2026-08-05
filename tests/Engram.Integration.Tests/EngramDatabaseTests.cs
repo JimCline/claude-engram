@@ -17,7 +17,7 @@ public class EngramDatabaseTests
     [Fact]
     public void Open_FreshConnection_HasForeignKeysOn()
     {
-        using var sandbox = new SandboxHome();
+        using var sandbox = new SandboxHome(initialize: false);
         using var connection = EngramDatabase.Open(sandbox.Home);
 
         Assert.Equal(1L, Scalar(connection, "PRAGMA foreign_keys;"));
@@ -29,7 +29,7 @@ public class EngramDatabaseTests
     [Fact]
     public void Open_FreshConnection_HasBusyTimeoutSet()
     {
-        using var sandbox = new SandboxHome();
+        using var sandbox = new SandboxHome(initialize: false);
         using var connection = EngramDatabase.Open(sandbox.Home);
 
         Assert.Equal((long)EngramDatabase.BusyTimeoutMilliseconds, Scalar(connection, "PRAGMA busy_timeout;"));
@@ -40,7 +40,7 @@ public class EngramDatabaseTests
     [Fact]
     public void Open_FreshConnection_HasSynchronousNormal()
     {
-        using var sandbox = new SandboxHome();
+        using var sandbox = new SandboxHome(initialize: false);
         using var connection = EngramDatabase.Open(sandbox.Home);
 
         Assert.Equal(1L, Scalar(connection, "PRAGMA synchronous;"));
@@ -49,7 +49,7 @@ public class EngramDatabaseTests
     [Fact]
     public void OpenInitialized_LeavesDatabaseInWalMode()
     {
-        using var sandbox = new SandboxHome();
+        using var sandbox = new SandboxHome(initialize: false);
         using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
 
         Assert.Equal("wal", Scalar(connection, "PRAGMA journal_mode;") as string);
@@ -58,7 +58,7 @@ public class EngramDatabaseTests
     [Fact]
     public void OpenInitialized_RecordsTheSchemaVersionTheBinaryExpects()
     {
-        using var sandbox = new SandboxHome();
+        using var sandbox = new SandboxHome(initialize: false);
         using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
 
         Assert.Equal(EngramDatabase.SchemaVersion, EngramDatabase.ReadSchemaVersion(connection));
@@ -67,7 +67,7 @@ public class EngramDatabaseTests
     [Fact]
     public void OpenInitialized_OnAnAlreadyInitialisedFile_IsANoOp()
     {
-        using var sandbox = new SandboxHome();
+        using var sandbox = new SandboxHome(initialize: false);
 
         using (var first = EngramDatabase.OpenInitialized(sandbox.Home))
         {
@@ -86,7 +86,7 @@ public class EngramDatabaseTests
     [Fact]
     public void DanglingForeignKey_IsRejectedThroughTheRealOpenPath()
     {
-        using var sandbox = new SandboxHome();
+        using var sandbox = new SandboxHome(initialize: false);
         using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
 
         var entityId = InsertEntity(connection, "/people/jim");
@@ -107,7 +107,7 @@ public class EngramDatabaseTests
     [InlineData("guessed")]
     public void Fact_RejectsProvenanceOutsideTheThreeTiers(string learnedVia)
     {
-        using var sandbox = new SandboxHome();
+        using var sandbox = new SandboxHome(initialize: false);
         using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
         var entityId = InsertEntity(connection, "/people/jim");
 
@@ -120,7 +120,7 @@ public class EngramDatabaseTests
     [InlineData("inferred")]
     public void Fact_AcceptsEachOfTheThreeTiers(string learnedVia)
     {
-        using var sandbox = new SandboxHome();
+        using var sandbox = new SandboxHome(initialize: false);
         using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
         var entityId = InsertEntity(connection, $"/people/{learnedVia}");
 
@@ -134,7 +134,7 @@ public class EngramDatabaseTests
     [Fact]
     public void Fact_RejectsRegenerableOutsideZeroOrOne()
     {
-        using var sandbox = new SandboxHome();
+        using var sandbox = new SandboxHome(initialize: false);
         using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
         var entityId = InsertEntity(connection, "/people/jim");
 
@@ -146,7 +146,7 @@ public class EngramDatabaseTests
     [Fact]
     public void Fact_DefaultsToNotRegenerable()
     {
-        using var sandbox = new SandboxHome();
+        using var sandbox = new SandboxHome(initialize: false);
         using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
         var entityId = InsertEntity(connection, "/people/jim");
 
@@ -163,7 +163,7 @@ public class EngramDatabaseTests
     [Fact]
     public void BeginWrite_CommitsWhatItWrote()
     {
-        using var sandbox = new SandboxHome();
+        using var sandbox = new SandboxHome(initialize: false);
         using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
 
         using (var transaction = EngramDatabase.BeginWrite(connection))

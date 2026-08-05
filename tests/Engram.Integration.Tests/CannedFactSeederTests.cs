@@ -163,7 +163,7 @@ public class CannedFactSeederTests
 
     private sealed class SeedFixture : IDisposable
     {
-        private readonly SandboxHome sandbox = new();
+        private readonly SandboxHome sandbox = new(initialize: false);
 
         public SeedFixture()
         {
