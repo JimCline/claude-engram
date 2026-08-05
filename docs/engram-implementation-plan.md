@@ -1100,6 +1100,62 @@ Two constraints that make this real rather than aspirational:
 Every fact these analyzers write is `observed` (D19) and `regenerable` (D23), without
 exception. That is what makes a full re-index safe.
 
+### D25 — Native AOT is a per-process requirement, not a project-wide one
+
+Raised while weighing what to do if LLamaSharp proves AOT-hostile: AOT is a means, and if
+it costs us the embedding stack we should ask what it was actually buying and whether that
+can be bought another way. Taking the question seriously produces a better answer than
+either "keep AOT and drop LLamaSharp" or "drop AOT".
+
+**What AOT gives, and what survives without it.**
+
+| What it buys | Replaceable? |
+|---|---|
+| Single file, no runtime installed | **Yes** — self-contained deployment gets there. Costs artifact size, not correctness |
+| Steady-state throughput | **Not a reason to keep it.** After warmup, tiered JIT is frequently *faster* than AOT |
+| Memory footprint | **Mostly** — matters least, since the daemon is long-lived |
+| **Cold start** | **No.** ReadyToRun narrows the gap; it does not close it |
+
+Only the last one is load-bearing, and only in one place. The MCP server is a supervised
+long-lived daemon (D14), so it pays startup once per launch and JIT warmup is amortized into
+nothing. Recall runs inside that daemon. Neither cares much.
+
+**The hook does.** `engram hook file-touched` is a fresh process on every file touch, its
+budget is 10 ms, and that budget "must hold unconditionally, not just when nothing else is
+writing." R2R-class startup lands in the tens of milliseconds — five to eight times over
+budget. There is no configuration that recovers this, because the cost is process start
+itself, not the work being done. That single path is why AOT stays.
+
+So the boundary is not *this project is AOT*. It is **the latency-critical process is AOT,
+and everything else may be whatever it needs to be.** D1 already drew exactly this line for
+Roslyn: MSBuild and MEF are hostile to trimming, so they went in a sidecar and the core
+never links them. LLamaSharp takes the same escape hatch on the same reasoning, and needs no
+new architecture to do it.
+
+One difference from the Roslyn sidecar matters. Roslyn is spawned per batch and a ~300 ms
+start amortizes fine. An embedder cannot work that way — loading several hundred megabytes
+of weights per batch would dominate everything. The embedder sidecar is therefore
+**long-lived**, a supervised child of the D14 daemon, started on demand and kept warm.
+
+**The practical consequence: M4 does not have to answer the AOT question to ship.** The
+order of attack is now a ladder, cheapest and least risky first:
+
+1. **Localhost providers** (Ollama, LM Studio) — no AOT exposure, no process to supervise,
+   and per D18 already a supported configuration.
+2. **In-process LLamaSharp** — if it turns out AOT-clean, this becomes the default and the
+   ladder stops here.
+3. **An owned embedder sidecar** — only if LLamaSharp is AOT-hostile *and* we want embedding
+   that does not require the user to install someone else's runtime.
+
+Step 3 exists because D20's rule binds here too: an opt-in feature that works only when a
+third-party tool is installed is weaker than one whose dependency we ship. It is third on
+the ladder because it is the most work, not because it is optional forever.
+
+This demotes the AOT spike from gating to informative: it decides *which rung* M4 lands on,
+not whether M4 happens. And it stays falsifiable — if the 10 ms hook budget is ever shown
+achievable without AOT, on measurement rather than argument, this decision should be
+reopened, because at that point AOT would be buying only artifact size.
+
 ---
 
 ## PreCompact cannot inject context
@@ -1369,11 +1425,11 @@ which that project does not evidence**, and it is now the whole of this group.
 
 4. **Does `sqlite-vec` load under Native AOT** through `NativeLibrary.Load` from
    `~/.engram/lib/`? D1 asserts it; §1.5 never measured it.
-5. **Does LLamaSharp work under Native AOT?** The higher risk of the two — it is a managed
-   wrapper, not just a P/Invoke surface, and trimming is where wrappers break. A failure
-   here is survivable rather than fatal: per D18 the lane ships with the in-process provider
-   unavailable and the localhost HTTP providers working, so measure it early enough to know
-   which shape M4 has, not to decide whether M4 happens.
+5. **Does LLamaSharp work under Native AOT?** It is a managed wrapper, not just a P/Invoke
+   surface, and trimming is where wrappers break. **Informative, not gating** — per D25 the
+   answer selects which rung of the provider ladder M4 lands on, and per D18 the localhost
+   providers carry the lane regardless. Worth measuring early for planning, not before
+   starting.
 5b. Only if both pass: confirm embedding throughput on the background queue is sufficient
     to backfill the existing corpus in reasonable time. Not a latency deadline — embedding
     is off the write path by construction (D4), so this is a throughput sanity check.
