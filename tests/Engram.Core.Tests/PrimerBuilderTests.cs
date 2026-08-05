@@ -13,12 +13,31 @@ public class PrimerBuilderTests
     }
 
     [Fact]
-    public void Build_IncludesInstructionAndCoverageLine()
+    public void Build_IncludesCoverageLine()
     {
         var primer = PrimerBuilder.Build(CannedFacts.All);
 
-        Assert.Contains("engram_recall", primer);
         Assert.Contains($"Memory holds {CannedFacts.All.Count} facts", primer);
+    }
+
+    // D15: standing guidance belongs in the tool descriptions, which persist for the whole
+    // session, not in the primer, which is ordinary context and is summarized away by
+    // compaction. A tool name appearing in the guidance lines means it has drifted back
+    // into the channel that loses it. Example fact bodies are exempt — they are stored
+    // content, not instruction, and a fact is allowed to mention a tool.
+    [Theory]
+    [InlineData("engram_recall")]
+    [InlineData("engram_remember")]
+    [InlineData("engram_digest")]
+    public void Build_GuidanceLines_DoNotRestateToolDescriptions(string toolName)
+    {
+        var primer = PrimerBuilder.Build(CannedFacts.All);
+
+        var guidance = string.Join(
+            '\n',
+            primer.Split('\n').TakeWhile(l => !l.StartsWith("Examples:", StringComparison.Ordinal)));
+
+        Assert.DoesNotContain(toolName, guidance);
     }
 
     [Fact]
@@ -49,21 +68,28 @@ public class PrimerBuilderTests
         Assert.Equal(2, factLineCount);
     }
 
+    // With the standing guidance gone to the tool descriptions, an empty store leaves the
+    // primer with nothing to report. HookCommand relies on this being empty rather than
+    // whitespace to decide not to emit additionalContext at all.
     [Fact]
-    public void Build_NoFactsAtAll_EmitsInstructionAlone()
+    public void Build_NoFactsAtAll_EmitsNothing()
     {
         var primer = PrimerBuilder.Build(Array.Empty<CannedFact>());
 
-        Assert.DoesNotContain('\n', primer);
-        Assert.Contains("engram_recall", primer);
+        Assert.Equal(string.Empty, primer);
     }
 
     [Fact]
     public void Build_ExamplesSectionThatCannotFitEvenOneLine_ProducesNoHeading()
     {
+        // Sized from the budget rather than hardcoded. A fixed length silently stopped
+        // being oversized when the standing guidance moved out of the primer (D15) and
+        // handed ~40 tokens back, which turned this into a test that could no longer fail.
+        var farOverBudget = new string('a', PrimerBuilder.MaxTokens * 8);
+
         var facts = new List<CannedFact>
         {
-            new("f001", "subject", "predicate", new string('a', 880), "user", "topic", 0),
+            new("f001", "subject", "predicate", farOverBudget, "user", "topic", 0),
         };
 
         var primer = PrimerBuilder.Build(facts);

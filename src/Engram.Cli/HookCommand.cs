@@ -134,8 +134,16 @@ internal static class HookCommand
         {
         }
 
-        WriteJson(stdout, HookJsonContext.Default.AdditionalContextHookOutput,
-            new AdditionalContextHookOutput(new HookSpecificOutput("SessionStart", primer)));
+        // An empty primer became reachable once the standing guidance moved into the tool
+        // descriptions (D15): with nothing stored there is no coverage line and nothing
+        // left to say. Emitting an empty additionalContext would spend a hook round trip
+        // injecting a blank string.
+        if (!string.IsNullOrWhiteSpace(primer))
+        {
+            WriteJson(stdout, HookJsonContext.Default.AdditionalContextHookOutput,
+                new AdditionalContextHookOutput(new HookSpecificOutput("SessionStart", primer)));
+        }
+
         return 0;
     }
 

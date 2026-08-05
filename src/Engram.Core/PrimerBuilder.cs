@@ -4,11 +4,6 @@ public static class PrimerBuilder
 {
     public const int MaxTokens = 300;
 
-    private const string Instruction =
-        "Engram memory is available and cheap. Call engram_recall before exploring files; " +
-        "use engram_remember for durable facts you learn; flush learnings via engram_digest " +
-        "before the session ends.";
-
     // A subagent's situation differs from the main session's in one way that matters: it
     // reports back through a summary, and a summary is lossy by construction. Anything it
     // learned that did not fit the report is gone at handoff unless it was written down.
@@ -25,10 +20,18 @@ public static class PrimerBuilder
 
     private static readonly string[] PreferredScopeOrder = ["user", "project", "code", "session"];
 
+    /// <summary>
+    /// The primer delivered at session start. Carries only what a static tool description
+    /// cannot: how much is stored right now, and what it covers. The standing guidance —
+    /// recall before exploring, remember what you learn, digest before the end — lives in
+    /// the tool descriptions instead, because those persist for the whole session while
+    /// this channel is ordinary context and is summarized away by compaction (D15).
+    /// Returns an empty string when there is nothing stored and so nothing to report.
+    /// </summary>
     public static string Build(IReadOnlyList<CannedFact> facts)
     {
-        var lines = new List<string> { Instruction };
-        var tokens = TokenEstimator.Estimate(Instruction);
+        var lines = new List<string>();
+        var tokens = 0;
 
         TryAppendLine(lines, ref tokens, CoverageLine(facts));
 
