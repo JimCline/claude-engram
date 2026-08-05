@@ -769,8 +769,65 @@ a design whose core is a single Native AOT binary (D1) that already holds the SQ
 open. `sqlite-vec` is a loadable extension over that same file: one process, one database,
 one backup, and query plans stay visible per the no-ORM rule. Embedding *generation* rides
 the llama.cpp that D1 already side-loads into `~/.engram/lib/`, behind
-`engram init --with-embeddings`. A small sentence embedder (384-dim) costs ~1.5 KB per
-fact — negligible against the fact bodies themselves.
+`engram init --with-embeddings`.
+
+**Model: `Qwen/Qwen3-Embedding-0.6B`, GGUF quantized, 1024 dimensions.** This is not chosen
+from a benchmark table — it is running prior art. A separate project of the author's already
+executes exactly this stack in production: Qwen3-Embedding-0.6B in-process through
+**LLamaSharp**, no external API and no Ollama hop, feeding a **`sqlite-vec`** store. It
+replaced `nomic-embed-text` there specifically because nomic underperformed on **mixed
+code-and-prose content**.
+
+That rationale transfers with unusual force. Most systems embed one kind of text; Engram
+embeds prose beliefs *and*, once D24 lands, code facts extracted from C# and TypeScript —
+into the same store, retrieved by the same query. Mixed code-and-prose is not an edge case
+here, it is the corpus. An evaluation someone already paid for, on the exact content shape,
+beats a fresh comparison of general-purpose sentence encoders.
+
+Three consequences of the larger model, all absorbed by decisions already made:
+
+- **Storage**: 1024 dims at float32 is ~4 KB per fact, so ten thousand facts cost ~40 MB.
+  Irrelevant at this scale. Int8 quantization to ~1 KB is available and not needed yet.
+- **Download**: a quantized 0.6B model is a few hundred megabytes, against ~90 MB for a
+  small sentence encoder. Acceptable *only* because it sits behind
+  `engram init --with-embeddings` and because FTS5-only remains a fully supported
+  configuration rather than a degraded one — a promise this makes load-bearing.
+- **Latency**: 0.6B parameters cost meaningfully more per embedding than a 22M encoder.
+  Also absorbed: embedding already runs server-side and off the write path, so this is
+  throughput on a background queue, not latency on a hook.
+
+**Providers: LLamaSharp in-process by default, LM Studio or Ollama as alternatives.** The
+same prior-art system supports all three behind one seam, which is what M4's `IEmbedder`
+already anticipated. Engram takes the same shape, for two reasons beyond parity.
+
+First, it is free capacity. A user already running Ollama or LM Studio has the model weights
+and the runtime; pointing at them avoids a second several-hundred-megabyte download for no
+gain. Second — and this is the part that changes the risk profile — **an HTTP provider is
+trivially AOT-safe**. If LLamaSharp proves hostile to Native AOT, the vector lane does not
+die with it; it ships with the in-process provider unavailable and the local-server
+providers working. That converts the riskiest item in M4 from a blocker into a degraded
+mode.
+
+This does not reopen D20. Ollama and LM Studio are reached over **localhost**, so nothing
+leaves the machine and the local-only guarantee holds — the objection to ChromaDB was never
+that it spoke a protocol, it was that it was a *required* second daemon dragging a Python
+runtime behind it. D20's line governs here unchanged: Engram must be complete with none of
+them installed, which is what the in-process default and the FTS5-only fallback are for.
+
+**The invariant that makes providers safe, and the quiet way this breaks.** Vectors from
+different models are not comparable. Cosine distance between a Qwen3 embedding and a
+`nomic-embed-text` embedding is a real number, it is meaningless, and nothing about it looks
+wrong — retrieval simply degrades into confident nonsense. Dimensions differ too (1024 here,
+768 for nomic, 384 for the small encoders), so a provider change can invalidate the
+`sqlite-vec` table itself rather than merely its contents.
+
+Therefore the vector index records **which model and which dimension produced it**, as index
+metadata rather than per row. A provider or model change is detected, not assumed away:
+`doctor` reports the mismatch, and `embed --rebuild` is the remedy. This sits cleanly inside
+existing rules — the index is derived state, so D8 permits `repair` to rebuild it, and D23's
+`regenerable` marker already distinguishes what may be discarded. `engram explain` (D21)
+reports the model that produced each vector, because "which embedding space is this" is
+exactly the sort of question an unexplainable ranking hides.
 
 **Embeddings are derived state, and that settles three things at once.** Under D8 they are
 repairable, so `repair` may rebuild the vector index and `embed --rebuild` is not a special
@@ -1304,11 +1361,22 @@ implemented; D15–D18 are written but unbuilt.
 
 **B. Spikes that gate M4 — these carry the real risk**
 
+*Substantially retired by prior art.* A separate project of the author's already runs
+Qwen3-Embedding-0.6B in-process via LLamaSharp into a `sqlite-vec` store, with LM Studio and
+Ollama as alternative providers. Model selection, the nomic comparison, and "does this
+combination work at all" are answered — do not re-run them. **What remains is Native AOT,
+which that project does not evidence**, and it is now the whole of this group.
+
 4. **Does `sqlite-vec` load under Native AOT** through `NativeLibrary.Load` from
-   `~/.engram/lib/`? D1 asserts it; §1.5 never measured it. A failure here reshapes the
-   whole lane, so it is measured before any M4 code is written.
-5. **Does the side-loaded llama.cpp emit embeddings** in `--embedding` mode at workable
-   latency? Model chosen here: 384-dim, quantized (`bge-small` or `all-MiniLM-L6-v2`).
+   `~/.engram/lib/`? D1 asserts it; §1.5 never measured it.
+5. **Does LLamaSharp work under Native AOT?** The higher risk of the two — it is a managed
+   wrapper, not just a P/Invoke surface, and trimming is where wrappers break. A failure
+   here is survivable rather than fatal: per D18 the lane ships with the in-process provider
+   unavailable and the localhost HTTP providers working, so measure it early enough to know
+   which shape M4 has, not to decide whether M4 happens.
+5b. Only if both pass: confirm embedding throughput on the background queue is sufficient
+    to backfill the existing corpus in reasonable time. Not a latency deadline — embedding
+    is off the write path by construction (D4), so this is a throughput sanity check.
 
 **C. M4 proper, in dependency order (only after B is green)**
 
