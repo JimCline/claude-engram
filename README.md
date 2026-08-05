@@ -16,13 +16,14 @@ substitute for context, not a supplement to it.
 - No containers, no runtime install, and nothing that leaves the machine: the server
   binds `127.0.0.1` only and rejects any request carrying an `Origin` header
 
-**Status:** M0 in progress. The CLI, the supervised HTTP daemon, the hooks, the installer
-and the Claude Code plugin all exist and are verified against a live Claude Code. There is
-no database yet **by design** — M0 is an adoption probe that measures whether the agent
-calls the memory tools at all, before anything is built on the assumption that it will.
-The evidence that this is the right order is in D12: a sibling tool on the same machine
-holds 67,936 unstructured notes and zero structured facts, because the structured half
-asks more of the model than the model volunteers.
+**Status:** M0 complete and M1 in progress. The CLI, the supervised HTTP daemon, the hooks,
+the installer and the Claude Code plugin all exist and are verified against a live Claude
+Code. M0 deliberately shipped with no database — it was an adoption probe measuring whether
+the agent calls the memory tools at all, before anything was built on the assumption that
+it would. The evidence that this was the right order is in D12: a sibling tool on the same
+machine holds 67,936 unstructured notes and zero structured facts, because the structured
+half asks more of the model than the model volunteers. The store now exists, and every
+memory tool writes to it — `engram_digest` was the last that did not.
 
 ## Documents
 
@@ -33,7 +34,7 @@ asks more of the model than the model volunteers.
 | [`docs/engram-schema.sql`](docs/engram-schema.sql) | Canonical M1 database schema |
 | [`docs/engram-design.html`](docs/engram-design.html) | Visual design sheet |
 
-Start with the implementation plan — it records fourteen decisions (D1–D14) resolving
+Start with the implementation plan — it records twenty-six decisions (D1–D26) resolving
 questions the spec left open, the places where the spec contradicts itself, and for each
 one the argument or measurement that settled it.
 

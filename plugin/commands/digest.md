@@ -24,8 +24,12 @@ Each fact must stand alone. "That approach doesn't work" is worthless out of con
 "a deferred SQLite transaction that upgrades to a writer raises SQLITE_BUSY_SNAPSHOT,
 which busy_timeout cannot wait out" is the same fact made portable.
 
-Also pass a one- or two-sentence `session_summary`.
+Also pass a one- or two-sentence `session_summary`. If you have already digested once this
+session, the later summary replaces the earlier one — write it to describe the whole
+session, not just what happened since.
 
-Then report **what the tool actually returned**, not what you hoped it did. At this
-milestone digest confirms receipt in order to measure whether it gets called at all — if
-the response does not say facts were persisted, do not tell the user they were.
+Then report **what the tool actually returned**, not what you hoped it did. It stores each
+learning and answers with an id for it; if the response does not list ids, the learnings
+are not saved and you should not tell the user they were. Sending a learning that is
+already stored is free, so err toward including one you are unsure about rather than
+leaving it out.

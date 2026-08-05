@@ -1,5 +1,5 @@
 tool: engram_digest
-Flush the durable learnings from this session in one call, before context is compacted or the session ends. Accepts up to 25 short learnings plus an optional summary. This milestone does not persist anything yet; it only confirms receipt to measure whether digest fires unprompted.
+Flush the durable learnings from this session in one call, before context is compacted or the session ends. Accepts up to 25 short learnings plus an optional summary. Each is stored as a session note — recallable in later sessions too — and comes back with an id you can pass to engram_forget. Re-sending one already stored creates no duplicate, so calling this at compaction and again at the end is safe.
   param: learnings
   Up to 25 short, self-contained facts learned this session.
   param: session_summary

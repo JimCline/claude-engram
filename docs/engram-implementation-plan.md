@@ -846,12 +846,27 @@ first-person statements), re-run the measurement before assuming the answer stil
 `engram probe` reports the distribution now, so re-running it is one command rather than a
 study.
 
+**The first of those triggers has fired: `engram_digest` now persists.** One call can add up
+to 25 notes, against a measured median of 1 fact per fact-writing session — so a single
+digest in a session moves that session past the gate on its own. This does not reopen D16
+yet, because nothing has been measured: the gate is about what sessions *typically* produce,
+and no session has yet run against a persisting digest. Re-run `engram probe` after real use
+before concluding either way. What would be wrong is to leave the lapse recorded as settled
+when the thing that justified it has changed.
+
 ### D17 — The tool surface is a per-session token cost with a stated ceiling
 
-Measured 2026-08-05: the four memory tools in `EngramMcpTools.cs` cost **2,399 characters
-of definitions** (`recall` 521, `remember` 1,148, `forget` 345, `digest` 385 — description
-plus schema), roughly 600 tokens, paid on every session whether or not memory is used.
+Measured 2026-08-05: the four memory tools in `EngramMcpTools.cs` cost **2,575 characters
+of definitions** (`recall` 521, `remember` 1,142, `forget` 403, `digest` 509 — description
+plus schema), roughly 640 tokens, paid on every session whether or not memory is used.
 Three more tools ship alongside them (`start`, `status`, `stop`).
+
+That figure was 2,399 when this decision was written, and the drift is the ceiling doing its
+job: `forget` grew when it learned to retract session notes, `digest` when it started
+persisting them. Both were paid for deliberately — the second is 25 characters under the
+ceiling, and buying it meant cutting words from the same description rather than raising the
+limit. There are 25 characters left, so the next tool that wants more has to take it from
+one that has it.
 
 `claude-mem` cut 9 overlapping tools (~2,500 tokens) to 4. We are already at 4 memory
 tools and they do not overlap, so there is no consolidation to do — but the cost was

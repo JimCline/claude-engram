@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using Engram.Core;
+using Microsoft.Data.Sqlite;
 using ModelContextProtocol.Server;
 
 namespace Engram.Cli;
@@ -175,11 +176,19 @@ public sealed class EngramMcpTools
             + "rather than the original erased, because facts here are only ever closed, never deleted.";
     }
 
+    /// <summary>
+    /// The cap is not arbitrary: a batch is one call so end-of-session capture costs one
+    /// round trip, and 25 is where the response stops being cheap to read back.
+    /// </summary>
+    public const int MaxDigestLearnings = 25;
+
     [McpServerTool(Name = "engram_digest")]
     [Description(
         "Flush the durable learnings from this session in one call, before context is compacted or the " +
-        "session ends. Accepts up to 25 short learnings plus an optional summary. This milestone does not " +
-        "persist anything yet; it only confirms receipt to measure whether digest fires unprompted.")]
+        "session ends. Accepts up to 25 short learnings plus an optional summary. Each is stored as a " +
+        "session note — recallable in later sessions too — and comes back with an id you can pass to " +
+        "engram_forget. Re-sending one already stored creates no duplicate, so calling this at " +
+        "compaction and again at the end is safe.")]
     public static string Digest(
         EngramHome home,
         McpSessionId session,
@@ -187,22 +196,75 @@ public sealed class EngramMcpTools
         [Description("Up to 25 short, self-contained facts learned this session.")] string[] learnings,
         [Description("A one- or two-sentence summary of the session.")] string? session_summary = null)
     {
-        var total = learnings.Length;
-        var counted = Math.Min(total, 25);
-        var overflow = total - counted;
-
-        if (homeState.Initialized)
+        if (!homeState.Initialized)
         {
-            Telemetry.Append(home, new TelemetryRecord(
-                Timestamp: DateTime.UtcNow.ToString("o"),
-                SessionId: session.Value,
-                Kind: TelemetryEventKind.Digest));
+            return "Engram home is not initialised (run 'engram init'); nothing from this digest was saved.";
         }
 
-        var summaryNote = string.IsNullOrWhiteSpace(session_summary) ? string.Empty : $" Summary noted: \"{session_summary}\"";
-        var overflowNote = overflow > 0 ? $" ({overflow} additional learning(s) beyond the 25-cap were ignored.)" : string.Empty;
+        var accepted = learnings.Where(l => !string.IsNullOrWhiteSpace(l)).ToList();
+        var overflow = Math.Max(0, accepted.Count - MaxDigestLearnings);
+        var blank = learnings.Length - accepted.Count;
 
-        return $"Digest received: {counted} learning(s) recorded.{summaryNote}{overflowNote} " +
-               "Not persisted in this milestone (no database yet) — this call only measures whether digest fires at session end.";
+        var handles = new List<string>(Math.Min(accepted.Count, MaxDigestLearnings));
+        var failed = 0;
+
+        using (var connection = EngramDatabase.OpenInitialized(home))
+        {
+            var now = DateTimeOffset.UtcNow;
+
+            foreach (var learning in accepted.Take(MaxDigestLearnings))
+            {
+                // Per-learning rather than one transaction over the batch: SessionFacts.Append
+                // takes its own write lock, and a batch that discards twenty-four good notes
+                // because the twenty-fifth collided would be worse than a partial flush the
+                // model can see and retry.
+                try
+                {
+                    var factId = SessionFacts.Append(
+                        connection, session.Value, learning.Trim(), subject: null, evidence: null, agent: null, now);
+
+                    handles.Add(FactCatalog.HandleFor(factId));
+                }
+                catch (SqliteException)
+                {
+                    failed++;
+                }
+            }
+
+            if (!string.IsNullOrWhiteSpace(session_summary))
+            {
+                SessionStore.WriteDigest(connection, session.Value, session_summary.Trim(), now);
+            }
+        }
+
+        Telemetry.Append(home, new TelemetryRecord(
+            Timestamp: DateTime.UtcNow.ToString("o"),
+            SessionId: session.Value,
+            Kind: TelemetryEventKind.Digest));
+
+        if (handles.Count == 0 && string.IsNullOrWhiteSpace(session_summary))
+        {
+            return failed > 0
+                ? $"Nothing was stored: all {failed} learning(s) failed to write. Try engram_remember with one of them."
+                : "Nothing to store — no learnings were supplied.";
+        }
+
+        // The ids, not the statements: the model just sent the text, and echoing 25 of them
+        // back costs the context this call exists to protect.
+        var storedNote = handles.Count > 0
+            ? $"{handles.Count} learning(s) stored as session notes [{string.Join(' ', handles)}]. "
+                + "Recallable now and in later sessions; pass an id to engram_forget to retract one."
+            : "No learnings stored.";
+
+        var summaryNote = string.IsNullOrWhiteSpace(session_summary)
+            ? string.Empty
+            : " Session summary recorded.";
+        var blankNote = blank > 0 ? $" ({blank} blank entr(y/ies) skipped.)" : string.Empty;
+        var overflowNote = overflow > 0
+            ? $" ({overflow} learning(s) beyond the {MaxDigestLearnings}-cap were not stored — send them in a second call.)"
+            : string.Empty;
+        var failureNote = failed > 0 ? $" ({failed} learning(s) failed to write.)" : string.Empty;
+
+        return storedNote + summaryNote + blankNote + overflowNote + failureNote;
     }
 }
