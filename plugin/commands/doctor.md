@@ -53,11 +53,12 @@ Faults worth naming explicitly, because none of them announce themselves:
   exit early and no primer reaches the model. `engram init` fixes it.
 - **Telemetry is empty while the server is running.** Nothing is being recorded — usually
   the same uninitialised-home cause as above, one layer down.
-- **No `engram.db` in the home listing.** Say plainly that this is expected right now and
-  not a fault: code indexing is deferred out of M0, so no repository has been or can be
-  indexed yet. Recall answers from the facts compiled into the binary plus this session's
-  working memory, which means it returns the same thing in every repo. Do not describe
-  the database as missing, broken, or in need of repair.
+- **No `engram.db` in the home listing.** `engram init` creates and seeds it, so an absent
+  database means initialisation never finished — it is not optional and not deferred.
+  Name `engram init` as the fix. What *is* deferred is code indexing: no repository has
+  been indexed yet, so recall answers from the seeded corpus plus whatever this instance
+  has been told since. An unindexed repository is not a broken database — do not report
+  it as one, and do not suggest `repair` for it.
 - **Log tail shows repeated bind failures.** Port contention, not a memory problem.
 
 ## Boundaries

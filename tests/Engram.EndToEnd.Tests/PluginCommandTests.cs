@@ -184,8 +184,57 @@ public partial class PluginCommandTests
         }
     }
 
+    // The same exposure one layer down. Four commands reach the binary through
+    // scripts/engram-cli.sh, which forwards whatever it is handed, so a renamed subcommand
+    // leaves a command file that still reads correctly and now exits 1 with a usage dump.
+    // The binary's own usage is the list of what it accepts; asking it beats keeping a
+    // second copy here, which is exactly the thing that would drift.
+    [Fact]
+    public void EverySubcommandNamedByACommand_IsOneTheCliAccepts()
+    {
+        Assert.SkipUnless(EndToEndBinary.Path is not null, EndToEndBinary.SkipReason);
+
+        var named = new SortedSet<string>(StringComparer.Ordinal);
+        foreach (var file in Directory.GetFiles(CommandsDirectory, "*.md"))
+        {
+            foreach (Match match in CliSubcommand().Matches(File.ReadAllText(file)))
+            {
+                named.Add(match.Groups[1].Value);
+            }
+        }
+
+        Assert.NotEmpty(named);
+
+        // No subcommand at all, so the binary prints usage and touches nothing — this reads
+        // the CLI's contract rather than exercising it, and needs no initialised home.
+        using var home = new TestHome(initialize: false);
+        var (_, _, usage) = EngramProcess.Run(home.Root);
+
+        var accepted = UsageCommand().Matches(usage)
+            .Select(m => m.Groups[1].Value)
+            .ToHashSet(StringComparer.Ordinal);
+
+        Assert.NotEmpty(accepted);
+
+        foreach (var name in named)
+        {
+            Assert.True(
+                accepted.Contains(name),
+                $"A command runs 'engram {name}', which the CLI does not accept. "
+                    + $"Accepted: {string.Join(", ", accepted.OrderBy(n => n, StringComparer.Ordinal))}");
+        }
+    }
+
     [GeneratedRegex(@"\$\{CLAUDE_PLUGIN_ROOT\}/([A-Za-z0-9_./-]+)")]
     private static partial Regex PluginRootReference();
+
+    // Horizontal space only, so doctor.md's CLI="…/engram-cli.sh" assignment stops at the
+    // end of its line instead of swallowing the first word of the next one.
+    [GeneratedRegex(@"(?:\$CLI|engram-cli\.sh)""?[ \t]+([a-z][a-z-]*)")]
+    private static partial Regex CliSubcommand();
+
+    [GeneratedRegex(@"^  ([a-z][a-z-]*)", RegexOptions.Multiline)]
+    private static partial Regex UsageCommand();
 
     [GeneratedRegex(@"mcp__plugin_engram_engram__(engram_[a-z]+)")]
     private static partial Regex QualifiedToolName();
