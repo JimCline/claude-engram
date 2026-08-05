@@ -46,6 +46,45 @@ public class EngramDatabaseTests
         Assert.Equal(1L, Scalar(connection, "PRAGMA synchronous;"));
     }
 
+    /// <summary>
+    /// Pooling makes a second <c>Open</c> in one process reuse the same <c>sqlite3</c> handle,
+    /// so connection-scoped state set by an earlier caller is still there.
+    /// </summary>
+    /// <remarks>
+    /// Found while measuring spike D (§1.5): a connection that never loaded <c>sqlite-vec</c>
+    /// answered <c>vec_version()</c>, because the pool had handed back the handle that did.
+    /// The hazard is inferring "the extension is loaded" from a query that happened to work —
+    /// it can work in the long-lived MCP server and fail in a hook, on pool luck alone. This
+    /// pins the behaviour with a temp table because CI has no <c>vec0.dylib</c>; a guard that
+    /// can only run on one machine is a guard that never runs.
+    /// </remarks>
+    [Fact]
+    public void Open_ReusesAPooledHandle_SoConnectionScopedStateOutlivesTheConnection()
+    {
+        using var sandbox = new SandboxHome(initialize: false);
+
+        using (var first = EngramDatabase.Open(sandbox.Home))
+        {
+            Execute(first, "CREATE TEMP TABLE pool_marker (id INTEGER PRIMARY KEY);");
+        }
+
+        using (var second = EngramDatabase.Open(sandbox.Home))
+        {
+            Assert.Equal(0L, Scalar(second, "SELECT COUNT(*) FROM temp.pool_marker;"));
+        }
+
+        // What a different process gets, and what M4's extension loading must assume.
+        SqliteConnection.ClearAllPools();
+
+        using (var fresh = EngramDatabase.Open(sandbox.Home))
+        {
+            var gone = Assert.Throws<SqliteException>(
+                () => Scalar(fresh, "SELECT COUNT(*) FROM temp.pool_marker;"));
+
+            Assert.Contains("pool_marker", gone.Message, StringComparison.Ordinal);
+        }
+    }
+
     [Fact]
     public void OpenInitialized_LeavesDatabaseInWalMode()
     {

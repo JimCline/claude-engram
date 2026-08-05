@@ -44,18 +44,32 @@ provider sends it — but `busy_timeout=0` and `synchronous=2`. Deleting the `fo
 line breaks no test; deleting either of the others does. Keep all three, and do not write
 a guard that claims to protect the first.
 
+Loadable extensions are connection-scoped for the same reason, and **connection pooling
+hides it**. Measured: load `sqlite-vec` on one connection, dispose it, and the next
+`EngramDatabase.Open` in that process still answers `vec_version()` — the pool handed back
+the same `sqlite3` handle with the module still registered. Call `ClearAllPools` first and
+the extension is gone, which is what a *different* process gets. So a vector query that
+passes in the MCP server can fail in a hook, and vice versa, purely on pool luck. Whatever
+loads the extension in M4 must do it per connection and never infer from a successful query
+that it is loaded.
+
 **Every write is `BEGIN IMMEDIATE`.** A deferred transaction that upgrades to a writer
 raises `SQLITE_BUSY_SNAPSHOT`, which `busy_timeout` cannot wait out (D4).
 
 **`file-touched` never opens the database.** It writes one spool file per invocation —
 its own, never a shared one — and exits. Its budget is 10 ms and it must hold
 unconditionally, not just when nothing else is writing. Measured on the published binary:
-p50 7.82 ms, of which **+0.02 ms is the hook and the rest is process start**; opening the
-database costs 2.1–2.4 ms, which is more than the headroom left. Under an indexer-shaped
-writer committing back-to-back chunks it moves to p50 9.29 ms and does not grow a tail,
-because a hook that never opens the database cannot wait on a lock. `FileTouchedBudgetTests`
-guards the margin, not the absolute number, so it fails when the rule breaks rather than
-when the machine is busy.
+p50 7.82 ms, of which **+0.02 ms is the hook and the rest is process start**. Opening the
+database costs **1.0–1.5 ms**, measured by A/B-ing `probe` against homes with and without an
+`engram.db` — it skips the store when the file is absent, so the difference is the open. The
+2.1–2.4 ms that `session-start` and `user-prompt` add over the same floor is that open *plus
+each hook's own work*; charging all of it to the open, as this file previously did, overstates
+it. So the rule does not rest on the arithmetic — an opening `file-touched` would still fit at
+p50. It rests on the word *unconditionally*. Under an indexer-shaped writer committing
+back-to-back chunks this hook holds p50 9.29 ms and grows no tail, because a hook that never
+opens the database cannot wait on a lock; one that opens can, and `busy_timeout` is 5000 ms
+against a 10 ms budget. `FileTouchedBudgetTests` guards the margin, not the absolute number,
+so it fails when the rule breaks rather than when the machine is busy.
 
 This rule is about that hook, not about hooks: D4 justifies it entirely by per-edit
 frequency and write contention. The primer hooks — `session-start`, `subagent-start` —

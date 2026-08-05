@@ -44,8 +44,13 @@ Six of them were adjudicated with Fable.
   only by background indexing, speaks stdio JSON-lines, returns entities/edges/facts.
   **The core owns every DB write**; the sidecar never opens the database.
 - **Optional native libs** (`llama.cpp` for LLamaSharp, `sqlite-vec`) live in
-  `~/.engram/lib/`, fetched by `engram init --with-embeddings`, loaded through
-  `NativeLibrary.Load` with an explicit path.
+  `~/.engram/lib/`, fetched by `engram init --with-embeddings`, loaded from an explicit
+  path — but by two different mechanisms, which this bullet originally conflated.
+  `NativeLibrary.Load` is right for `llama.cpp` and tree-sitter, which the *managed* code
+  P/Invokes into. `sqlite-vec` is not called from managed code at all: it is a SQLite
+  loadable extension, so it goes in through `sqlite3_load_extension` —
+  `SqliteConnection.EnableExtensions` then `LoadExtension(path)` — and registers a virtual
+  table module on **that one connection**. Measured under AOT; see spike D in §1.5.
 
 Rationale: the latency-critical paths — hooks, MCP start, recall — never touch Roslyn
 or llama.cpp, so AOT's cold-start budget is preserved where it is actually spent.
@@ -161,10 +166,22 @@ For M0/M1, ship all four of these together — they only work as a set:
    benchmark **580 invocations produced 580 spool files** — no record lost, at any width.
 
    **The hook's own work is unmeasurable; the budget is process start.** +0.02 ms is
-   noise, and 99.7% of the 7.82 ms is spent before `RunFileTouched` is reached. So rule 4
-   is not a stylistic preference about tidiness — opening the database costs 2.1–2.4 ms,
-   which is more than the ~2.2 ms of headroom left, and `file-touched` would breach at
-   p50. What threatens this budget in future is **binary size, not hook complexity**:
+   noise, and 99.7% of the 7.82 ms is spent before `RunFileTouched` is reached.
+
+   Rule 4 is still not a stylistic preference about tidiness, but the arithmetic first
+   written here was wrong and is worth correcting rather than quietly fixing. It read the
+   +2.38 / +2.12 ms above as the cost of the open. Those are whole-hook deltas: the open
+   *plus* reading facts and formatting a primer, or writing one. Isolating it — `probe`
+   against two homes identical but for the presence of `engram.db`, which it skips when the
+   file is absent — the open alone is **+1.46 ms** on the shipped binary, and +1.04 ms on
+   the smaller spike-D binary. Against ~2.2 ms of headroom, a `file-touched` that opened the
+   database would fit at p50 and sit on the line at p99.
+
+   So the justification is not the p50 arithmetic; it is the word *unconditionally*. A hook
+   that opens the database can wait on a lock, and `busy_timeout` is 5000 ms against a 10 ms
+   budget — one contended open is a 500× overrun. The measurement above is what shows the
+   rule buying that, and it would not survive the open. What threatens this budget in future
+   is **binary size, not hook complexity**:
    spike A measured 3.44 ms of process start at 1.06 MB, and the same start now costs
    7.80 ms at 21.2 MB. That is a second, independent reason D1 keeps `sqlite-vec` and
    llama.cpp side-loaded rather than linked — quite apart from AOT-hostility, linking
@@ -1413,6 +1430,50 @@ the live lane (6), the `WHEN` guard stops a second close from double-deleting (8
 `'integrity-check'` stays clean after both a close and a hard delete (9, 10). Porter
 stemming, `bm25()`, and `snippet()` all work. **D3 ships as written.**
 
+**Spike D — `sqlite-vec` under AOT (2026-08-05, measured).** Work-queue item B4, the one
+gating spike for M4. `sqlite-vec` v0.1.9, the prebuilt `loadable-macos-aarch64` `vec0.dylib`
+(162 KB, Mach-O arm64), against a spike binary that references the real `Engram.Core` and
+mirrors `Engram.Cli`'s publish settings, so this is the shipped AOT configuration rather
+than a friendlier one. Publish clean: zero IL2xxx/IL3xxx warnings, 2.78 MB Mach-O arm64.
+
+**16 of 16 assertions pass from the AOT binary, and the same 16 pass under JIT.** The
+extension loads, `vec_version()` answers, a `vec0` virtual table is creatable, vectors
+insert, and KNN ranks nearest-first. FTS5 keeps working on the same connection, so the two
+lanes D18 wants to fuse coexist. **D1's premise holds — but not by the mechanism D1 named**;
+see the corrected bullet in D1.
+
+The load is cheap and AOT does not tax it:
+
+| | p50 |
+|---|---|
+| `Open` + pragmas (warm, in-process) | 0.288 ms |
+| the same, plus `LoadExtension` | 0.459 ms |
+| **extension load, AOT** | **+0.171 ms** |
+| extension load, JIT | +0.219 ms |
+
+Cold, which is what a hook-shaped process pays: process start 3.55 ms, opening the database
++1.04 ms, loading `vec0` on top of that **+0.33 ms**. Enabling embeddings therefore costs a
+hook that already opens the database about a third of a millisecond, and costs `file-touched`
+nothing, because it opens nothing.
+
+Three findings worth more than the pass count:
+
+1. **Extension state is connection-scoped, and pooling hides that.** A second
+   `EngramDatabase.Open` in the same process still answered `vec_version()` — the pool
+   returned the same `sqlite3` handle with the module registered. After `ClearAllPools`,
+   which is what another process sees, it is gone. A vector query can pass in the long-lived
+   MCP server and fail in a hook on pool luck alone. This is the pragma rule from D4 in a
+   second costume, and it is now recorded next to it.
+2. **A missing extension degrades, it does not corrupt.** From a connection with no
+   extension loaded, a database containing a `vec0` table still reads ordinary tables,
+   still writes under `BEGIN IMMEDIATE`, still answers the FTS5 lane, and passes
+   `PRAGMA integrity_check` clean. Touching `fact_vec` fails loudly with
+   `no such module: vec0`. The spec's promise that the system is fully functional with
+   embeddings disabled survives a database that was *previously* embedded.
+3. **A bad `lib/` path throws rather than killing the process.** Both an absent file and a
+   non-Mach-O file raise a catchable `SqliteException`, and the connection keeps working
+   afterwards. Graceful degradation can be implemented in a `catch`, not a preflight.
+
 Two build notes for the real projects: the 10 MB MCP binary sits comfortably inside the
 spec's 15–40 MB budget, and `.dSYM` bundles (39.8 MB for Spike B) must be kept out of
 release artifacts.
@@ -1625,8 +1686,13 @@ Ollama as alternative providers. Model selection, the nomic comparison, and "doe
 combination work at all" are answered — do not re-run them. **What remains is Native AOT,
 which that project does not evidence**, and it is now the whole of this group.
 
-4. **Does `sqlite-vec` load under Native AOT** through `NativeLibrary.Load` from
-   `~/.engram/lib/`? D1 asserts it; §1.5 never measured it.
+4. ~~**Does `sqlite-vec` load under Native AOT?**~~ **Answered — yes.** Spike D in §1.5:
+   16/16 from the AOT binary, identical under JIT, +0.17 ms warm and +0.33 ms cold. Not
+   through `NativeLibrary.Load`, which is the wrong mechanism for a SQLite loadable
+   extension; D1's bullet is corrected. **This group no longer gates M4.** What it leaves
+   behind for M4 to honour: the extension is per-connection and pooling disguises that, and
+   a database holding a `vec0` table stays fully usable from a connection that cannot load
+   it.
 5. **Does LLamaSharp work under Native AOT?** It is a managed wrapper, not just a P/Invoke
    surface, and trimming is where wrappers break. **Informative, not gating** — per D25 the
    answer selects which rung of the provider ladder M4 lands on, and per D18 the localhost
