@@ -190,6 +190,40 @@ public static class FactStore
         return ReadFacts(command);
     }
 
+    /// <summary>
+    /// Live facts about a subject and everything beneath it, as a range scan over the path
+    /// index rather than a scan-and-filter (D2).
+    /// </summary>
+    public static IReadOnlyList<StoredFact> ReadSubtree(SqliteConnection connection, string pathPrefix)
+    {
+        var exact = pathPrefix.TrimEnd('/');
+        var low = exact + "/";
+
+        // Upper bound is the prefix with its final character incremented: '/' is 0x2F, so the
+        // bound is the same string ending in '0'. Every path under low sorts below it and
+        // nothing else can sort between them, which makes this exact rather than approximate.
+        //
+        // The alternatives are worse. A U+FFFD sentinel — what the schema comment sketches —
+        // is not actually the largest encodable character, so a path containing an astral
+        // character (U+10000 and up, which encode above it in UTF-8) would sort past the bound
+        // and vanish from its own subtree. LIKE 'prefix%' is case-insensitive for ASCII by
+        // default, which disqualifies it from the index range optimization entirely.
+        var high = string.Concat(low.AsSpan(0, low.Length - 1), ((char)(low[^1] + 1)).ToString());
+
+        using var command = connection.CreateCommand();
+        command.CommandText = SelectFactColumns
+            + """
+               WHERE f.valid_to IS NULL
+                 AND (e.path = $exact OR (e.path >= $low AND e.path < $high))
+               ORDER BY e.path, f.id;
+              """;
+        command.Parameters.AddWithValue("$exact", exact);
+        command.Parameters.AddWithValue("$low", low);
+        command.Parameters.AddWithValue("$high", high);
+
+        return ReadFacts(command);
+    }
+
     public static IReadOnlyList<StoredFact> History(SqliteConnection connection, string subjectPath, string predicate)
     {
         using var command = connection.CreateCommand();

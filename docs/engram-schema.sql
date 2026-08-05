@@ -75,8 +75,21 @@ CREATE TABLE entity (
   meta       TEXT                      -- JSON: language, signature, disk locations
 );
 
--- A subtree is `WHERE path >= ? AND path < ? || X'FFFD'`. The UNIQUE constraint
--- above already provides the index that serves it.
+-- A subtree is a range scan, and the UNIQUE constraint above already provides the
+-- index that serves it. The upper bound is the prefix with its final character
+-- incremented — for a prefix ending in '/' (0x2F) that is the same string ending
+-- in '0' (0x30):
+--
+--     WHERE path = '/knowledge/hooks'
+--        OR (path >= '/knowledge/hooks/' AND path < '/knowledge/hooks0')
+--
+-- NOT a `|| X'FFFD'` sentinel, which an earlier draft of this comment specified
+-- and which is wrong: U+FFFD is not the largest encodable character, so any path
+-- containing an astral character (U+10000 and up, which encode higher in UTF-8)
+-- sorts past that bound and disappears from its own subtree. Nor `LIKE 'prefix%'`,
+-- which is case-insensitive for ASCII by default and so cannot use the index range
+-- optimization at all. An integration test writes an emoji-bearing path and fails
+-- under the sentinel version.
 CREATE INDEX ix_entity_kind ON entity(kind);
 
 
