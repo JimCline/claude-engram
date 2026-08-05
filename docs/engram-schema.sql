@@ -10,6 +10,8 @@
 --   * at most one live fact per subject+predicate  (unique partial index)
 --   * the lexical index holds live facts only  (triggers, not application code)
 --   * no fact can reference a subject that does not exist  (foreign keys ON)
+--   * provenance is one of exactly three tiers, and regenerability is a
+--     separate boolean, so the two can never be conflated  (CHECK constraints)
 
 -- Persistent. journal_mode is written into the database header and survives, so
 -- setting it here is enough.
@@ -99,8 +101,24 @@ CREATE TABLE fact (
   object_id     INTEGER REFERENCES entity(id),
   path          TEXT    NOT NULL,   -- denormalized subject path, prefix-searchable
   scope         TEXT    NOT NULL,   -- user | project | code
-  learned_via   TEXT    NOT NULL,   -- stated | observed | derived | indexed
-  confidence    REAL    NOT NULL DEFAULT 0.8,
+
+  -- Provenance (D19). How well grounded the belief is, ordinal and ranked
+  -- stated > observed > inferred. Read by a model, which must be able to tell
+  -- the user's own words from an agent's conclusion.
+  learned_via   TEXT    NOT NULL CHECK (learned_via IN ('stated','observed','inferred')),
+
+  -- Regenerability (D23). A SEPARATE axis from provenance, and the reason this
+  -- is its own column rather than a fourth learned_via value: a code fact from
+  -- an AST and an agent fact from command output are both 'observed', but only
+  -- the first can be recomputed. `repair` and `compact` key off THIS column and
+  -- must never consult learned_via — reading "rebuild the derived facts" as
+  -- "drop the observed ones and re-index" would destroy agent observations that
+  -- no longer have a source to recompute from.
+  --
+  -- Deleting the source file does not clear the flag. The fact is flagged stale,
+  -- never rewritten, because belief content is immutable.
+  regenerable   INTEGER NOT NULL DEFAULT 0 CHECK (regenerable IN (0,1)),
+
   evidence      TEXT,               -- "src/Auth.cs:120", "commit a1b2c3"
   session_id    INTEGER REFERENCES session(id),
   valid_from    INTEGER NOT NULL,
@@ -117,6 +135,10 @@ CREATE UNIQUE INDEX ux_fact_live ON fact(subject_id, predicate) WHERE valid_to I
 CREATE INDEX ix_fact_path    ON fact(path);
 CREATE INDEX ix_fact_session ON fact(session_id);
 CREATE INDEX ix_fact_scope   ON fact(scope) WHERE valid_to IS NULL;
+
+-- `repair` and `compact` sweep exactly this set (D8, D23). Partial, because the
+-- regenerable rows are the minority and the query is always "which may I discard".
+CREATE INDEX ix_fact_regenerable ON fact(regenerable) WHERE regenerable = 1;
 
 
 -- ---------------------------------------------------------------------------

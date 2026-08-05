@@ -882,11 +882,26 @@ fact came from cannot be re-derived from the fact itself, so under D8's derived/
 line it sits firmly on the authored side. A `repair` that "fixes missing provenance" is
 inventing testimony.
 
-**Migration writes nothing it does not know.** The column is nullable, and existing facts
-get `NULL`, meaning *unknown, predates the tier*. We do not backfill by guessing from the
-shape of a row. Recall renders unknown as its own thing rather than silently folding it into
-`inferred`, because "we do not know where this came from" and "an agent made this up" are
-different claims and only one of them is true.
+**No migration, because this landed before the store did.** The first draft specified a
+nullable column meaning *unknown, predates the tier*, with no backfill by guessing. That is
+now moot and the simpler thing is true instead: no database exists yet, so `learned_via` is
+`NOT NULL` with a `CHECK` constraint from the first `CREATE TABLE`. There is no era of facts
+without provenance and never will be. Folding this into `docs/engram-schema.sql` before M1
+rather than after was worth more than the decision itself.
+
+Two things in the authored schema had to be reconciled, both settled there:
+
+- **`learned_via` already existed** with the values `stated | observed | derived | indexed`.
+  Three of those are provenance and one is not — `indexed` describes where a row came from,
+  which is regenerability, and is precisely the conflation D23 exists to prevent. It was
+  already latent in the schema. `indexed` is gone; code facts are `observed` provenance with
+  `regenerable = 1`. `derived` is renamed to `inferred`, because "derived" already means
+  *regenerable* in D8's vocabulary and using it for a provenance tier in the same codebase
+  invites exactly the mistake.
+- **`confidence REAL NOT NULL DEFAULT 0.8` is removed.** It is the numeric score this
+  decision rejects, and its own default was the argument: a value nobody had evidence to
+  set, applied uniformly to every fact, tuned by no one. Deleting it cost nothing because no
+  row had ever been written.
 
 **Surfaced, not scored.** The tier appears in recall output as a compact marker — one or two
 tokens per fact, budgeted under D17 — and retrieval ranking does **not** consult it. Letting
