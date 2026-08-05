@@ -542,7 +542,7 @@ if $apply; then
         echo "  In a running Claude Code session, run: /reload-plugins"
     fi
     if [ "$grant_result" = granted ]; then
-        echo "  Restart Claude Code so it re-reads its settings and picks up the grant"
+        echo "  Nothing to restart: Claude Code watches its settings file and reloads permissions"
     fi
 else
     echo "Dry run only — nothing was changed. Re-run with --apply to perform this installation."

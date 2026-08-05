@@ -112,7 +112,8 @@ public static class PermissionsCommand
         stdout.WriteLine($"Granted {plan.ToAdd.Count} tool(s).");
         stdout.WriteLine($"Recorded in {home.GrantedPermissionsPath} so uninstall takes back exactly these.");
         stdout.WriteLine();
-        stdout.WriteLine("Restart Claude Code, or run /reload-plugins, for the change to take effect.");
+        stdout.WriteLine("Claude Code watches its settings file, so this applies to running sessions too.");
+        stdout.WriteLine("engram_forget still prompts, on purpose.");
         return 0;
     }
 
