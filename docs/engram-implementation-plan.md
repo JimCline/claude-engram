@@ -1120,11 +1120,26 @@ Only the last one is load-bearing, and only in one place. The MCP server is a su
 long-lived daemon (D14), so it pays startup once per launch and JIT warmup is amortized into
 nothing. Recall runs inside that daemon. Neither cares much.
 
-**The hook does.** `engram hook file-touched` is a fresh process on every file touch, its
-budget is 10 ms, and that budget "must hold unconditionally, not just when nothing else is
-writing." R2R-class startup lands in the tens of milliseconds — five to eight times over
-budget. There is no configuration that recovers this, because the cost is process start
-itself, not the work being done. That single path is why AOT stays.
+**The hook does.** `engram hook file-touched` is a fresh process on every file touch, and
+its budget must hold unconditionally rather than only when nothing else is writing (D4).
+§1.5 measured the gap directly: **3.44 ms median for the AOT build against 18.51 ms
+self-contained without it.** The non-AOT build spends most of a budget's worth of time
+before doing any work, and no configuration recovers that, because the cost is process
+start itself. That single path is why AOT stays.
+
+> **The 10 ms target is asserted, not derived.** It enters at `docs/engram-spec.md:532` as
+> one entry in a list of performance targets, with no measurement, citation, or reasoning
+> attached, and everything downstream — D4, this decision, `HookCommand.cs` — inherits it
+> from there. It is *plausible*: `file-touched` fires per edited file, runs inside the
+> agent's turn rather than in the background, and a multi-file edit multiplies it, so
+> keeping the aggregate under a perceptible ~100 ms implies roughly this per event. But
+> that derivation is reconstructed here, not recorded there.
+>
+> This matters because the ratio, not the threshold, is what actually decides D25: AOT is
+> ~5.4× faster to start, and that holds whatever the true target turns out to be. If the
+> budget were re-derived at 25 ms, non-AOT would clear it and this decision should be
+> reopened. Someone should either write down where 10 ms came from or measure what
+> `file-touched` latency users actually notice.
 
 So the boundary is not *this project is AOT*. It is **the latency-critical process is AOT,
 and everything else may be whatever it needs to be.** D1 already drew exactly this line for
