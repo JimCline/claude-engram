@@ -958,6 +958,91 @@ Ordering: this belongs with D19 rather than after it. Provenance is most of what
 report worth reading, and a report is the fastest way to find out whether the tiers were
 assigned sensibly in the first place.
 
+### D23 — `regenerable` is a separate axis from provenance, and `repair` keys off it alone
+
+The code graph shares one database with the belief store — the sidecar returns
+entities/edges/facts over stdio and the core writes them (D1), into the same file that
+holds everything else. That sharing is the point: a standalone code graph answers *what
+calls this function*, while code entities living beside beliefs answer *what did we decide
+about this function, and what superseded it*. No snapshot tool can do the second.
+
+It also creates a trap. D19's provenance tier and D8's derived/authored line look like the
+same distinction and are not:
+
+| | Regenerable? | Provenance (D19) |
+|---|---|---|
+| Code fact from an AST | **Yes** — recompute from the file | `observed` |
+| Agent fact from command output | **No** — the output is gone | `observed` |
+| Fact from a user statement | No | `stated` |
+
+Two rows share a provenance tier and sit on opposite sides of D8. So an implementation of
+`repair` that reads "rebuild the derived facts" as *"drop the `observed` ones and re-index"*
+— an entirely reasonable reading — silently destroys every agent observation that can never
+be recovered. That is precisely the failure the derived/authored rule exists to prevent, and
+D19 as written makes it easier to reach, not harder.
+
+Decision: facts carry a **`regenerable`** marker, set at insert, immutable, and wholly
+independent of the provenance tier. It asserts one thing — *this fact can be recomputed from
+an artifact that still exists* — and only the code indexer sets it. **`repair` and `compact`
+key off `regenerable` and must never consult provenance.** Provenance describes how much to
+trust a fact; `regenerable` describes whether destroying it loses anything. Ranking uses
+neither.
+
+Deletion of a source file does not retroactively clear the marker. The fact is not
+destroyed and not rewritten — it is flagged stale by M3's existing stale-subject mechanism,
+which is the same treatment D2 gives a moved entity. Append-only survives intact.
+
+The guard, per the house rule that an unfalsifiable test is worthless: assert that `repair`
+removes regenerable facts and leaves everything else, then **prove it by flipping one agent
+observation to `regenerable` and confirming `repair` would consume it**. A test that passes
+because nothing was ever at risk has demonstrated nothing.
+
+### D24 — Three analyzer tiers, one language registry, C# then TypeScript/JavaScript
+
+Priority is set by what actually gets worked on: **C# first, TypeScript/JavaScript second,
+everything else behind a registry row.** That is a delivery order. The architecture below is
+what keeps it from becoming a ceiling.
+
+**Three tiers, distinguished by what they cost, not by what they parse.**
+
+| Tier | Mechanism | Cost | Gets us |
+|---|---|---|---|
+| **0 · Universal** | Managed, in-core, no dependencies | None | Works on any file, including ones we have never heard of |
+| **1 · Syntactic** | `tree-sitter` via `NativeLibrary.Load` from `~/.engram/lib/`, one grammar per language | One native lib, one grammar file per language | Definitions, references, imports/exports, structure |
+| **2 · Semantic** | A language's own toolchain, in a sidecar that never opens the database | A whole extra binary and its ecosystem | Real type and overload resolution |
+
+Tier 1 is the one that makes languages cheap. `tree-sitter` is a C library loaded the same
+way `sqlite-vec` and llama.cpp already are under D1, so a new language costs a grammar and a
+registry row — not a runtime, not a sidecar, not a dependency in the shipped artifact.
+
+**Tier 2 is reserved, and TypeScript does not get it.** C# gets Roslyn because D1 already
+commits to that sidecar and it is the language this project is written in. TypeScript's
+equivalent depth would mean the TypeScript compiler API, which means **a Node runtime** —
+and D20 has just finished rejecting exactly that shape of coupling for Python. The same
+argument binds here or it was never an argument. TS/JS therefore ship at tier 1, and if
+telemetry later shows syntactic extraction genuinely insufficient, that is a decision taken
+then, on evidence, with the Node question faced honestly rather than smuggled in.
+
+**One registry, and adding a language edits nothing else.** A single table declares, per
+language: id, file extensions, grammar, tier, and which extractors apply. Adding a language
+is one row plus a grammar file, with **zero edits to the indexer, the CLI, the report, or
+the test harness**. If adding a language requires touching a `switch`, the abstraction has
+not landed and the row is decoration.
+
+Two constraints that make this real rather than aspirational:
+
+- **The registry is a static table, not discovery.** Native AOT cannot scan assemblies for
+  implementations, so registration is explicit and compile-time. This is a constraint worth
+  welcoming: it keeps the enumerable kind enumerable and greppable.
+- **The conformance suite iterates the registry.** One fixture-driven set of assertions runs
+  for every entry — extraction produces entities, entities resolve, re-indexing an unchanged
+  file is a no-op, a renamed symbol keeps its `entity.id` per D2. A harness carrying its own
+  copy of the language list is the exact failure this decision exists to prevent, and a lint
+  test should say so.
+
+Every fact these analyzers write is `observed` (D19) and `regenerable` (D23), without
+exception. That is what makes a full re-index safe.
+
 ---
 
 ## PreCompact cannot inject context
@@ -1099,6 +1184,10 @@ unprompted in a real session.
 Path-grammar document (versioned) first. Then universal + document analyzers with
 extractive impressions, incremental pipeline over `file_state`, `engram_code`,
 stale-subject flagging, adopt/merge for deep-tier re-keys (D2). Roslyn sidecar last.
+
+Tiering, language priority, and the registry that makes new languages cost one row are
+**D24**: C# first, TypeScript/JavaScript second. All code facts are written `observed`
+(D19) and `regenerable` (D23), which is what makes a full re-index safe.
 
 **Gate:** M0/M1 telemetry should show that missed recalls are substantially
 code-structure questions. If they are not, M3 shrinks or moves behind M4. If they *are*,
@@ -1251,8 +1340,23 @@ implemented; D15–D18 are written but unbuilt.
     including superseded facts, with no truncation and no HTML. Build it *with* E, not
     after: it is the fastest way to check whether the D19 tiers were assigned sensibly.
 
+16. **`regenerable` marker (D23)** — same migration as step 12, separate column, immutable
+    at insert. Rework `repair` to key off it alone and never off provenance, with the
+    falsification test that flips an agent observation to `regenerable` and confirms
+    `repair` would consume it.
+
 *Deliberately not in scope for E:* letting provenance influence retrieval ranking, and any
 numeric confidence score. Both are rejected in D19. No visualization or dashboard, per D22.
+
+**F. Language analyzers (D24) — gated behind M3, listed so the shape is not re-litigated**
+
+17. Language registry as a static compile-time table (AOT cannot discover implementations),
+    plus a conformance suite that iterates it and a lint test asserting no harness carries
+    its own language list.
+18. Tier 1 `tree-sitter` loader via `NativeLibrary.Load` from `~/.engram/lib/`, following
+    the `sqlite-vec` pattern. C# and TypeScript/JavaScript grammars, in that order.
+19. Tier 2 Roslyn sidecar for C# only. TypeScript does **not** get a tier-2 analyzer — that
+    would mean a Node runtime, which D20 rejects in principle.
 
 **Standing tension to re-read before starting C.** D18 gates M4 behind M0/M1 telemetry
 showing paraphrase misses, and the corpus is ~51 facts as of capture. The owner has
