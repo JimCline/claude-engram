@@ -21,6 +21,33 @@ internal sealed class FileLoggerProvider : ILoggerProvider
         {
             Directory.CreateDirectory(directory);
         }
+
+        RotateIfLarge(path);
+    }
+
+    // Log level alone does not bound this file: a wedged or crash-looping server writes
+    // warnings continuously, which is exactly when nobody is watching disk. One rotation
+    // at startup caps the pair at ~2 MB and keeps the previous run available, which is the
+    // run you want when diagnosing why the current one had to be restarted.
+    private static void RotateIfLarge(string path)
+    {
+        const long MaxBytes = 1024 * 1024;
+
+        try
+        {
+            var info = new FileInfo(path);
+            if (info.Exists && info.Length > MaxBytes)
+            {
+                File.Move(path, path + ".1", overwrite: true);
+            }
+        }
+        catch (IOException)
+        {
+            // A log we cannot rotate is not a reason to refuse to serve.
+        }
+        catch (UnauthorizedAccessException)
+        {
+        }
     }
 
     public ILogger CreateLogger(string categoryName) => new FileLogger(this, categoryName);

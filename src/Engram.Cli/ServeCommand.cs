@@ -50,6 +50,14 @@ internal static class ServeCommand
         builder.Logging.ClearProviders();
         builder.Logging.AddProvider(new FileLoggerProvider(home.LogPath));
 
+        // A single session's startup wrote 27 lines at the framework default, six of them
+        // per MCP call, into a file nothing truncates — a long-lived daemon would grow it
+        // without bound for no diagnostic value. Warnings and errors are what anyone reads
+        // this file for. Hosting.Lifetime stays at Information because "Now listening on"
+        // is the one line that tells you a failed start got as far as binding.
+        builder.Logging.SetMinimumLevel(LogLevel.Warning);
+        builder.Logging.AddFilter("Microsoft.Hosting.Lifetime", LogLevel.Information);
+
         builder.WebHost.UseUrls($"http://127.0.0.1:{resolvedPort}");
 
         builder.Services.AddHttpContextAccessor();
