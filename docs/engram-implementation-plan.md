@@ -668,6 +668,296 @@ easy way to waste a fortnight.
 session can start a plugin server on demand after an idle wake, which would under-count.
 The probe reports MCP and hook session counts separately partly for this reason.
 
+### D15 — Durable guidance belongs in tool descriptions; only volatile guidance in the primer
+
+Prompted by `claude-mem`, which exposes an always-visible `important_workflow` tool
+carrying its retrieval protocol as prose. The mechanism does not transfer, but the
+observation behind it does.
+
+**Why the mechanism does not transfer.** `claude-mem` needs that tool because its
+retrieval is a three-call protocol — `search` returns a stub index (~50–100 tokens per
+result), then `timeline`, then `get_observations` for the bodies. `important_workflow`
+exists to teach a *sequence*, and the sequence exists because their `search` is
+deliberately not self-sufficient. `engram_recall` answers in one call. There is no
+intermediate state to disclose, so a fifth always-visible tool would spend permanent
+definition budget describing a workflow one step long.
+
+**What does transfer.** Tool descriptions persist for the whole session; primer text
+injected at `SessionStart` is ordinary context and is summarized away by compaction.
+Today `PrimerBuilder` puts both kinds of guidance in the volatile channel.
+
+Decision: **split the primer by lifetime.** Guidance that is true in every session —
+memory is cheap, prefer recall before exploring, flush with `engram_digest` — moves into
+the existing `engram_recall` and `engram_remember` descriptions, which already run 403
+and 715 characters and cost their tokens whether or not they carry it. Guidance that is
+true only of *this* session — the live fact count and the topic-coverage line — stays in
+the hook, because it cannot be a static string.
+
+Cost accepted: tool descriptions become prompt-engineering surface and need the same
+golden-file treatment D9 gives the recall output contract. A description edit is an
+interface change, not a comment.
+
+### D16 — A timeline view over session provenance, gated on a density check
+
+The supersession chain is **truth-history**: what a belief became. It cannot answer
+**time-history**: what else was being learned when this was learned. Facts recorded in
+one session are often causally related in ways no predicate captures, and that
+co-occurrence is already stored as session provenance.
+
+Decision: expose it as a *view* on the existing expand path — an anchor fact plus its
+session neighbours before and after — not as a new top-level tool. This is a query over
+data already written; it requires no schema change, and it does not widen the tool
+surface D17 budgets.
+
+**Gated, not scheduled.** `claude-mem` anchors its timeline on *observations* — tool-use
+events, which are dense and naturally chronological. Engram stores *facts*, which are far
+sparser: a session may produce three. A neighbour window over three facts is not context,
+it is noise. Before this is built, measure the real distribution of facts-per-session on
+the author's own instance. If the median session yields fewer than roughly five facts,
+the view does not earn its tokens and this decision lapses.
+
+### D17 — The tool surface is a per-session token cost with a stated ceiling
+
+Measured 2026-08-05: the four memory tools in `EngramMcpTools.cs` cost **2,399 characters
+of definitions** (`recall` 521, `remember` 1,148, `forget` 345, `digest` 385 — description
+plus schema), roughly 600 tokens, paid on every session whether or not memory is used.
+Three more tools ship alongside them (`start`, `status`, `stop`).
+
+`claude-mem` cut 9 overlapping tools (~2,500 tokens) to 4. We are already at 4 memory
+tools and they do not overlap, so there is no consolidation to do — but the cost was
+never an explicit line item, which is how a surface grows to 9 without anyone deciding to.
+
+Decision: **tool-definition token cost is tracked, with a test.** A tier-1 test asserts
+the total serialized `tools/list` payload stays under a stated ceiling; raising the
+ceiling is a deliberate edit with a rationale, the same treatment D9 gives hook latency.
+Any new tool must argue its cost against the alternative of a parameter on an existing
+one — which is why D16 is a view on expand rather than a `timeline` tool.
+
+> **Supersedes an earlier reading.** An analysis in session prep claimed ten tools and
+> proposed cutting `engram_start` as unreachable. The count was wrong, and D14 has already
+> settled the second point on better grounds: `engram_start` is retained precisely
+> *because* a tool call cannot arrive with no server to receive it, so it reports and
+> repairs a disagreeing pid file instead of starting anything. It is not dead weight; it
+> is a different tool than its name suggests.
+
+### D18 — Semantic retrieval is a local `sqlite-vec` lane, never a vector service
+
+M4 already names `IEmbedder`, a `sqlite-vec` lane, and RRF fusion. This records *what it
+buys and what it must not become*, because "add a vector database" is the version of this
+that quietly costs a second daemon.
+
+**What semantic search buys: vocabulary mismatch.** FTS5 matches tokens. It cannot connect
+a query to a fact that records the same thing in different words — *"what's my kid's
+name"* against a stored *"son is Liam"*, or *"how do we avoid database lock errors"*
+against *"every write is `BEGIN IMMEDIATE`"*. This is the dominant failure mode for a
+memory system specifically, because the user writing the query and the agent that wrote
+the fact chose their words in different sessions, months apart, with no shared vocabulary.
+A missed recall here is invisible — the agent simply explores files instead, and the
+telemetry in D12 records it as disinterest.
+
+**What FTS5 keeps winning, which is why this is a lane and not a replacement.** Embeddings
+blur rare tokens, and this domain is full of them: `SQLITE_BUSY_SNAPSHOT`, `EngramHome`,
+`BEGIN IMMEDIATE`, RIDs, file paths, error codes. Exact-identifier recall is where lexical
+search is not merely adequate but strictly better. Fusing the two ranks by **RRF**
+(`Σ 1/(k + rank)`, k≈60) rather than by blended scores, because BM25 rank and cosine
+distance are not on comparable scales and any normalization between them is a tuning knob
+nobody will ever have evidence to set.
+
+**Why not ChromaDB.** It is a separate Python service. Adopting it would mean a second
+supervised process, a Python runtime in the dependency chain, and a network hop — against
+a design whose core is a single Native AOT binary (D1) that already holds the SQLite file
+open. `sqlite-vec` is a loadable extension over that same file: one process, one database,
+one backup, and query plans stay visible per the no-ORM rule. Embedding *generation* rides
+the llama.cpp that D1 already side-loads into `~/.engram/lib/`, behind
+`engram init --with-embeddings`. A small sentence embedder (384-dim) costs ~1.5 KB per
+fact — negligible against the fact bodies themselves.
+
+**Embeddings are derived state, and that settles three things at once.** Under D8 they are
+repairable, so `repair` may rebuild the vector index and `embed --rebuild` is not a special
+case. Under D4 hooks still never open the database, so embedding happens in the server,
+off the write path, asynchronously. And a fact written but not yet embedded is still found
+by FTS5 — the lane degrades to lexical-only rather than to a missing result, which means
+backfill latency is never a correctness bug.
+
+Cost accepted: recall output becomes model-dependent, so tier-2 tests need a deterministic
+stub `IEmbedder` and must assert set membership rather than exact ordering. An install
+without `--with-embeddings` runs FTS5-only and must stay a supported configuration, not a
+degraded one — which also keeps the default install free of a model download.
+
+D5 (contradiction detection, cut from v1) is reconsidered here and not before: detecting
+that two facts contradict requires knowing they are *about the same thing* in different
+words, which is the same capability, and attempting it lexically is why it was cut.
+
+### D19 — Facts carry a provenance tier, and it is authored, not derived
+
+Imported from Graphify, which tags every edge `EXTRACTED` (read from an AST) or `INFERRED`
+(resolved by heuristic or model) so a consumer can tell what is grounded from what is
+guessed. Engram has the raw material for this distinction and does not expose it.
+
+The problem is concrete. Recall output is read by a model, and that model currently cannot
+tell *"Jim said this, in these words"* from *"an agent concluded this from a diff."* Those
+warrant different trust and sometimes different action — one is a premise, the other is a
+hypothesis worth re-checking. Collapsing them is a silent correctness hazard in exactly the
+situations where memory matters most.
+
+**Three tiers, ordinal, no confidence score.**
+
+| Tier | Means | Re-checkable? |
+|---|---|---|
+| `stated` | The user asserted it. Authored by the human. | No — it is testimony, not observation |
+| `observed` | Derived from an artifact that existed: a file, command output, a diff, an API response. Carries `evidence`. | Yes, against the artifact |
+| `inferred` | An agent's conclusion. No artifact backs it directly. | No, but it can be re-argued |
+
+A user statement rewritten by an agent for self-containment stays `stated`. The content is
+still the user's claim; the supersession row already records that a rewrite happened, so a
+fourth tier would encode something the history already carries.
+
+**No numeric confidence.** Graphify attaches a score; we deliberately do not. A float is a
+tuning knob, and nobody will ever have the evidence to set it — the same argument D18 uses
+to reject score-blending in favour of RRF. An ordinal tier is enough to break a tie, and it
+cannot be fiddled with.
+
+**Provenance is belief content, so it is immutable and unrepairable.** It is written at
+insert and never updated, alongside predicate, body, and validity. This has a consequence
+worth stating plainly because it is exactly the kind of thing a later contributor will try
+to be helpful about: **`repair` may never assign or correct a provenance tier.** Where a
+fact came from cannot be re-derived from the fact itself, so under D8's derived/authored
+line it sits firmly on the authored side. A `repair` that "fixes missing provenance" is
+inventing testimony.
+
+**Migration writes nothing it does not know.** The column is nullable, and existing facts
+get `NULL`, meaning *unknown, predates the tier*. We do not backfill by guessing from the
+shape of a row. Recall renders unknown as its own thing rather than silently folding it into
+`inferred`, because "we do not know where this came from" and "an agent made this up" are
+different claims and only one of them is true.
+
+**Surfaced, not scored.** The tier appears in recall output as a compact marker — one or two
+tokens per fact, budgeted under D17 — and retrieval ranking does **not** consult it. Letting
+provenance tilt salience would be a second tuning knob doing the first one's job. The model
+sees the tier and decides; the ranker stays about relevance.
+
+This gives D5 the thing it was missing. Contradiction detection was cut partly because two
+conflicting facts offered no principled basis for choosing between them. `stated` over
+`observed` over `inferred` is such a basis, and it does not require resolving the semantics
+of the conflict — which is the expensive part. D5 is reconsidered alongside D18's vector
+evidence, now with a tiebreak in hand.
+
+### D20 — The code graph is built in-house; Graphify stays optional and unrequired
+
+Two positions were considered. The first draft of this decision said *recommend and
+coexist* — do not vendor Graphify, but point users at it, on the grounds that consuming an
+MCP server is not really a dependency. **That reasoning was wrong and is corrected here.**
+
+**An MCP server is a dependency with a protocol boundary in front of it.** If Engram's
+documentation steers users to Graphify for code questions, and users come to rely on that,
+Engram has taken on a Python service, an LLM egress path, and a pre-1.0 release cadence —
+it has merely moved them where they do not show up in `pyproject.toml` or a `.csproj`.
+Abstraction changes who notices the coupling, not whether it exists. Worse, a runtime
+coupling is harder to audit than a declared one: nothing in the repository records it.
+
+The concrete objections stand and are strengthened, not weakened, by being at arm's length.
+Graphify is a **Python 3.10+ runtime** against a packaging thesis of one Native AOT binary
+with no runtime (D1). Its `graph.json` is held in memory under a 512 MB cap, which does not
+compose with a SQLite/WAL store several processes open at once (D4). It **sends documents,
+PDFs, and images to a configured LLM**, which would puncture Engram's local-only guarantee
+at a layer users could not see — and a guarantee broken by a *recommended companion tool* is
+broken just the same. It is pre-1.0 at v0.9.33 with 201 releases in four months, 803 open
+issues, and 70% of commits from a single author. And having no temporal model, its output
+could not enter the fact store without a translation layer costing about what M3 costs.
+
+Decision: **M3 is built in-house when its gate opens.** Engram never requires, invokes, or
+assumes Graphify. The line that makes "optional" mean something:
+
+> No Engram capability may work only when Graphify is installed. Engram is complete
+> without it, or the feature does not ship.
+
+Cost accepted, explicitly: M3 duplicates work that is freely available and four months
+ahead. That is paid on purpose. A memory system that quietly needs a Python service to
+answer code questions is not the single-binary local tool D1 promises, and the promise is
+the product. Independence here is not pride; it is the thing being sold.
+
+What "optional" reduces to in practice: a user who installs Graphify alongside Engram gets
+both MCP servers, and the agent calls each directly. Engram neither knows nor cares. Facts
+learned that way arrive through `engram_remember` at the `observed` or `inferred` tier per
+D19 — the ordinary write path, coupling nothing, and identical to a fact learned from `grep`.
+
+### D21 — Retrieval must be explainable, and the explainer ships with the vector lane
+
+Graphify's stated principle is *"every edge explained"*, backed by a `graphify explain`
+command. The principle transfers even though the implementation does not, and it lands on a
+real and worsening gap.
+
+Recall is already opaque. FTS5 rank and salience combine to produce an ordering nobody can
+account for after the fact, and **D18 makes this materially worse**: RRF fuses two
+independently ranked lists, so the reason a fact placed third becomes a function of its
+position in two rankings that are themselves never shown. Adding a semantic lane without an
+explainer means shipping a retrieval system whose failures cannot be diagnosed, only
+re-rolled.
+
+This bites hardest exactly where the project has staked its health metric. D12 and §12 make
+**recall coverage** the measure of whether Engram works, which makes *missed recalls* the
+unit of debugging — and a missed recall that cannot be explained cannot be fixed. Without
+this, the response to "why didn't it find that?" is guesswork about primer wording, which
+§"Reading the M0 numbers honestly" already identifies as a very easy way to waste a
+fortnight.
+
+Decision: `engram explain <query>` reports, per candidate fact — lexical rank and BM25
+score, vector rank and cosine distance, salience contribution, the fused RRF position, and
+the D19 provenance tier. Read-only, no side effects.
+
+**Sequencing is the load-bearing part of this decision: the explainer ships with or before
+the vector lane, never after.** A debugging tool added once the thing it debugs is already
+in production is a tool built against remembered intentions rather than observed behaviour.
+Concretely, this moves ahead of §6.1's step 8 (RRF fusion) and is a prerequisite for it.
+
+This is also just the existing house rule one layer up. "No ORM. Hand-written SQL, so query
+plans stay visible" is a commitment to legibility at the storage layer; D21 extends it to
+the ranking layer, where the opacity is now greater and the consequences are quieter.
+
+### D22 — The user can read everything stored about them, in one artifact
+
+Graphify emits `GRAPH_REPORT.md` and `graph.html` beside its machine-readable graph. The
+underlying gap is real here and sharper than it is for a code tool, because Engram's
+contents are personal and were written **while the user was not watching**. Passive capture
+is the entire point of the design — it is also what makes this obligation rather than
+polish.
+
+Nothing today enumerates. `doctor` reports health, not content. `recall` answers a question,
+which means it shows what matched a query and is structurally incapable of showing what the
+user never thought to ask about. So the current answer to *"what do you actually know about
+me?"* is: run queries until you stop being surprised.
+
+That interacts badly with `forget`. D7 and the local-only posture cover **confidentiality** —
+data does not leave the machine. They say nothing about the user's **own access**, and
+retraction without enumeration is not a real control: you cannot forget what you cannot find,
+and a user who half-remembers an offhand remark has no way to check whether it was kept.
+
+Decision: `engram report` — read-only, generates a Markdown artifact of everything stored.
+Per fact: body, subject and predicate, validity window, D19 provenance tier, evidence, and
+the identifier `forget` takes. Grouped by subject, and **including closed and superseded
+facts, marked as such** — the history is the product, and it is also the part most worth
+auditing, since a retracted belief that lingers in a chain is exactly what a user would want
+to find.
+
+Two constraints that are the decision rather than details:
+
+- **No truncation, ever.** No top-N, no salience filter, no eliding the long tail. Every
+  other output in this system is budgeted against a token ceiling; this one is not, because
+  a report that silently omits is worse than no report at all when the purpose is audit. If
+  it is long, it is long.
+- **Markdown, not HTML.** No browser, no asset pipeline, no bundled viewer. It renders in a
+  terminal, an editor, and a diff, and it survives being pasted into an issue. Graphify's
+  `graph.html` suits a graph nobody can read as text; a fact store is already prose, and a
+  visualization would be a second thing to maintain in service of no additional
+  understanding.
+
+Generated on demand and never stored, so it sits outside D8's derived/authored question
+entirely — there is nothing for `repair` or `compact` to reconcile.
+
+Ordering: this belongs with D19 rather than after it. Provenance is most of what makes the
+report worth reading, and a report is the fastest way to find out whether the tiers were
+assigned sensibly in the first place.
+
 ---
 
 ## PreCompact cannot inject context
@@ -811,12 +1101,15 @@ extractive impressions, incremental pipeline over `file_state`, `engram_code`,
 stale-subject flagging, adopt/merge for deep-tier re-keys (D2). Roslyn sidecar last.
 
 **Gate:** M0/M1 telemetry should show that missed recalls are substantially
-code-structure questions. If they are not, M3 shrinks or moves behind M4.
+code-structure questions. If they are not, M3 shrinks or moves behind M4. If they *are*,
+it is built here: per **D20**, Engram does not outsource this to Graphify or any other
+external server, because an MCP dependency is still a dependency.
 
 ### M4 — Embeddings
 
 `IEmbedder` providers, `sqlite-vec` lane, RRF fusion, batch/backfill,
-`embed --rebuild`. Reconsider D5 here with vector evidence.
+`embed --rebuild`. Reconsider D5 here with vector evidence. **D18** carries the rationale,
+the lexical/semantic split, and the constraint that this never becomes a vector service.
 
 ### M5 — Polish
 
@@ -896,6 +1189,76 @@ chains and `valid_to` closure), the D4 concurrency rules, the D7 isolation guara
    test on every push.
 4. Build **M0.0** — home resolver and sandbox install flags first (D7), then the stub
    adoption probe — and start using it in real sessions.
+
+### 6.1 Work queue for D15–D18 (captured 2026-08-05, not yet started)
+
+Ordered by risk retired per unit of work, not by decision number. Nothing below has been
+implemented; D15–D18 are written but unbuilt.
+
+**A. Tool-surface work — small, independent, no spike needed**
+
+1. **D15** — move the durable guidance out of `PrimerBuilder` and into the
+   `engram_recall` / `engram_remember` descriptions in `EngramMcpTools.cs`. What stays in
+   the hook: only the live fact count and topic-coverage line.
+2. **D17** — tier-1 test asserting serialized `tools/list` stays under a stated ceiling.
+   Land it *with* item 1, because item 1 deliberately grows those descriptions and the
+   ceiling is what stops that from becoming a habit.
+3. Golden-file both tool descriptions under the D9 recall-contract treatment. They are a
+   model-facing interface now, not prose.
+
+**B. Spikes that gate M4 — these carry the real risk**
+
+4. **Does `sqlite-vec` load under Native AOT** through `NativeLibrary.Load` from
+   `~/.engram/lib/`? D1 asserts it; §1.5 never measured it. A failure here reshapes the
+   whole lane, so it is measured before any M4 code is written.
+5. **Does the side-loaded llama.cpp emit embeddings** in `--embedding` mode at workable
+   latency? Model chosen here: 384-dim, quantized (`bge-small` or `all-MiniLM-L6-v2`).
+
+**C. M4 proper, in dependency order (only after B is green)**
+
+6. `IEmbedder`, and a **deterministic stub embedder first** — tier-2 tests need it to
+   exist before anything real does, per D18's ordering caveat.
+7. Vector table + backfill queue. Embedding runs server-side, off the hook path (D4).
+8. **`engram explain <query>` first (D21)**, then RRF fusion (`k≈60`) in retrieval, with
+   FTS5-only as a fully supported configuration when the lane is absent — degraded
+   quality, never a missing result. The order within this step is the decision: an
+   explainer written after the fusion it explains is written against remembered
+   intentions rather than observed behaviour.
+9. `embed --rebuild`; `doctor` and `repair` coverage for the vector index as derived
+   state (D8).
+
+**D. Cheap, unblocked, do whenever**
+
+10. **D16's gate** — measure the real facts-per-session distribution on the author's
+    instance. Median below ~5 lapses the decision; above it, build the expand view.
+11. §1's intro still says *"Six architectural forks were adjudicated with Fable"* — stale
+    since D14, staler now. Needs a count fix, left alone here only because the
+    provenance claim for D15–D20 is not mine to assert.
+
+**E. Provenance tier (D19) — independent of A–D; run it alongside A**
+
+12. Schema migration adding a **nullable** provenance column to `fact`; existing rows stay
+    `NULL` (*unknown, predates the tier*). No backfill by inference — see D19.
+13. Write path: `engram_remember` and the capture hook set the tier at insert. User
+    captures are `stated`; anything carrying `evidence` is `observed`; otherwise
+    `inferred`. Assert in tier 2 that the column is never updated after insert, and that
+    `repair` cannot touch it.
+14. Recall output: render the tier as a one-or-two-token marker with `NULL` shown
+    distinctly from `inferred`. This is a golden-file change under D9 and counts against
+    the D17 ceiling.
+
+15. **`engram report` (D22)** — read-only Markdown enumeration of everything stored,
+    including superseded facts, with no truncation and no HTML. Build it *with* E, not
+    after: it is the fastest way to check whether the D19 tiers were assigned sensibly.
+
+*Deliberately not in scope for E:* letting provenance influence retrieval ranking, and any
+numeric confidence score. Both are rejected in D19. No visualization or dashboard, per D22.
+
+**Standing tension to re-read before starting C.** D18 gates M4 behind M0/M1 telemetry
+showing paraphrase misses, and the corpus is ~51 facts as of capture. The owner has
+said they want semantic search regardless; B is pure risk-retirement and worth doing
+either way, but C's payoff scales with corpus size and with the gap in time between the
+session that wrote a fact and the one that queries it.
 
 ---
 
