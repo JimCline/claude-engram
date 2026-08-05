@@ -9,6 +9,9 @@ Usage: scripts/install.sh [options]
   --binary PATH        Install this prebuilt binary instead of building one
   --no-path            Do not modify any shell startup file
   --with-plugin        Also register the Claude Code marketplace and install the plugin
+  --grant-permissions  Allow Claude Code to call Engram's memory tools without prompting
+  --no-grant-permissions
+                       Never grant them, and do not ask
   -h, --help           Show usage
 EOF
 }
@@ -18,6 +21,9 @@ prefix="$HOME/.local/bin"
 binary_override=""
 no_path=false
 with_plugin=false
+# ask | yes | no. "ask" only ever asks a terminal; a non-interactive run declines, because
+# silence from a pipe is not consent to edit somebody's settings file.
+grant_permissions=ask
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -47,6 +53,14 @@ while [ $# -gt 0 ]; do
             ;;
         --with-plugin)
             with_plugin=true
+            shift
+            ;;
+        --grant-permissions)
+            grant_permissions=yes
+            shift
+            ;;
+        --no-grant-permissions)
+            grant_permissions=no
             shift
             ;;
         -h|--help)
@@ -440,7 +454,43 @@ if $with_plugin; then
     fi
 fi
 
-# --- 9. Summary ---
+# --- 9. MCP tool permissions ---
+
+# Without this, Claude Code asks before every engram_recall. That is not just friction: M0
+# measures whether the model reaches for memory at all, and a dialog in front of each call
+# makes the number a measurement of the dialog. Still opt-in — it edits a file we do not own.
+
+grant_result=skipped
+if [ "$grant_permissions" != no ]; then
+    if ! $apply; then
+        would "offer to add Engram's memory tools to permissions.allow in Claude Code's user settings"
+        if [ -x "$target" ]; then
+            "$target" permissions || true
+        fi
+    elif [ "$grant_permissions" = yes ]; then
+        "$target" permissions --apply && grant_result=granted
+    elif [ -t 0 ] && [ -r /dev/tty ]; then
+        echo
+        "$target" permissions || true
+        printf 'Grant these now? [y/N] '
+        reply=""
+        read -r reply < /dev/tty || true
+        case "$reply" in
+            [yY]*)
+                "$target" permissions --apply && grant_result=granted
+                ;;
+            *)
+                grant_result=declined
+                say "Left Claude Code's settings alone. Grant later with: engram permissions --apply"
+                ;;
+        esac
+    else
+        grant_result=declined
+        say "Not a terminal, so not asking about tool permissions. Grant with: engram permissions --apply"
+    fi
+fi
+
+# --- 10. Summary ---
 
 echo
 if $apply; then
@@ -472,6 +522,17 @@ if $apply; then
             echo "  Claude Code plugin: NOT installed (claude was not on PATH); run the commands printed above"
         fi
     fi
+    case "$grant_result" in
+        granted)
+            echo "  MCP tool permissions: granted (recall, remember, digest, status)"
+            ;;
+        declined)
+            echo "  MCP tool permissions: not granted; run 'engram permissions --apply' to change that"
+            ;;
+        skipped)
+            echo "  MCP tool permissions: not touched (--no-grant-permissions)"
+            ;;
+    esac
     echo
     echo "Next steps:"
     if $path_changed; then
@@ -479,6 +540,9 @@ if $apply; then
     fi
     if $with_plugin && $plugin_installed; then
         echo "  In a running Claude Code session, run: /reload-plugins"
+    fi
+    if [ "$grant_result" = granted ]; then
+        echo "  Restart Claude Code so it re-reads its settings and picks up the grant"
     fi
 else
     echo "Dry run only — nothing was changed. Re-run with --apply to perform this installation."

@@ -140,6 +140,26 @@ else
     say "claude is not on PATH; skipping plugin/marketplace removal."
 fi
 
+# --- Take back the MCP tool permissions we granted ---
+
+# This has to happen while the binary and the home are both still here: the record of which
+# permissions.allow entries were ours lives in the home, and reading it is the only thing
+# separating an entry this installer added from one the user wrote themselves.
+
+permissions_result=none
+if [ -x "$target" ]; then
+    if $apply; then
+        revoke_output=$("$target" permissions --remove --apply 2>&1 || true)
+        printf '%s\n' "$revoke_output"
+        case "$revoke_output" in
+            *"Removed "*) permissions_result=removed ;;
+        esac
+    else
+        would "take back only the permissions.allow entries Engram added to Claude Code's settings"
+        "$target" permissions --remove 2>&1 || true
+    fi
+fi
+
 # --- Remove the installed binary ---
 
 if [ -f "$target" ]; then
@@ -255,6 +275,14 @@ if $apply; then
     if [ -n "$symlink_declined" ]; then
         echo "  PATH: left untouched (not ours): $symlink_declined"
     fi
+    case "$permissions_result" in
+        removed)
+            echo "  MCP tool permissions: removed the entries Engram added"
+            ;;
+        *)
+            echo "  MCP tool permissions: none of ours found; Claude Code's settings left alone"
+            ;;
+    esac
     if $purge; then
         echo "  Engram home: purged ($engram_home)"
     else

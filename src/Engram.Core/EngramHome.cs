@@ -13,7 +13,20 @@ public sealed class EngramHome
     public string ReportDir { get; }
     public string UserFactsDir { get; }
 
-    private EngramHome(string root)
+    /// <summary>
+    /// Which MCP tool permissions we granted in Claude Code's settings, so the uninstaller can
+    /// take back exactly those and nothing the user wrote themselves.
+    /// </summary>
+    public string GrantedPermissionsPath { get; }
+
+    /// <summary>
+    /// Claude Code's user-scope settings file. It is outside the Engram home on purpose — it
+    /// belongs to Claude Code — but it is resolved here because this is the only place allowed
+    /// to turn a home directory into a path.
+    /// </summary>
+    public string ClaudeSettingsPath { get; }
+
+    private EngramHome(string root, string userProfileDirectory)
     {
         Root = root;
         DatabasePath = Path.Combine(root, "engram.db");
@@ -23,6 +36,8 @@ public sealed class EngramHome
         QueueDir = Path.Combine(root, "queue");
         ReportDir = Path.Combine(root, "report");
         UserFactsDir = Path.Combine(root, "user-facts");
+        GrantedPermissionsPath = Path.Combine(root, "granted-permissions.json");
+        ClaudeSettingsPath = Path.Combine(userProfileDirectory, ".claude", "settings.json");
     }
 
     public static EngramHome Resolve(
@@ -66,7 +81,7 @@ public sealed class EngramHome
             normalized = fullPath;
         }
 
-        return new EngramHome(normalized);
+        return new EngramHome(normalized, userProfileDirectory);
     }
 
     public static EngramHome ResolveFromProcess(string? explicitPath)

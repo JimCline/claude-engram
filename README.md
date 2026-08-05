@@ -64,6 +64,8 @@ scripts/install.sh --apply --with-plugin   # also register the Claude Code plugi
 | `--binary PATH` | Install an already-built binary instead of building one. |
 | `--no-path` | Do not put the binary on `PATH` by any means. |
 | `--with-plugin` | Also run the two `claude plugin` commands below. |
+| `--grant-permissions` | Allow the memory tools without prompting, instead of asking. |
+| `--no-grant-permissions` | Never grant them, and do not ask. |
 
 Getting onto `PATH` is tried in order of how invasive it is. If the install directory is
 already on `PATH`, nothing happens at all. Otherwise a **symlink** goes into a directory
@@ -85,6 +87,11 @@ scripts/uninstall.sh --apply --purge   # ALSO deletes ~/.engram and all your mem
 
 **`--purge` is the only thing that will ever touch `~/.engram`.** Without it the memory
 store is left completely alone, and the summary says so explicitly.
+
+The uninstaller also takes back the MCP tool permissions the installer granted — and only
+those, which is why it runs before the binary and the home are removed: the record of what
+was ours lives in the home, and reading it is the only thing separating an entry Engram added
+from one you wrote.
 
 ### The Claude Code plugin
 
@@ -134,6 +141,41 @@ To try the plugin for one session without registering anything:
 ```
 claude --plugin-dir /Users/jimcline/git/repos/engram/plugin
 ```
+
+### Letting the agent reach memory without a prompt
+
+By default Claude Code asks before every MCP tool call. For a memory system that is not just
+friction — it is a measurement problem. M0 exists to find out whether the model reaches for
+memory on its own, and a dialog in front of each `engram_recall` turns that number into a
+measurement of the dialog: the model calls it less, and the user approves on reflex.
+
+So the installer offers to add four entries to `permissions.allow` in Claude Code's user
+settings, and `engram permissions` does the same job on its own:
+
+```
+engram permissions                      # dry run — prints exactly what it would add
+engram permissions --apply
+engram permissions --remove --apply     # take back only what Engram added
+```
+
+| Granted | Withheld |
+| --- | --- |
+| `engram_recall`, `engram_remember`, `engram_digest`, `engram_status` | `engram_forget`, `engram_start`, `engram_stop` |
+
+A server-wide wildcard would be one line instead of four and is supported, but it would pull
+the withheld three back in the moment any of them ships. `engram_forget` closes a fact and
+there is no un-retract; `start` and `stop` move the daemon out from under the session talking
+to it. Those are worth an interruption.
+
+The grant is opt-in, and it asks only a terminal — a piped or CI run declines, because silence
+is not consent to edit somebody's settings file. Before writing it backs the file up, merges
+into whatever is already there rather than replacing it, and **refuses outright to rewrite a
+settings file it cannot parse strictly**, since comments and trailing commas would parse under
+relaxed options and then disappear on the way back out.
+
+Removal is exact rather than symmetric-by-name: the grant records which entries it added, under
+the Engram home, and the uninstaller takes back only those. An entry you wrote yourself survives
+an uninstall, and `engram permissions --remove` says so when it leaves one alone.
 
 ### Remembering what the user says
 

@@ -44,6 +44,7 @@ public static class CliApp
             "status" => StatusCommand.Run(homePath, rest, stdout, stderr),
             "hook" => HookCommand.Run(homePath, rest, stdout, stderr),
             "probe" => ProbeCommand.Run(homePath, rest, stdout, stderr),
+            "permissions" => PermissionsCommand.Run(homePath, rest, stdout, stderr),
             _ => Usage(stderr),
         };
     }
@@ -67,6 +68,7 @@ public static class CliApp
         writer.WriteLine("  status                             report whether the MCP server is running");
         writer.WriteLine("  hook <event>                       hook entrypoint: session-start|subagent-start|pre-compact|user-prompt|file-touched");
         writer.WriteLine("  probe [options]                    summarize telemetry.jsonl for the M0 adoption probe");
+        writer.WriteLine("  permissions [options]              allow Claude Code to call Engram's memory tools unprompted");
         writer.WriteLine();
         writer.WriteLine("serve/start options:");
         writer.WriteLine("  --port <n>                         port to bind (default 7433, or $ENGRAM_PORT)");
@@ -74,5 +76,10 @@ public static class CliApp
         writer.WriteLine("probe options:");
         writer.WriteLine("  --json                             emit the summary as a JSON object instead of text");
         writer.WriteLine("  --since <n>d                       only consider records from the last n days, e.g. --since 7d");
+        writer.WriteLine();
+        writer.WriteLine("permissions options (dry run unless --apply is given):");
+        writer.WriteLine("  --apply                            actually edit the settings file");
+        writer.WriteLine("  --remove                           take back only the entries Engram added");
+        writer.WriteLine("  --settings <path>                  edit this settings file instead of Claude Code's user settings");
     }
 }
