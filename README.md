@@ -135,9 +135,47 @@ To try the plugin for one session without registering anything:
 claude --plugin-dir /Users/jimcline/git/repos/engram/plugin
 ```
 
+### Remembering what the user says
+
+Every other path into memory waits for the model to volunteer a tool call, and the M0
+telemetry says it does not: `remember` fired 0 times in 1 session, `digest` 0 times. A
+fact the user states in passing is lost unless something that is not the model writes it
+down. `UserPromptSubmit` is the only place every message passes through.
+
+The catchable shape is grammatical, not lexical. *"I went to see a Spiderman movie last
+Saturday"* contains no memory keyword at all — matching on "remember" or "always" would
+never see it. What marks it is that it is a **first-person declarative**, which is also
+what separates it from the two things a prompt is otherwise made of, a question and an
+instruction. `UserStatementClassifier` keeps first-person statements and standing
+instructions and drops the rest.
+
+Classification runs **per sentence**, which is a privacy property as much as a precision
+one: in *"I moved to Seattle in March. Now fix the failing test."* only the first clause
+is stored, and the rest of the message never reaches disk.
+
+Two things then happen, and the redundancy is deliberate:
+
+- The raw sentence is written to `~/.engram/user-facts/` immediately, one file per record.
+  This does not depend on the model doing anything.
+- The model is asked to restate anything that would not stand alone later — a relative
+  date, an unresolved "it" — via `engram_remember` with `supersedes` set, which **closes**
+  the raw capture rather than duplicating it.
+
+Captured facts rank in recall's long-term tier, not beside session notes: what someone
+says about themselves outlives the conversation it was said in.
+
+**It can be undone.** `engram_forget` / `/engram:forget` retract by id. A retraction is a
+new record naming the id it closes, so the append-only invariant holds and the original is
+closed rather than erased — it stops being recalled, and the text stays in
+`~/.engram/user-facts` until you delete that directory yourself. Capture without a delete
+key was not something worth shipping.
+
+The classifier biases toward silence. A missed fact costs one repetition; a wrongly
+captured one is a sentence the user did not choose to have written down.
+
 ### Slash commands
 
-`plugin/commands/` adds seven, all namespaced `/engram:`:
+`plugin/commands/` adds eight, all namespaced `/engram:`:
 
 | Command | What it does |
 | --- | --- |
@@ -147,6 +185,7 @@ claude --plugin-dir /Users/jimcline/git/repos/engram/plugin
 | `/engram:status` | Server pid, port, version, uptime, and whether the home is initialised. |
 | `/engram:start` | Start the server. |
 | `/engram:stop` | Stop it. |
+| `/engram:forget <id>` | Retract a captured fact — wrong, private, or no longer true. |
 | `/engram:doctor` | Read-only diagnosis: resolved binary, port holder, home contents, telemetry, log tail. |
 
 The split in how they reach engram is deliberate. `recall`, `remember`, and `digest` go

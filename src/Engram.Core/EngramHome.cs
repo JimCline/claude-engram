@@ -11,6 +11,7 @@ public sealed class EngramHome
     public string ModelsDir { get; }
     public string QueueDir { get; }
     public string ReportDir { get; }
+    public string UserFactsDir { get; }
 
     private EngramHome(string root)
     {
@@ -21,6 +22,7 @@ public sealed class EngramHome
         ModelsDir = Path.Combine(root, "models");
         QueueDir = Path.Combine(root, "queue");
         ReportDir = Path.Combine(root, "report");
+        UserFactsDir = Path.Combine(root, "user-facts");
     }
 
     public static EngramHome Resolve(

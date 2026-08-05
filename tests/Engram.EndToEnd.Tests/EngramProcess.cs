@@ -28,10 +28,26 @@ internal static class EngramProcess
 
         if (stdin is not null)
         {
-            process.StandardInput.Write(stdin);
+            try
+            {
+                process.StandardInput.Write(stdin);
+            }
+            catch (IOException)
+            {
+                // A hook that exits before draining stdin is correct behaviour, not a
+                // failure: an uninitialised home is meant to be a silent no-op, and the
+                // switch that reads the payload is never reached. The write then lands on
+                // a closed pipe. Swallowing it here keeps that path testable at all.
+            }
         }
 
-        process.StandardInput.Close();
+        try
+        {
+            process.StandardInput.Close();
+        }
+        catch (IOException)
+        {
+        }
 
         var stdout = process.StandardOutput.ReadToEnd();
         var stderr = process.StandardError.ReadToEnd();

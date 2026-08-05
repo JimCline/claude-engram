@@ -21,7 +21,8 @@ internal sealed record PreCompactHookOutput(
 internal sealed record HookStdinInput(
     [property: JsonPropertyName("session_id")] string? SessionId,
     [property: JsonPropertyName("agent_id")] string? AgentId = null,
-    [property: JsonPropertyName("agent_type")] string? AgentType = null);
+    [property: JsonPropertyName("agent_type")] string? AgentType = null,
+    [property: JsonPropertyName("prompt")] string? Prompt = null);
 
 [JsonSerializable(typeof(AdditionalContextHookOutput))]
 [JsonSerializable(typeof(PreCompactHookOutput))]

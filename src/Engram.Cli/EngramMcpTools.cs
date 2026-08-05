@@ -28,7 +28,14 @@ public sealed class EngramMcpTools
         var budget = budget_tokens is > 0 ? budget_tokens.Value : RecallEngine.DefaultBudgetTokens;
         var currentSessionFacts = SessionFactStore.ReadAll(home, session.Value);
         var priorSessionFacts = SessionFactStore.ReadAllExcept(home, session.Value);
-        var result = RecallEngine.Pack(query, CannedFacts.All, currentSessionFacts, priorSessionFacts, budget);
+
+        // What the user stated about themselves ranks in the same tier as the seeded
+        // facts, not beside session notes: it is durable by nature and it did not come
+        // from an agent's inference, so it is the most trustworthy thing in the pack.
+        var longTermFacts = new List<CannedFact>(CannedFacts.All);
+        longTermFacts.AddRange(UserFactStore.ToFacts(home, DateTime.UtcNow));
+
+        var result = RecallEngine.Pack(query, longTermFacts, currentSessionFacts, priorSessionFacts, budget);
 
         if (homeState.Initialized)
         {
@@ -55,8 +62,9 @@ public sealed class EngramMcpTools
         "report. Call it whenever you learn something worth keeping for the rest of this session: a " +
         "decision, a constraint, a partial result, a dead end already ruled out. If you are a subagent, " +
         "pass your own name in `agent` so the note is attributed to whichever worker learned it. " +
-        "`engram_recall` surfaces these notes first, ranked above long-term memory, for the rest of the " +
-        "session.")]
+        "`engram_recall` ranks these above long-term memory for the rest of this session, and they stay " +
+        "recallable in later sessions too — so this is worth calling for anything that would still be true " +
+        "next week, not only for what you need in the next ten minutes.")]
     public static string Remember(
         EngramHome home,
         McpSessionId session,
@@ -64,11 +72,35 @@ public sealed class EngramMcpTools
         [Description("The fact to remember, as a short, self-contained statement.")] string statement,
         [Description("What or who the fact is about, if not obvious from the statement.")] string? subject = null,
         [Description("Where this was learned — a file path, PR, or command output.")] string? evidence = null,
-        [Description("Your own name, if you are a subagent recording this fact rather than the main agent.")] string? agent = null)
+        [Description("Your own name, if you are a subagent recording this fact rather than the main agent.")] string? agent = null,
+        [Description(
+            "The bracketed id of a raw user-statement capture this restates, e.g. \"u1a2b3c4d\". Closes that "
+                + "capture so the rewritten version replaces it instead of duplicating it.")] string? supersedes = null)
     {
         if (!homeState.Initialized)
         {
             return "Engram home is not initialised (run 'engram init'); this statement was not saved.";
+        }
+
+        // A restatement of something the user said belongs in the durable user-scoped
+        // store next to the capture it replaces, not in this session's notes — otherwise
+        // the rewritten version would be the one that expires and the raw one would be
+        // the one that lasts, which is backwards.
+        if (!string.IsNullOrWhiteSpace(supersedes))
+        {
+            var replacementId = UserFactStore.Append(
+                home,
+                kind: "personal",
+                statement: statement,
+                sessionId: session.Value,
+                supersedes: supersedes);
+
+            Telemetry.Append(home, new TelemetryRecord(
+                Timestamp: DateTime.UtcNow.ToString("o"),
+                SessionId: session.Value,
+                Kind: TelemetryEventKind.Remember));
+
+            return $"[{replacementId}] replaced capture [{supersedes}]: \"{statement}\"";
         }
 
         var handle = SessionFactStore.Append(home, session.Value, statement, subject, evidence, agent);
@@ -83,6 +115,44 @@ public sealed class EngramMcpTools
         var agentText = string.IsNullOrWhiteSpace(agent) ? string.Empty : $" [via {agent}]";
 
         return $"[{handle}] remembered: {subjectText} — \"{statement}\"{evidenceText}{agentText}";
+    }
+
+    [McpServerTool(Name = "engram_forget")]
+    [Description(
+        "Retract a fact Engram captured about the user, by its bracketed id (e.g. \"u1a2b3c4d\"). Use it "
+            + "whenever the user says something stored is wrong, private, or no longer true. Retracted facts "
+            + "stop appearing in recall immediately. Call engram_recall first if you need to find the id.")]
+    public static string Forget(
+        EngramHome home,
+        McpSessionId session,
+        McpHomeState homeState,
+        [Description("The bracketed id of the captured fact to retract, e.g. \"u1a2b3c4d\".")] string id)
+    {
+        if (!homeState.Initialized)
+        {
+            return "Engram home is not initialised (run 'engram init'); nothing was retracted.";
+        }
+
+        var target = id.Trim().Trim('[', ']');
+
+        // Retracting something that was never there would otherwise report success and
+        // leave the user believing a fact is gone when it is still being recalled.
+        var known = UserFactStore.ReadActive(home).Any(r => string.Equals(r.Id, target, StringComparison.Ordinal));
+        if (!known)
+        {
+            return $"No standing user fact with id '{target}'. Only facts Engram captured from the user "
+                + "(ids beginning with 'u') can be retracted; seeded and session facts cannot.";
+        }
+
+        UserFactStore.Append(
+            home,
+            kind: "retraction",
+            statement: $"retracted {target}",
+            sessionId: session.Value,
+            retracts: target);
+
+        return $"Retracted [{target}]. It will not appear in recall again. The retraction is recorded "
+            + "rather than the original erased, because facts here are only ever closed, never deleted.";
     }
 
     [McpServerTool(Name = "engram_digest")]

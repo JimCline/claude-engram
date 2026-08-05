@@ -14,7 +14,8 @@ internal static class HookCommand
         }
 
         var eventName = rest[0];
-        if (eventName is not ("session-start" or "subagent-start" or "pre-compact" or "file-touched"))
+        if (eventName is not ("session-start" or "subagent-start" or "pre-compact"
+            or "user-prompt" or "file-touched"))
         {
             return Usage(stderr);
         }
@@ -42,6 +43,7 @@ internal static class HookCommand
             "session-start" => RunSessionStart(home, stdout, ReadPayload()),
             "subagent-start" => RunSubagentStart(home, stdout, ReadPayload()),
             "pre-compact" => RunPreCompact(home, ReadPayload()),
+            "user-prompt" => RunUserPrompt(home, stdout, ReadPayload()),
             "file-touched" => RunFileTouched(home),
             _ => 0,
         };
@@ -51,6 +53,69 @@ internal static class HookCommand
     {
         CliApp.PrintUsage(stderr);
         return 1;
+    }
+
+    // The only place every message the user sends passes through. Everything else in this
+    // system depends on the model choosing to call engram_remember, and the M0 telemetry
+    // says it does not — remember fired 0 times in 1 session. A fact the user states in
+    // passing is lost unless something that is not the model writes it down.
+    //
+    // Two things happen here, and the redundancy is deliberate. The raw sentence is stored
+    // immediately, so the fact survives regardless of what the model does next. The model
+    // is then asked to restate it as something self-contained, because "last Saturday"
+    // only means anything beside the timestamp it arrived with, and a stored sentence
+    // nobody can date is a fact that rots.
+    private static int RunUserPrompt(EngramHome home, TextWriter stdout, HookStdinInput? payload)
+    {
+        var candidates = UserStatementClassifier.Classify(payload?.Prompt);
+        if (candidates.Count == 0)
+        {
+            return 0;
+        }
+
+        var sessionId = ResolveSessionId(payload);
+        var stored = new List<string>(candidates.Count);
+
+        foreach (var candidate in candidates)
+        {
+            try
+            {
+                var id = UserFactStore.Append(
+                    home,
+                    kind: candidate.Kind == UserFactKind.Directive ? "directive" : "personal",
+                    statement: candidate.Text,
+                    sessionId: sessionId);
+
+                stored.Add($"[{id}] {candidate.Text}");
+            }
+            catch (IOException)
+            {
+                // A capture that cannot be written is not worth failing a prompt over.
+            }
+            catch (UnauthorizedAccessException)
+            {
+            }
+        }
+
+        if (stored.Count == 0)
+        {
+            return 0;
+        }
+
+        var nudge =
+            "Engram captured what the user just stated, verbatim, as durable user-scoped memory:\n"
+            + string.Join('\n', stored)
+            + "\n\nIf any of those would not stand on its own when read months from now — a relative "
+            + "date like \"last Saturday\", an unresolved \"it\" or \"that\" — call engram_remember with "
+            + "a rewritten, self-contained version and pass the bracketed id as `supersedes` so the raw "
+            + "capture is closed rather than duplicated. If a capture already reads fine on its own, do "
+            + "nothing. Do not mention any of this to the user or thank them for the information; it is "
+            + "bookkeeping, not a topic.";
+
+        WriteJson(stdout, HookJsonContext.Default.AdditionalContextHookOutput,
+            new AdditionalContextHookOutput(new HookSpecificOutput("UserPromptSubmit", nudge)));
+
+        return 0;
     }
 
     private static int RunSessionStart(EngramHome home, TextWriter stdout, HookStdinInput? payload)
