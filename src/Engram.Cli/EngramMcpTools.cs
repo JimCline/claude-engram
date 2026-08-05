@@ -29,12 +29,12 @@ public sealed class EngramMcpTools
         var currentSessionFacts = SessionFactStore.ReadAll(home, session.Value);
         var priorSessionFacts = SessionFactStore.ReadAllExcept(home, session.Value);
 
-        // What the user stated about themselves ranks in the same tier as the seeded
-        // facts, not beside session notes: it is durable by nature and it did not come
-        // from an agent's inference, so it is the most trustworthy thing in the pack.
+        // One read, because what the user stated about themselves is now a fact like any
+        // other. It used to be fetched separately and appended here, which meant recall's
+        // idea of long-term memory was assembled at the call site out of two stores that
+        // could disagree.
         var now = DateTimeOffset.UtcNow;
-        var longTermFacts = new List<CannedFact>(FactCatalog.ReadLongTerm(home, now));
-        longTermFacts.AddRange(UserFactStore.ToFacts(home, now.UtcDateTime));
+        var longTermFacts = FactCatalog.ReadLongTerm(home, now);
 
         var result = RecallEngine.Pack(query, longTermFacts, currentSessionFacts, priorSessionFacts, budget);
 
@@ -75,7 +75,7 @@ public sealed class EngramMcpTools
         [Description("Where this was learned — a file path, PR, or command output.")] string? evidence = null,
         [Description("Your own name, if you are a subagent recording this fact rather than the main agent.")] string? agent = null,
         [Description(
-            "The bracketed id of a raw user-statement capture this restates, e.g. \"u1a2b3c4d\". Closes that "
+            "The bracketed id of a raw user-statement capture this restates, e.g. \"f42\". Closes that "
                 + "capture so the rewritten version replaces it instead of duplicating it.")] string? supersedes = null)
     {
         if (!homeState.Initialized)
@@ -83,25 +83,33 @@ public sealed class EngramMcpTools
             return "Engram home is not initialised (run 'engram init'); this statement was not saved.";
         }
 
-        // A restatement of something the user said belongs in the durable user-scoped
-        // store next to the capture it replaces, not in this session's notes — otherwise
-        // the rewritten version would be the one that expires and the raw one would be
-        // the one that lasts, which is backwards.
+        // A restatement of something the user said replaces the capture in place — same
+        // subject, same predicate — so the store's own collision rule closes the original
+        // and records why. Writing it to this session's notes instead would leave the
+        // rewritten version as the one that expires and the raw one as the one that lasts,
+        // which is backwards.
         if (!string.IsNullOrWhiteSpace(supersedes))
         {
-            var replacementId = UserFactStore.Append(
-                home,
-                kind: "personal",
-                statement: statement,
-                sessionId: session.Value,
-                supersedes: supersedes);
+            if (!FactCatalog.TryParseHandle(supersedes, out var targetId))
+            {
+                return $"'{supersedes}' is not a fact handle; they look like 'f42'. Nothing was saved.";
+            }
+
+            using var connection = EngramDatabase.OpenInitialized(home);
+            var replacementId = UserFacts.Restate(connection, targetId, statement, session.Value, DateTimeOffset.UtcNow);
+
+            if (replacementId is null)
+            {
+                return $"No live fact with id '{supersedes}' to restate — it may already have been "
+                    + "superseded or forgotten. Nothing was saved; call engram_recall to see what stands.";
+            }
 
             Telemetry.Append(home, new TelemetryRecord(
                 Timestamp: DateTime.UtcNow.ToString("o"),
                 SessionId: session.Value,
                 Kind: TelemetryEventKind.Remember));
 
-            return $"[{replacementId}] replaced capture [{supersedes}]: \"{statement}\"";
+            return $"[{FactCatalog.HandleFor(replacementId.Value)}] replaced capture [{supersedes}]: \"{statement}\"";
         }
 
         var handle = SessionFactStore.Append(home, session.Value, statement, subject, evidence, agent);
@@ -120,39 +128,44 @@ public sealed class EngramMcpTools
 
     [McpServerTool(Name = "engram_forget")]
     [Description(
-        "Retract a fact Engram captured about the user, by its bracketed id (e.g. \"u1a2b3c4d\"). Use it "
-            + "whenever the user says something stored is wrong, private, or no longer true. Retracted facts "
-            + "stop appearing in recall immediately. Call engram_recall first if you need to find the id.")]
+        "Retract a stored fact by its bracketed id (e.g. \"f42\"). Use it whenever the user says something "
+            + "stored is wrong, private, or no longer true. Retracted facts stop appearing in recall "
+            + "immediately, and stay retracted — nothing re-seeds them. Call engram_recall first if you need "
+            + "to find the id. Session notes (ids like \"s001\") cannot be retracted this way.")]
     public static string Forget(
         EngramHome home,
         McpSessionId session,
         McpHomeState homeState,
-        [Description("The bracketed id of the captured fact to retract, e.g. \"u1a2b3c4d\".")] string id)
+        [Description("The bracketed id of the fact to retract, e.g. \"f42\".")] string id)
     {
         if (!homeState.Initialized)
         {
             return "Engram home is not initialised (run 'engram init'); nothing was retracted.";
         }
 
-        var target = id.Trim().Trim('[', ']');
-
-        // Retracting something that was never there would otherwise report success and
-        // leave the user believing a fact is gone when it is still being recalled.
-        var known = UserFactStore.ReadActive(home).Any(r => string.Equals(r.Id, target, StringComparison.Ordinal));
-        if (!known)
+        if (!FactCatalog.TryParseHandle(id, out var factId))
         {
-            return $"No standing user fact with id '{target}'. Only facts Engram captured from the user "
-                + "(ids beginning with 'u') can be retracted; seeded and session facts cannot.";
+            return $"'{id}' is not a fact handle; they look like 'f42'. Session notes (\"s001\") and "
+                + "prior-session notes (\"s001@p1\") are not retractable. Nothing was retracted.";
         }
 
-        UserFactStore.Append(
-            home,
-            kind: "retraction",
-            statement: $"retracted {target}",
-            sessionId: session.Value,
-            retracts: target);
+        // Any live fact, including a seeded one. Once user facts became ordinary facts there
+        // was no honest way to keep the distinction: refusing to close a fact because of
+        // where it came from would be the store telling a user which of their own memories
+        // they are allowed to drop. The seeder already declines to write back anything this
+        // store has held before, so a retraction survives a corpus revision.
+        using var connection = EngramDatabase.OpenInitialized(home);
+        var closed = FactStore.Forget(connection, factId, "retracted by the user", DateTimeOffset.UtcNow);
 
-        return $"Retracted [{target}]. It will not appear in recall again. The retraction is recorded "
+        // Reporting success for something that was never live would leave the user believing
+        // a fact is gone while recall keeps returning it.
+        if (!closed)
+        {
+            return $"No live fact with id '{id}'. It may already have been superseded or retracted; "
+                + "call engram_recall to see what stands.";
+        }
+
+        return $"Retracted [{id}]. It will not appear in recall again. The retraction is recorded "
             + "rather than the original erased, because facts here are only ever closed, never deleted.";
     }
 

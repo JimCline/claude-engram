@@ -10,6 +10,11 @@
     <PackageReference Include="xunit.runner.visualstudio" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" />
     <PackageReference Include="ModelContextProtocol" />
+
+    <!-- To read back what the published binary wrote. Deliberately not a reference to
+         Engram.Core: asserting through the same code under test is how a tier-3 test stops
+         proving anything about the binary that ships. -->
+    <PackageReference Include="Microsoft.Data.Sqlite" />
   </ItemGroup>
 
   <ItemGroup>

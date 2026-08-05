@@ -21,7 +21,7 @@ stated as an erratum with a reason. Nothing here changes the spec's goals.
 
 ## 1. Decisions (locked)
 
-Twenty-five architectural forks are locked below. Each is a decision, not an option.
+Twenty-six architectural forks are locked below. Each is a decision, not an option.
 Six of them were adjudicated with Fable.
 
 ### D1 — Packaging: AOT core, Roslyn sidecar, native libs in the data directory
@@ -148,7 +148,21 @@ fact is forgotten — it keeps announcing memory the user has cleared. Measured 
 rounds of 40 invocations of the published binary: 10.6 ms hardcoded vs 12.1 ms reading
 the store. Note the hardcoded version already exceeded 10 ms on process start alone,
 which is the clearest evidence that the sub-10 ms budget was never a claim about these
-hooks. No hook writes; that part does generalize.
+hooks.
+
+"No hook writes" was asserted here as the part that generalizes. It does not, and the
+correction is worth more than the rule was. `user-prompt` writes, because it is the only
+place a fact the user states in passing can be caught at all — the M0 telemetry says the
+model does not call `engram_remember`, so a capture the model has to opt into is a capture
+that does not happen. It fires once per message a human types, which is not remotely the
+per-edit rate rule 4 was written against, and it takes one `BEGIN IMMEDIATE` transaction
+held for the length of an insert. Measured the same way, 3 rounds of 40 invocations of
+each published binary: 13.1–13.4 ms writing to the store against 11.1–11.4 ms writing a
+JSON file, so about +2 ms on a process start that dominates both.
+
+What actually generalizes is narrower and is the rule to keep: **a hook opening the
+database is a decision with a measurement behind it, never a default.** Two have earned
+it. `file-touched` has not and will not — its budget is the one rule 4 describes.
 
 Salience bumps are batched in memory and flushed best-effort — a dropped bump is
 harmless, and it is not worth contending for the write lock.
@@ -1209,6 +1223,50 @@ not whether M4 happens. And it stays falsifiable — if the 10 ms hook budget is
 achievable without AOT, on measurement rather than argument, this decision should be
 reopened, because at that point AOT would be buying only artifact size.
 
+### D26 — User captures are ordinary facts, and forgetting is not scoped by origin
+
+Captured user statements shipped in their own JSON directory, with their own `ReadActive`
+walking `retracts` and `supersedes` links to work out what still stood. That was a **second
+implementation of the validity window** the `fact` table already had, and the two agreed
+only by coincidence. It also got none of `BEGIN IMMEDIATE`, `busy_timeout`, or a
+supersession row saying *why* a belief changed. Same data, one temporal model.
+
+**The statement is its own subject.** A capture lands at
+`/user/{about-you,instructions}/<fingerprint>`, where the fingerprint is eight hex
+characters of SHA-256 over the statement with case, punctuation, and whitespace runs
+normalized away. That is what makes `ux_fact_live` do the right thing here: a per-statement
+subject means each capture supersedes only itself, where a shared subject like
+`/user/about-you` would have made every new statement close the previous one.
+
+Two behaviours fall out of the addressing rather than being coded as policy:
+
+- **Saying something twice captures it once.** The JSON store could not tell a repeat from
+  a new statement — it had no key to compare on — so every restatement became another row
+  in recall.
+- **A repeat does not undo a rewrite.** The already-present check is on the *entity*, not
+  the body: after the model rewrites a capture into something self-contained, the user
+  typing the original again must not drag it back. What the store already knows wins.
+
+Retracted is the asymmetric case, and deliberately so: a retracted statement has no live
+fact, so saying it again captures it afresh. That is the opposite of the seed corpus, which
+stays silent about anything this store has held before. A re-seed is nobody asking for a
+fact back; a user typing the sentence again is.
+
+**`engram_forget` closes any live fact, including seeded ones.** Not scope creep — the
+consequence of the unification. Once user captures are ordinary facts there is no honest
+way to keep the old restriction, and inventing a marker to preserve it would rebuild the
+split this removed. It is also the right answer on its own: refusing to close a fact
+because of where it came from is the store telling a user which of their own memories they
+may drop. The seeder's refusal to rewrite any subject+predicate the store has held before
+is what makes a retraction survive a corpus revision, so this composes rather than leaking.
+
+The cost is a handle change — `u1a2b3c4d` becomes `f42` — which the golden file surfaced as
+an intended diff rather than a silent one. Existing JSON captures are replayed into the
+store in timestamp order on `init`, rewrites landing at the address of the capture they
+replaced so the supersession chain survives the move, and the files are left on disk: they
+are the only copy of the pre-migration state, and an upgrade does not delete a user's data
+as a side effect.
+
 ---
 
 ## PreCompact cannot inject context
@@ -1505,10 +1563,10 @@ which that project does not evidence**, and it is now the whole of this group.
 10. **D16's gate** — measure the real facts-per-session distribution on the author's
     instance. Median below ~5 lapses the decision; above it, build the expand view.
 11. ~~§1's intro still says *"Six architectural forks were adjudicated with Fable"*~~ —
-    done. The count now reflects the 25 decisions actually present, and the Fable
-    provenance stays scoped to six rather than being extended to decisions whose origin
-    is not mine to assert. That was the only thing blocking the fix; the two claims did
-    not have to travel together.
+    done. The count reflects the decisions actually present, and the Fable provenance
+    stays scoped to six rather than being extended to decisions whose origin is not mine
+    to assert. That was the only thing blocking the fix; the two claims did not have to
+    travel together.
 
 **E. Provenance tier (D19) — independent of A–D; run it alongside A**
 

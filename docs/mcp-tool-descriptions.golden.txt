@@ -6,9 +6,9 @@ Flush the durable learnings from this session in one call, before context is com
   A one- or two-sentence summary of the session.
 
 tool: engram_forget
-Retract a fact Engram captured about the user, by its bracketed id (e.g. "u1a2b3c4d"). Use it whenever the user says something stored is wrong, private, or no longer true. Retracted facts stop appearing in recall immediately. Call engram_recall first if you need to find the id.
+Retract a stored fact by its bracketed id (e.g. "f42"). Use it whenever the user says something stored is wrong, private, or no longer true. Retracted facts stop appearing in recall immediately, and stay retracted — nothing re-seeds them. Call engram_recall first if you need to find the id. Session notes (ids like "s001") cannot be retracted this way.
   param: id
-  The bracketed id of the captured fact to retract, e.g. "u1a2b3c4d".
+  The bracketed id of the fact to retract, e.g. "f42".
 
 tool: engram_recall
 Check memory BEFORE reading files or exploring the repo. Searches Engram's stored facts (decisions, conventions, gotchas, contracts) and returns a token-budgeted, ranked digest with fact handles and a coverage estimate. Call this first for any question about how this project works, what was decided, or why something is the way it is — it is far cheaper than rediscovering the answer by reading source.
@@ -28,5 +28,5 @@ Save a durable note to this session's working memory — state you would otherwi
   param: agent
   Your own name, if you are a subagent recording this fact rather than the main agent.
   param: supersedes
-  The bracketed id of a raw user-statement capture this restates, e.g. "u1a2b3c4d". Closes that capture so the rewritten version replaces it instead of duplicating it.
+  The bracketed id of a raw user-statement capture this restates, e.g. "f42". Closes that capture so the rewritten version replaces it instead of duplicating it.
 

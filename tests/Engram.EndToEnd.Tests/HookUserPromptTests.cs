@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using Microsoft.Data.Sqlite;
 
 namespace Engram.EndToEnd.Tests;
 
@@ -88,7 +89,29 @@ public class HookUserPromptTests
 
         Assert.Equal(0, exitCode);
         Assert.Equal(string.Empty, stdout);
-        Assert.False(Directory.Exists(Path.Combine(home.Root, "user-facts")));
+        Assert.False(File.Exists(Path.Combine(home.Root, "engram.db")));
+    }
+
+    // The hook writes to the database now, and a store already holding this statement is
+    // reason to say nothing rather than to write a second copy. Driving it through two real
+    // processes is what makes this meaningful: the check is a query, not in-process state.
+    [Fact]
+    public void RepeatingAStatementCapturesItOnceAndSaysNothingTheSecondTime()
+    {
+        Assert.SkipUnless(EndToEndBinary.Path is not null, EndToEndBinary.SkipReason);
+
+        using var home = new TestHome();
+
+        var (_, firstStdout, _) = EngramProcess.RunWithStdin(
+            home.Root, Payload("I use a Dvorak keyboard"), "hook", "user-prompt");
+        var (secondExit, secondStdout, _) = EngramProcess.RunWithStdin(
+            home.Root, Payload("I use a Dvorak keyboard."), "hook", "user-prompt");
+
+        Assert.Contains("Dvorak", firstStdout);
+        Assert.Equal(0, secondExit);
+        Assert.Equal(string.Empty, secondStdout);
+
+        Assert.Single(ReadCapturedStatements(home.Root));
     }
 
     private static string Payload(string prompt) =>
@@ -98,16 +121,38 @@ public class HookUserPromptTests
             ["prompt"] = prompt,
         });
 
+    // Opened read-only, and through the provider rather than Engram.Core's own open routine:
+    // a tier-3 test that asserts using the code under test stops saying anything about the
+    // binary that ships.
     private static IReadOnlyList<string> ReadCapturedStatements(string root)
     {
-        var directory = Path.Combine(root, "user-facts");
-        if (!Directory.Exists(directory))
+        var databasePath = Path.Combine(root, "engram.db");
+        if (!File.Exists(databasePath))
         {
             return [];
         }
 
-        return Directory.GetFiles(directory, "*.json")
-            .Select(f => JsonNode.Parse(File.ReadAllText(f))!["statement"]!.GetValue<string>())
-            .ToList();
+        using var connection = new SqliteConnection(
+            new SqliteConnectionStringBuilder
+            {
+                DataSource = databasePath,
+                Mode = SqliteOpenMode.ReadOnly,
+            }.ToString());
+        connection.Open();
+
+        // Keyed on the path, not on scope: the seed corpus is scoped 'user' too, so a scope
+        // filter would report thirty-eight shipped facts as things this hook captured.
+        using var command = connection.CreateCommand();
+        command.CommandText =
+            "SELECT body FROM fact WHERE path LIKE '/user/%' AND valid_to IS NULL ORDER BY id;";
+
+        var statements = new List<string>();
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            statements.Add(reader.GetString(0));
+        }
+
+        return statements;
     }
 }

@@ -3,6 +3,7 @@ bin/
 obj/
 artifacts/
 publish/
+out/
 *.binlog
 
 # Native AOT / publish intermediates

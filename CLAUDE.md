@@ -1,8 +1,8 @@
 # Engram — working rules
 
-Read `docs/engram-implementation-plan.md` before any non-trivial change. It holds nine
-decisions (D1–D9) that resolve questions the spec left open, and each one was reached by
-argument or measurement, not preference. `docs/engram-schema.sql` is the authority for
+Read `docs/engram-implementation-plan.md` before any non-trivial change. It holds
+twenty-six decisions (D1–D26) that resolve questions the spec left open, and each one was
+reached by argument or measurement, not preference. `docs/engram-schema.sql` is the authority for
 database shape.
 
 ## Invariants that are easy to break by accident
@@ -52,7 +52,11 @@ budget is 10 ms and it must hold unconditionally, not just when nothing else is 
 This rule is about that hook, not about hooks: D4 justifies it entirely by per-edit
 frequency and write contention. The primer hooks — `session-start`, `subagent-start` —
 do take a short read and close it, because a primer that reports memory from a hardcoded
-list disagrees with recall the moment a fact is forgotten. No hook writes.
+list disagrees with recall the moment a fact is forgotten. `user-prompt` writes, once per
+message the user sends: it is the only place a fact stated in passing can be caught, and a
+capture the model has to opt into is a capture that does not happen. Each of those was
+measured against the version it replaced — a hook that opens the database is a decision
+with a number behind it, never a default.
 
 **Anything destructive is dry-run first.** `repair`, `compact`, `forget`, and the
 installer print what they would do and require an explicit flag to act. Anything editing

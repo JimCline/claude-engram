@@ -142,10 +142,16 @@ public class FactCatalogTests
             command.ExecuteScalar());
     }
 
+    // The second segment, whatever the root. This used to special-case /knowledge and call
+    // everything else "memory", which stopped being right the moment user captures got a
+    // root of their own: their topic would have read as "memory" in the primer with nothing
+    // to report the loss.
     [Theory]
     [InlineData("/knowledge/claude-code-hooks/subagentstart-envelope", "claude-code-hooks")]
     [InlineData("/knowledge/this-project", "this-project")]
-    [InlineData("/people/jim", "memory")]
+    [InlineData("/user/about-you/ab12cd34", "about-you")]
+    [InlineData("/people/jim", "jim")]
+    [InlineData("/orphan", "memory")]
     public void TopicOf_ReadsTheTopicSegment(string path, string expected) =>
         Assert.Equal(expected, FactCatalog.TopicOf(path));
 

@@ -159,6 +159,37 @@ public static class FactStore
         return true;
     }
 
+    /// <summary>
+    /// The live fact for a subject path and predicate, or null if there is none.
+    /// </summary>
+    /// <remarks>
+    /// The pair is what <c>ux_fact_live</c> is unique over, so this returns at most one row
+    /// by construction rather than by convention.
+    /// </remarks>
+    public static long? FindLiveFactId(
+        SqliteConnection connection,
+        SqliteTransaction? transaction,
+        string subjectPath,
+        string predicate) =>
+        ScalarLong(
+            connection,
+            transaction,
+            """
+            SELECT f.id FROM fact f JOIN entity e ON e.id = f.subject_id
+             WHERE e.path = $path AND f.predicate = $predicate AND f.valid_to IS NULL;
+            """,
+            ("$path", subjectPath),
+            ("$predicate", predicate));
+
+    public static StoredFact? ReadById(SqliteConnection connection, long factId)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = SelectFactColumns + " WHERE f.id = $id;";
+        command.Parameters.AddWithValue("$id", factId);
+
+        return ReadFacts(command).FirstOrDefault();
+    }
+
     public static IReadOnlyList<StoredFact> ReadLive(SqliteConnection connection, string? scope = null)
     {
         var sql = SelectFactColumns

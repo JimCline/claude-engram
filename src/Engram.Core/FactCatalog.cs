@@ -54,10 +54,44 @@ public static class FactCatalog
         return names;
     }
 
+    /// <summary>
+    /// The bracketed id the model sees for a stored fact.
+    /// </summary>
+    /// <remarks>
+    /// The store's own id is the identity (D2); the 'f' keeps the handle shape recall output
+    /// already used. One spelling, in one place, because a tool that takes a handle and a
+    /// tool that prints one disagreeing is a class of bug with no symptom until a user tries
+    /// to forget something.
+    /// </remarks>
+    public static string HandleFor(long factId) =>
+        "f" + factId.ToString(System.Globalization.CultureInfo.InvariantCulture);
+
+    /// <summary>
+    /// Reads a handle back to a fact id, tolerating the brackets it is printed inside.
+    /// </summary>
+    public static bool TryParseHandle(string handle, out long factId)
+    {
+        factId = 0;
+        if (handle is null)
+        {
+            return false;
+        }
+
+        var trimmed = handle.Trim().Trim('[', ']');
+        if (!trimmed.StartsWith('f'))
+        {
+            return false;
+        }
+
+        return long.TryParse(
+            trimmed.AsSpan(1),
+            System.Globalization.NumberStyles.None,
+            System.Globalization.CultureInfo.InvariantCulture,
+            out factId);
+    }
+
     public static CannedFact ToCannedFact(StoredFact fact, DateTimeOffset now, IReadOnlyDictionary<string, string>? topicNames = null) => new(
-        // The store's own id is the identity (D2). The 'f' keeps the handle shape the model
-        // already sees in recall output, and strips back to the id when a tool takes one.
-        Id: "f" + fact.Id.ToString(System.Globalization.CultureInfo.InvariantCulture),
+        Id: HandleFor(fact.Id),
         Subject: fact.SubjectName,
         Predicate: fact.Predicate,
         Body: fact.Body,
@@ -67,34 +101,36 @@ public static class FactCatalog
         Evidence: fact.Evidence);
 
     /// <summary>
-    /// The display text of a seeded path's topic, or a fallback for facts stored elsewhere.
+    /// The display text of a fact's topic: the second path segment, resolved through the
+    /// topic node that holds the text it was authored with.
     /// </summary>
     /// <remarks>
-    /// The path only carries the slug. The primer prints this string to the model verbatim,
-    /// so it resolves through the topic node, which stores the text the corpus was authored
-    /// with — de-slugging cannot substitute, since "claude-code hooks" and "claude code
-    /// hooks" produce the same slug. Without a node to resolve against, the slug is returned
-    /// as-is: a store written before topic nodes existed should read as slightly wrong
-    /// rather than not read at all.
+    /// Root-agnostic on purpose. Every root shares the <c>/root/topic/subject</c> shape —
+    /// <c>/knowledge</c> for the seed corpus, <c>/user</c> for what the user stated — so
+    /// singling one of them out here would mean a second root's facts silently reporting a
+    /// topic of "memory" until someone noticed the primer had stopped naming them.
+    ///
+    /// The path only carries a slug, which is why this resolves through a node rather than
+    /// de-slugging: "claude-code hooks" and "claude code hooks" produce the same slug, so
+    /// the display text is not recoverable from the path. Without a node to resolve against
+    /// the slug is returned as-is — a store written before topic nodes existed should read
+    /// as slightly wrong rather than not read at all.
     /// </remarks>
     public static string TopicOf(string path, IReadOnlyDictionary<string, string>? topicNames = null)
     {
-        var prefix = CannedFactSeeder.Root + "/";
-        if (!path.StartsWith(prefix, StringComparison.Ordinal))
+        var segments = path.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        if (segments.Length < 2)
         {
             return "memory";
         }
 
-        var rest = path[prefix.Length..];
-        var separator = rest.IndexOf('/');
-        var slug = separator < 0 ? rest : rest[..separator];
-
-        if (topicNames is not null && topicNames.TryGetValue(prefix + slug, out var name))
+        var topicPath = "/" + segments[0] + "/" + segments[1];
+        if (topicNames is not null && topicNames.TryGetValue(topicPath, out var name))
         {
             return name;
         }
 
-        return slug;
+        return segments[1];
     }
 
     private static int AgeDaysOf(StoredFact fact, DateTimeOffset now)

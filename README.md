@@ -199,20 +199,21 @@ is stored, and the rest of the message never reaches disk.
 
 Two things then happen, and the redundancy is deliberate:
 
-- The raw sentence is written to `~/.engram/user-facts/` immediately, one file per record.
-  This does not depend on the model doing anything.
+- The raw sentence is written to the store immediately, as an ordinary fact. This does not
+  depend on the model doing anything.
 - The model is asked to restate anything that would not stand alone later — a relative
   date, an unresolved "it" — via `engram_remember` with `supersedes` set, which **closes**
   the raw capture rather than duplicating it.
 
 Captured facts rank in recall's long-term tier, not beside session notes: what someone
-says about themselves outlives the conversation it was said in.
+says about themselves outlives the conversation it was said in. Saying the same thing
+twice captures it once — the statement is its own address, so a repeat is recognised
+rather than stored again.
 
-**It can be undone.** `engram_forget` / `/engram:forget` retract by id. A retraction is a
-new record naming the id it closes, so the append-only invariant holds and the original is
-closed rather than erased — it stops being recalled, and the text stays in
-`~/.engram/user-facts` until you delete that directory yourself. Capture without a delete
-key was not something worth shipping.
+**It can be undone.** `engram_forget` / `/engram:forget` retract by id. The fact is closed,
+not erased, because belief content here is append-only: it stops being recalled, and the
+row survives to record that something was retracted. Nothing puts it back — not a corpus
+revision, not a reinstall. Capture without a delete key was not something worth shipping.
 
 The classifier biases toward silence. A missed fact costs one repetition; a wrongly
 captured one is a sentence the user did not choose to have written down.

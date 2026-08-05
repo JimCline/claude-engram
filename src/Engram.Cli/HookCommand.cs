@@ -65,6 +65,16 @@ internal static class HookCommand
     // is then asked to restate it as something self-contained, because "last Saturday"
     // only means anything beside the timestamp it arrived with, and a stored sentence
     // nobody can date is a fact that rots.
+    //
+    // This is the one hook that writes to the database, and D4's no-database rule does not
+    // reach it: that rule is about file-touched, and rests on a per-edit firing rate this
+    // hook does not have. It fires once per message the user sends, which is orders of
+    // magnitude rarer and is already gated on a human typing. Measured over 3 rounds of 40
+    // invocations of each published AOT binary: 13.1-13.4 ms here against 11.1-11.4 ms for
+    // the version that wrote a JSON file, so the store costs about +2 ms on top of a process
+    // start that dominates both. The write is one BEGIN IMMEDIATE transaction holding the
+    // lock for the length of an insert, and the only competing writers are this user's own
+    // MCP calls.
     private static int RunUserPrompt(EngramHome home, TextWriter stdout, HookStdinInput? payload)
     {
         var candidates = UserStatementClassifier.Classify(payload?.Prompt);
@@ -76,25 +86,31 @@ internal static class HookCommand
         var sessionId = ResolveSessionId(payload);
         var stored = new List<string>(candidates.Count);
 
-        foreach (var candidate in candidates)
+        try
         {
-            try
-            {
-                var id = UserFactStore.Append(
-                    home,
-                    kind: candidate.Kind == UserFactKind.Directive ? "directive" : "personal",
-                    statement: candidate.Text,
-                    sessionId: sessionId);
+            using var connection = EngramDatabase.OpenInitialized(home);
+            var now = DateTimeOffset.UtcNow;
 
-                stored.Add($"[{id}] {candidate.Text}");
-            }
-            catch (IOException)
+            foreach (var candidate in candidates)
             {
-                // A capture that cannot be written is not worth failing a prompt over.
+                var topic = candidate.Kind == UserFactKind.Directive
+                    ? UserFactTopic.Instruction
+                    : UserFactTopic.AboutYou;
+
+                // Null means the store already holds this statement, so there is nothing new
+                // to announce. Listing it anyway would ask the model to rewrite a capture
+                // that may already have been rewritten.
+                if (UserFacts.Capture(connection, topic, candidate.Text, sessionId, now) is { } factId)
+                {
+                    stored.Add($"[{FactCatalog.HandleFor(factId)}] {candidate.Text}");
+                }
             }
-            catch (UnauthorizedAccessException)
-            {
-            }
+        }
+        catch
+        {
+            // A capture that cannot be written is not worth failing a prompt over. Whatever
+            // landed before the failure is still reported: a partial capture the model can
+            // improve beats discarding the ones that succeeded.
         }
 
         if (stored.Count == 0)
