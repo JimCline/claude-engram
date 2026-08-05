@@ -16,26 +16,26 @@ public class TelemetrySummarizerTests
         var records = new List<TelemetryRecord>
         {
             new("2026-07-20T07:59:00Z", "h1", TelemetryEventKind.SessionStart),
-            new("2026-07-20T08:00:00Z", "m1", TelemetryEventKind.ServerStart),
+            new("2026-07-20T08:00:00Z", "m1", TelemetryEventKind.SessionOpen),
             new("2026-07-20T08:01:00Z", "m1", TelemetryEventKind.Recall, Query: "alpha", FactCount: 3, TokensReturned: 100, Coverage: "high"),
             new("2026-07-20T08:02:00Z", "m1", TelemetryEventKind.Recall, Query: "alpha", FactCount: 3, TokensReturned: 200, Coverage: "high"),
             new("2026-07-20T08:03:00Z", "m1", TelemetryEventKind.Remember),
             new("2026-07-20T08:04:00Z", "m1", TelemetryEventKind.Digest),
 
             new("2026-07-21T08:59:00Z", "h2", TelemetryEventKind.SessionStart),
-            new("2026-07-21T09:00:00Z", "m2", TelemetryEventKind.ServerStart),
+            new("2026-07-21T09:00:00Z", "m2", TelemetryEventKind.SessionOpen),
             new("2026-07-21T09:01:00Z", "m2", TelemetryEventKind.Recall, Query: "beta", FactCount: 1, TokensReturned: 50, Coverage: "partial"),
 
             new("2026-07-22T09:59:00Z", "h3", TelemetryEventKind.SessionStart),
-            new("2026-07-22T10:00:00Z", "m3", TelemetryEventKind.ServerStart),
+            new("2026-07-22T10:00:00Z", "m3", TelemetryEventKind.SessionOpen),
             new("2026-07-22T10:01:00Z", "m3", TelemetryEventKind.Recall, Query: "gamma", FactCount: 0, TokensReturned: 10, Coverage: "none"),
             new("2026-07-22T10:02:00Z", "m3", TelemetryEventKind.Remember),
 
             new("2026-07-23T10:59:00Z", "h4", TelemetryEventKind.SessionStart),
-            new("2026-07-23T11:00:00Z", "m4", TelemetryEventKind.ServerStart),
+            new("2026-07-23T11:00:00Z", "m4", TelemetryEventKind.SessionOpen),
 
             new("2026-07-24T11:59:00Z", "h5", TelemetryEventKind.SessionStart),
-            new("2026-07-24T12:00:00Z", "m5", TelemetryEventKind.ServerStart),
+            new("2026-07-24T12:00:00Z", "m5", TelemetryEventKind.SessionOpen),
             new("2026-07-24T12:01:00Z", "m5", TelemetryEventKind.Recall, Query: "alpha", FactCount: 3, TokensReturned: 150, Coverage: "high"),
             new("2026-07-24T12:02:00Z", "m5", TelemetryEventKind.Recall, Query: "beta", FactCount: 1, TokensReturned: 90, Coverage: "partial"),
             new("2026-07-24T12:03:00Z", "m5", TelemetryEventKind.Digest),
@@ -90,7 +90,7 @@ public class TelemetrySummarizerTests
     [Fact]
     public void Summarize_CarriesSkippedLinesThrough()
     {
-        var records = new List<TelemetryRecord> { new("2026-07-20T08:00:00Z", "m1", TelemetryEventKind.ServerStart) };
+        var records = new List<TelemetryRecord> { new("2026-07-20T08:00:00Z", "m1", TelemetryEventKind.SessionOpen) };
 
         var report = TelemetrySummarizer.Summarize(records, skippedLines: 2);
 
@@ -102,13 +102,13 @@ public class TelemetrySummarizerTests
     {
         var records = new List<TelemetryRecord>
         {
-            new("2026-07-20T08:00:00Z", "m1", TelemetryEventKind.ServerStart),
+            new("2026-07-20T08:00:00Z", "m1", TelemetryEventKind.SessionOpen),
             new("2026-07-20T08:01:00Z", "m1", TelemetryEventKind.Recall, Query: "q", FactCount: 1, TokensReturned: 10, Coverage: "high"),
-            new("2026-07-20T08:02:00Z", "m2", TelemetryEventKind.ServerStart),
+            new("2026-07-20T08:02:00Z", "m2", TelemetryEventKind.SessionOpen),
             new("2026-07-20T08:03:00Z", "m2", TelemetryEventKind.Recall, Query: "q", FactCount: 1, TokensReturned: 10, Coverage: "high"),
-            new("2026-07-20T08:04:00Z", "m3", TelemetryEventKind.ServerStart),
+            new("2026-07-20T08:04:00Z", "m3", TelemetryEventKind.SessionOpen),
             new("2026-07-20T08:05:00Z", "m3", TelemetryEventKind.Recall, Query: "q", FactCount: 1, TokensReturned: 10, Coverage: "high"),
-            new("2026-07-20T08:06:00Z", "m4", TelemetryEventKind.ServerStart),
+            new("2026-07-20T08:06:00Z", "m4", TelemetryEventKind.SessionOpen),
         };
 
         var report = TelemetrySummarizer.Summarize(records, skippedLines: 0);
@@ -127,7 +127,7 @@ public class TelemetrySummarizerTests
             new("2026-07-20T08:00:00Z", "h1", TelemetryEventKind.SessionStart),
             new("2026-07-20T08:01:00Z", "h2", TelemetryEventKind.SessionStart),
             new("2026-07-20T08:02:00Z", "h3", TelemetryEventKind.SessionStart),
-            new("2026-07-20T08:03:00Z", "m1", TelemetryEventKind.ServerStart),
+            new("2026-07-20T08:03:00Z", "m1", TelemetryEventKind.SessionOpen),
         };
 
         var report = TelemetrySummarizer.Summarize(records, skippedLines: 0);
@@ -147,9 +147,9 @@ public class TelemetrySummarizerTests
         var records = new List<TelemetryRecord>
         {
             new("2026-07-20T08:00:00Z", "h1", TelemetryEventKind.SessionStart),
-            new("2026-07-20T08:01:00Z", "m1", TelemetryEventKind.ServerStart),
+            new("2026-07-20T08:01:00Z", "m1", TelemetryEventKind.SessionOpen),
             new("2026-07-20T08:02:00Z", "h2", TelemetryEventKind.SessionStart),
-            new("2026-07-20T08:03:00Z", "m2", TelemetryEventKind.ServerStart),
+            new("2026-07-20T08:03:00Z", "m2", TelemetryEventKind.SessionOpen),
         };
 
         var report = TelemetrySummarizer.Summarize(records, skippedLines: 0);
@@ -165,22 +165,22 @@ public class TelemetrySummarizerTests
     {
         var records = new List<TelemetryRecord>
         {
-            new("2026-08-04T08:00:00Z", "m1", TelemetryEventKind.ServerStart),
+            new("2026-08-04T08:00:00Z", "m1", TelemetryEventKind.SessionOpen),
             new("2026-08-04T08:01:00Z", "m1", TelemetryEventKind.Remember),
             new("2026-08-04T08:02:00Z", "h1", TelemetryEventKind.PreCompact),
             new("2026-08-04T08:03:00Z", "m1", TelemetryEventKind.Recall, Query: "q", FactCount: 1, TokensReturned: 10, Coverage: "partial", SessionFactCount: 1, LongTermFactCount: 0),
             new("2026-08-04T08:04:00Z", "m1", TelemetryEventKind.Recall, Query: "q", FactCount: 2, TokensReturned: 20, Coverage: "high", SessionFactCount: 2, LongTermFactCount: 0),
 
-            new("2026-08-04T09:00:00Z", "m2", TelemetryEventKind.ServerStart),
+            new("2026-08-04T09:00:00Z", "m2", TelemetryEventKind.SessionOpen),
             new("2026-08-04T09:01:00Z", "h2", TelemetryEventKind.PreCompact),
             new("2026-08-04T09:02:00Z", "m2", TelemetryEventKind.Remember),
             new("2026-08-04T09:03:00Z", "m2", TelemetryEventKind.Recall, Query: "q", FactCount: 1, TokensReturned: 10, Coverage: "partial", SessionFactCount: 1, LongTermFactCount: 0),
 
-            new("2026-08-04T10:00:00Z", "m3", TelemetryEventKind.ServerStart),
+            new("2026-08-04T10:00:00Z", "m3", TelemetryEventKind.SessionOpen),
             new("2026-08-04T10:01:00Z", "m3", TelemetryEventKind.Remember),
             new("2026-08-04T10:02:00Z", "m3", TelemetryEventKind.Recall, Query: "q", FactCount: 1, TokensReturned: 10, Coverage: "partial", SessionFactCount: 0, LongTermFactCount: 1),
 
-            new("2026-08-04T11:00:00Z", "m4", TelemetryEventKind.ServerStart),
+            new("2026-08-04T11:00:00Z", "m4", TelemetryEventKind.SessionOpen),
             new("2026-08-04T11:01:00Z", "m4", TelemetryEventKind.Remember),
             new("2026-08-04T11:02:00Z", "m4", TelemetryEventKind.Recall, Query: "q", FactCount: 1, TokensReturned: 10, Coverage: "partial", SessionFactCount: 1, LongTermFactCount: 0),
         };
@@ -204,7 +204,7 @@ public class TelemetrySummarizerTests
     {
         var records = new List<TelemetryRecord>
         {
-            new("2026-08-04T08:00:00Z", "m1", TelemetryEventKind.ServerStart),
+            new("2026-08-04T08:00:00Z", "m1", TelemetryEventKind.SessionOpen),
             new("2026-08-04T08:01:00Z", "m1", TelemetryEventKind.Remember),
             new("2026-08-04T08:02:00Z", "h1", TelemetryEventKind.PreCompact),
             new("2026-08-04T08:03:00Z", "m1", TelemetryEventKind.Recall, Query: "q", FactCount: 1, TokensReturned: 10, Coverage: "partial", SessionFactCount: 0, LongTermFactCount: 0, PriorSessionFactCount: 1),

@@ -1,6 +1,5 @@
 using System.Text.Json;
-using ModelContextProtocol.Client;
-using ModelContextProtocol.Protocol;
+using System.Text.Json.Nodes;
 
 namespace Engram.EndToEnd.Tests;
 
@@ -12,63 +11,61 @@ public class McpServerTests
         Assert.SkipUnless(EndToEndBinary.Path is not null, EndToEndBinary.SkipReason);
 
         using var home = new TestHome();
-
-        var transport = new StdioClientTransport(new()
-        {
-            Name = "engram-e2e-test",
-            Command = EndToEndBinary.Path!,
-            Arguments = ["mcp"],
-            InheritEnvironmentVariables = true,
-            EnvironmentVariables = new Dictionary<string, string?> { ["ENGRAM_HOME"] = home.Root },
-        });
-
+        var port = FreeTcpPort.Next();
         var cancellationToken = TestContext.Current.CancellationToken;
 
-        await using var client = await McpClient.CreateAsync(transport, cancellationToken: cancellationToken);
+        var (startExit, _, startErr) = EngramProcess.Run(home.Root, "start", "--port", port.ToString());
+        Assert.True(startExit == 0, $"engram start failed: {startErr}");
 
-        var tools = await client.ListToolsAsync(cancellationToken: cancellationToken);
-        Assert.Equal(
-            ["engram_digest", "engram_recall", "engram_remember"],
-            tools.Select(t => t.Name).OrderBy(name => name, StringComparer.Ordinal));
+        try
+        {
+            using var client = new HttpMcpClient(port);
+            await client.InitializeAsync(cancellationToken);
 
-        var hit = await client.CallToolAsync(
-            "engram_recall",
-            new Dictionary<string, object?> { ["query"] = "AOT packaging and Roslyn" },
-            cancellationToken: cancellationToken);
-        var hitText = ExtractText(hit);
-        Assert.Contains("[f", hitText);
-        Assert.Contains("coverage:", hitText);
+            var toolsNode = await client.ListToolsAsync(cancellationToken);
+            var toolNames = toolsNode!["result"]!["tools"]!.AsArray()
+                .Select(t => t!["name"]!.GetValue<string>())
+                .OrderBy(name => name, StringComparer.Ordinal)
+                .ToArray();
+            Assert.Equal(["engram_digest", "engram_recall", "engram_remember"], toolNames);
 
-        var miss = await client.CallToolAsync(
-            "engram_recall",
-            new Dictionary<string, object?> { ["query"] = "zzqqxxnonexistentquery12345" },
-            cancellationToken: cancellationToken);
-        var missText = ExtractText(miss);
-        Assert.Contains("coverage: none", missText);
-        Assert.True(missText.Split('\n').Length < 5);
+            var hitText = await client.CallToolTextAsync(
+                "engram_recall", new JsonObject { ["query"] = "AOT packaging and Roslyn" }, cancellationToken);
+            Assert.Contains("[f", hitText);
+            Assert.Contains("coverage:", hitText);
 
-        await client.CallToolAsync(
-            "engram_remember",
-            new Dictionary<string, object?> { ["statement"] = "Test statement written by the end-to-end suite." },
-            cancellationToken: cancellationToken);
+            var missText = await client.CallToolTextAsync(
+                "engram_recall", new JsonObject { ["query"] = "zzqqxxnonexistentquery12345" }, cancellationToken);
+            Assert.Contains("coverage: none", missText);
+            Assert.True(missText.Split('\n').Length < 5);
 
-        await client.CallToolAsync(
-            "engram_digest",
-            new Dictionary<string, object?> { ["learnings"] = new[] { "learning one from the end-to-end suite" } },
-            cancellationToken: cancellationToken);
+            await client.CallToolTextAsync(
+                "engram_remember",
+                new JsonObject { ["statement"] = "Test statement written by the end-to-end suite." },
+                cancellationToken);
 
-        var telemetryPath = Path.Combine(home.Root, "telemetry.jsonl");
-        Assert.True(File.Exists(telemetryPath));
+            await client.CallToolTextAsync(
+                "engram_digest",
+                new JsonObject { ["learnings"] = new JsonArray("learning one from the end-to-end suite") },
+                cancellationToken);
 
-        var kinds = File.ReadAllLines(telemetryPath)
-            .Select(line => JsonDocument.Parse(line).RootElement.GetProperty("kind").GetString())
-            .ToList();
+            var telemetryPath = Path.Combine(home.Root, "telemetry.jsonl");
+            Assert.True(File.Exists(telemetryPath));
 
-        Assert.Equal(5, kinds.Count);
-        Assert.Equal(1, kinds.Count(k => k == "server-start"));
-        Assert.Equal(2, kinds.Count(k => k == "recall"));
-        Assert.Equal(1, kinds.Count(k => k == "remember"));
-        Assert.Equal(1, kinds.Count(k => k == "digest"));
+            var kinds = File.ReadAllLines(telemetryPath)
+                .Select(line => JsonDocument.Parse(line).RootElement.GetProperty("kind").GetString())
+                .ToList();
+
+            Assert.Equal(5, kinds.Count);
+            Assert.Equal(1, kinds.Count(k => k == "session-open"));
+            Assert.Equal(2, kinds.Count(k => k == "recall"));
+            Assert.Equal(1, kinds.Count(k => k == "remember"));
+            Assert.Equal(1, kinds.Count(k => k == "digest"));
+        }
+        finally
+        {
+            EngramProcess.Run(home.Root, "stop");
+        }
     }
 
     [Fact]
@@ -77,81 +74,104 @@ public class McpServerTests
         Assert.SkipUnless(EndToEndBinary.Path is not null, EndToEndBinary.SkipReason);
 
         using var home = new TestHome(initialize: false);
-
-        var transport = new StdioClientTransport(new()
-        {
-            Name = "engram-e2e-test-uninitialised",
-            Command = EndToEndBinary.Path!,
-            Arguments = ["mcp"],
-            InheritEnvironmentVariables = true,
-            EnvironmentVariables = new Dictionary<string, string?> { ["ENGRAM_HOME"] = home.Root },
-        });
-
+        var port = FreeTcpPort.Next();
         var cancellationToken = TestContext.Current.CancellationToken;
 
-        await using var client = await McpClient.CreateAsync(transport, cancellationToken: cancellationToken);
+        var (startExit, _, startErr) = EngramProcess.Run(home.Root, "start", "--port", port.ToString());
+        Assert.True(startExit == 0, $"engram start failed: {startErr}");
 
-        var tools = await client.ListToolsAsync(cancellationToken: cancellationToken);
-        Assert.Equal(
-            ["engram_digest", "engram_recall", "engram_remember"],
-            tools.Select(t => t.Name).OrderBy(name => name, StringComparer.Ordinal));
+        try
+        {
+            using var client = new HttpMcpClient(port);
+            await client.InitializeAsync(cancellationToken);
 
-        var telemetryPath = Path.Combine(home.Root, "telemetry.jsonl");
-        Assert.False(File.Exists(telemetryPath));
+            var toolsNode = await client.ListToolsAsync(cancellationToken);
+            var toolNames = toolsNode!["result"]!["tools"]!.AsArray()
+                .Select(t => t!["name"]!.GetValue<string>())
+                .OrderBy(name => name, StringComparer.Ordinal)
+                .ToArray();
+            Assert.Equal(["engram_digest", "engram_recall", "engram_remember"], toolNames);
+
+            var telemetryPath = Path.Combine(home.Root, "telemetry.jsonl");
+            Assert.False(File.Exists(telemetryPath));
+        }
+        finally
+        {
+            EngramProcess.Run(home.Root, "stop");
+        }
     }
 
     [Fact]
-    public async Task McpServer_SessionId_SharedWithinProcess_DifferentAcrossProcesses()
+    public async Task McpServer_SessionId_SharedWithinOneClientSession_DifferentAcrossClientSessions()
     {
         Assert.SkipUnless(EndToEndBinary.Path is not null, EndToEndBinary.SkipReason);
 
+        using var home = new TestHome();
+        var port = FreeTcpPort.Next();
         var cancellationToken = TestContext.Current.CancellationToken;
 
-        using var homeA = new TestHome();
-        var sessionIdsA = await CallRecallTwiceAndGetSessionIds(homeA.Root, cancellationToken);
-        Assert.Equal(2, sessionIdsA.Count);
-        Assert.Equal(sessionIdsA[0], sessionIdsA[1]);
+        var (startExit, _, startErr) = EngramProcess.Run(home.Root, "start", "--port", port.ToString());
+        Assert.True(startExit == 0, $"engram start failed: {startErr}");
 
-        using var homeB = new TestHome();
-        var sessionIdsB = await CallRecallTwiceAndGetSessionIds(homeB.Root, cancellationToken);
-        Assert.Equal(2, sessionIdsB.Count);
-        Assert.Equal(sessionIdsB[0], sessionIdsB[1]);
-
-        Assert.NotEqual(sessionIdsA[0], sessionIdsB[0]);
-    }
-
-    private static async Task<List<string>> CallRecallTwiceAndGetSessionIds(string home, CancellationToken cancellationToken)
-    {
-        var transport = new StdioClientTransport(new()
+        try
         {
-            Name = "engram-e2e-test",
-            Command = EndToEndBinary.Path!,
-            Arguments = ["mcp"],
-            InheritEnvironmentVariables = true,
-            EnvironmentVariables = new Dictionary<string, string?> { ["ENGRAM_HOME"] = home },
-        });
+            using var clientA = new HttpMcpClient(port);
+            await clientA.InitializeAsync(cancellationToken);
+            await clientA.CallToolTextAsync("engram_recall", new JsonObject { ["query"] = "first call" }, cancellationToken);
+            await clientA.CallToolTextAsync("engram_recall", new JsonObject { ["query"] = "second call" }, cancellationToken);
 
-        await using var client = await McpClient.CreateAsync(transport, cancellationToken: cancellationToken);
+            using var clientB = new HttpMcpClient(port);
+            await clientB.InitializeAsync(cancellationToken);
+            await clientB.CallToolTextAsync("engram_recall", new JsonObject { ["query"] = "third call" }, cancellationToken);
 
-        await client.CallToolAsync(
-            "engram_recall",
-            new Dictionary<string, object?> { ["query"] = "first call" },
-            cancellationToken: cancellationToken);
-        await client.CallToolAsync(
-            "engram_recall",
-            new Dictionary<string, object?> { ["query"] = "second call" },
-            cancellationToken: cancellationToken);
+            var telemetryPath = Path.Combine(home.Root, "telemetry.jsonl");
+            var recallSessionIds = File.ReadAllLines(telemetryPath)
+                .Select(line => JsonDocument.Parse(line).RootElement)
+                .Where(element => element.GetProperty("kind").GetString() == "recall")
+                .Select(element => element.GetProperty("session_id").GetString()!)
+                .ToList();
 
-        var telemetryPath = Path.Combine(home, "telemetry.jsonl");
-        var lines = File.ReadAllLines(telemetryPath);
-
-        return lines
-            .Select(line => JsonDocument.Parse(line).RootElement)
-            .Where(element => element.GetProperty("kind").GetString() == "recall")
-            .Select(element => element.GetProperty("session_id").GetString()!)
-            .ToList();
+            Assert.Equal(3, recallSessionIds.Count);
+            Assert.Equal(recallSessionIds[0], recallSessionIds[1]);
+            Assert.NotEqual(recallSessionIds[0], recallSessionIds[2]);
+            Assert.Equal(clientA.SessionId, recallSessionIds[0]);
+            Assert.Equal(clientB.SessionId, recallSessionIds[2]);
+        }
+        finally
+        {
+            EngramProcess.Run(home.Root, "stop");
+        }
     }
 
-    private static string ExtractText(CallToolResult result) =>
-        string.Concat(result.Content.OfType<TextContentBlock>().Select(c => c.Text));
+    [Fact]
+    public async Task McpServer_Initialize_ReturnsMcpSessionIdHeader_EchoedOnSubsequentRequests()
+    {
+        Assert.SkipUnless(EndToEndBinary.Path is not null, EndToEndBinary.SkipReason);
+
+        using var home = new TestHome();
+        var port = FreeTcpPort.Next();
+        var cancellationToken = TestContext.Current.CancellationToken;
+
+        var (startExit, _, startErr) = EngramProcess.Run(home.Root, "start", "--port", port.ToString());
+        Assert.True(startExit == 0, $"engram start failed: {startErr}");
+
+        try
+        {
+            using var client = new HttpMcpClient(port);
+            var initializeHeaders = await client.InitializeAsync(cancellationToken);
+
+            Assert.True(initializeHeaders.TryGetValue("Mcp-Session-Id", out var mintedValues));
+            var mintedSessionId = Assert.Single(mintedValues);
+            Assert.False(string.IsNullOrWhiteSpace(mintedSessionId));
+            Assert.Equal(mintedSessionId, client.SessionId);
+
+            var subsequentHeaders = await client.ListToolsHeadersAsync(cancellationToken);
+            Assert.True(subsequentHeaders.TryGetValue("Mcp-Session-Id", out var echoedValues));
+            Assert.Equal(mintedSessionId, Assert.Single(echoedValues));
+        }
+        finally
+        {
+            EngramProcess.Run(home.Root, "stop");
+        }
+    }
 }

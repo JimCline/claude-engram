@@ -9,22 +9,22 @@ public class ProbeCommandTests
     private static readonly string[] FixtureLines =
     [
         """{"timestamp":"2026-07-20T07:59:00Z","session_id":"h1","kind":"session-start"}""",
-        """{"timestamp":"2026-07-20T08:00:00Z","session_id":"m1","kind":"server-start"}""",
+        """{"timestamp":"2026-07-20T08:00:00Z","session_id":"m1","kind":"session-open"}""",
         """{"timestamp":"2026-07-20T08:01:00Z","session_id":"m1","kind":"recall","query":"alpha","fact_count":3,"tokens_returned":100,"coverage":"high"}""",
         """{"timestamp":"2026-07-20T08:02:00Z","session_id":"m1","kind":"recall","query":"alpha","fact_count":3,"tokens_returned":200,"coverage":"high"}""",
         """{"timestamp":"2026-07-20T08:03:00Z","session_id":"m1","kind":"remember"}""",
         """{"timestamp":"2026-07-20T08:04:00Z","session_id":"m1","kind":"digest"}""",
         """{"timestamp":"2026-07-21T08:59:00Z","session_id":"h2","kind":"session-start"}""",
-        """{"timestamp":"2026-07-21T09:00:00Z","session_id":"m2","kind":"server-start"}""",
+        """{"timestamp":"2026-07-21T09:00:00Z","session_id":"m2","kind":"session-open"}""",
         """{"timestamp":"2026-07-21T09:01:00Z","session_id":"m2","kind":"recall","query":"beta","fact_count":1,"tokens_returned":50,"coverage":"partial"}""",
         """{"timestamp":"2026-07-22T09:59:00Z","session_id":"h3","kind":"session-start"}""",
-        """{"timestamp":"2026-07-22T10:00:00Z","session_id":"m3","kind":"server-start"}""",
+        """{"timestamp":"2026-07-22T10:00:00Z","session_id":"m3","kind":"session-open"}""",
         """{"timestamp":"2026-07-22T10:01:00Z","session_id":"m3","kind":"recall","query":"gamma","fact_count":0,"tokens_returned":10,"coverage":"none"}""",
         """{"timestamp":"2026-07-22T10:02:00Z","session_id":"m3","kind":"remember"}""",
         """{"timestamp":"2026-07-23T10:59:00Z","session_id":"h4","kind":"session-start"}""",
-        """{"timestamp":"2026-07-23T11:00:00Z","session_id":"m4","kind":"server-start"}""",
+        """{"timestamp":"2026-07-23T11:00:00Z","session_id":"m4","kind":"session-open"}""",
         """{"timestamp":"2026-07-24T11:59:00Z","session_id":"h5","kind":"session-start"}""",
-        """{"timestamp":"2026-07-24T12:00:00Z","session_id":"m5","kind":"server-start"}""",
+        """{"timestamp":"2026-07-24T12:00:00Z","session_id":"m5","kind":"session-open"}""",
         """{"timestamp":"2026-07-24T12:01:00Z","session_id":"m5","kind":"recall","query":"alpha","fact_count":3,"tokens_returned":150,"coverage":"high"}""",
         """{"timestamp":"2026-07-24T12:02:00Z","session_id":"m5","kind":"recall","query":"beta","fact_count":1,"tokens_returned":90,"coverage":"partial"}""",
         """{"timestamp":"2026-07-24T12:03:00Z","session_id":"m5","kind":"digest"}""",
@@ -180,7 +180,7 @@ public class ProbeCommandTests
         WriteFixture(sandbox, new[]
         {
             """{"timestamp":"2026-07-20T08:00:00Z","session_id":"h1","kind":"session-start"}""",
-            """{"timestamp":"2026-07-20T08:01:00Z","session_id":"m1","kind":"server-start"}""",
+            """{"timestamp":"2026-07-20T08:01:00Z","session_id":"m1","kind":"session-open"}""",
         });
 
         var stdout = new StringWriter();

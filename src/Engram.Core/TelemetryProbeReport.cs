@@ -77,7 +77,7 @@ public static class TelemetrySummarizer
         var dateRange = new TelemetryDateRange(timestamps.Min(), timestamps.Max());
 
         var mcpSessionIds = records
-            .Where(r => r.Kind == TelemetryEventKind.ServerStart)
+            .Where(r => r.Kind == TelemetryEventKind.SessionOpen)
             .Select(r => r.SessionId)
             .Distinct(StringComparer.Ordinal)
             .ToList();

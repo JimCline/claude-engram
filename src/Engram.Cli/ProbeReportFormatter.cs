@@ -12,7 +12,7 @@ internal static class ProbeReportFormatter
         stdout.WriteLine();
         if (report.McpSessions == 0)
         {
-            stdout.WriteLine("  ADOPTION: no MCP sessions recorded (0 server-start records — engram mcp may not have run)");
+            stdout.WriteLine("  ADOPTION: no MCP sessions recorded (0 session-open records — the server may not have run)");
         }
         else
         {

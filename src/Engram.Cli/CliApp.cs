@@ -38,7 +38,10 @@ public static class CliApp
         {
             "home" => HomeCommand.Run(homePath, rest, stdout, stderr),
             "init" => InitCommand.Run(homePath, rest, stdout, stderr),
-            "mcp" => McpCommand.Run(homePath, rest, stdout, stderr),
+            "serve" => ServeCommand.Run(homePath, rest, stdout, stderr),
+            "start" => StartCommand.Run(homePath, rest, stdout, stderr),
+            "stop" => StopCommand.Run(homePath, rest, stdout, stderr),
+            "status" => StatusCommand.Run(homePath, rest, stdout, stderr),
             "hook" => HookCommand.Run(homePath, rest, stdout, stderr),
             "probe" => ProbeCommand.Run(homePath, rest, stdout, stderr),
             _ => Usage(stderr),
@@ -58,9 +61,15 @@ public static class CliApp
         writer.WriteLine("commands:");
         writer.WriteLine("  home                              print resolved Engram home paths");
         writer.WriteLine("  init                              create the Engram home directory structure and default config");
-        writer.WriteLine("  mcp                                run the MCP server on stdio");
+        writer.WriteLine("  serve [--port <n>]                 run the MCP server over HTTP in the foreground");
+        writer.WriteLine("  start [--port <n>]                 start the MCP server as a detached daemon");
+        writer.WriteLine("  stop                               stop the running MCP server");
+        writer.WriteLine("  status                             report whether the MCP server is running");
         writer.WriteLine("  hook <event>                       hook entrypoint: session-start|pre-compact|file-touched");
         writer.WriteLine("  probe [options]                    summarize telemetry.jsonl for the M0 adoption probe");
+        writer.WriteLine();
+        writer.WriteLine("serve/start options:");
+        writer.WriteLine("  --port <n>                         port to bind (default 7433, or $ENGRAM_PORT)");
         writer.WriteLine();
         writer.WriteLine("probe options:");
         writer.WriteLine("  --json                             emit the summary as a JSON object instead of text");

@@ -10,6 +10,7 @@ public static class TelemetryEventKind
     public const string Digest = "digest";
     public const string SessionStart = "session-start";
     public const string ServerStart = "server-start";
+    public const string SessionOpen = "session-open";
     public const string PreCompact = "pre-compact";
     public const string FileTouched = "file-touched";
 }
