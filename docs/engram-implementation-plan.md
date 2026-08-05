@@ -439,6 +439,96 @@ this plan:
 Until then, local directory marketplace only, and the version-bump-per-change loop is a
 developer cost rather than a user-facing one.
 
+### D14 — A supervised local HTTP server replaces stdio
+
+Engram serves MCP over local HTTP from a long-lived process managed by `engram start`,
+`engram stop`, and `engram status`. The stdio transport is retired, not kept as a
+fallback.
+
+**Why, in order of weight.** A per-session stdio process cannot hold anything warm: at
+M4 a ~640 MB GGUF embedding model would reload on every session, which is fatal to §7's
+design. Claude Code reconnects HTTP and SSE servers — five attempts with exponential
+backoff mid-session, three on initial connect — but **does not reconnect stdio servers
+at all**, so today a crashed server is silently gone for the rest of a session and looks
+identical in telemetry to the agent losing interest. And the streamable-HTTP transport
+lets the *server* mint an `Mcp-Session-Id` at `initialize`, which is a real per-session
+identity rather than the process-lifetime proxy we have been leaning on.
+
+Write concurrency is explicitly **not** the motivation; D4 already handles that.
+
+> **Amends spec §2.2**, which requires "zero services: no daemons required for core
+> operation." That is no longer true, deliberately. The cost is a lifecycle to supervise
+> and a crash that takes every session with it rather than one; the benefits above are
+> judged to outweigh it, and `status` plus auto-start are what make it tolerable.
+
+**Port.** A fixed default, overridable through the plugin's `userConfig`. Ephemeral
+ports are impossible here — `${VAR}` in `.mcp.json` resolves from the environment Claude
+Code itself was launched with, so a port chosen afterwards cannot be expressed — but
+ephemeral ports were never a requirement. `engram start` fails loudly when the port is
+occupied by something that is not us.
+
+**Exposure.** Bind 127.0.0.1 only, and reject requests carrying an `Origin` header. A
+loopback listener is reachable by local processes that cannot read the filesystem, so
+"it's only localhost" is not on its own a sufficient posture. An optional bearer token
+may be supplied later through `userConfig` with `sensitive: true`, which stores it in the
+OS keychain rather than in `settings.json`.
+
+**Identity and staleness.** `~/.engram/engram.pid`, mode 0600, holding pid, port, start
+time, and version. The PID file is a hint; identity must be proven before any process is
+killed, because "kill whatever holds the port" and "kill our own wedged server" are
+identical in code and very different in consequence.
+
+| PID file | Process | Identity | Health | Action |
+|---|---|---|---|---|
+| absent | — | — | — | start |
+| present | dead | — | — | stale file → remove, start |
+| present | alive | ours | answers with our pid+version | already running → exit 0 |
+| present | alive | ours | no answer, or wrong version | **orphan → kill, clean up, start** |
+| present | alive | **not ours** | — | PID was reused → remove file, start; **never kill** |
+| — | — | — | port held by a stranger | report clearly; **never kill** |
+
+Identity is proven without asking the process anything — the executable path matches ours
+*and* the recorded start time matches the live process's — because the orphan case is
+precisely a process too wedged to answer a health check. Health then separates
+alive-and-well from alive-and-wedged, once identity is already settled.
+
+Two concurrent `engram start` invocations need no lock: whoever binds the port wins, and
+the loser finds a healthy server and exits 0. The OS already provides the mutex.
+
+**Starting it is the plugin's job, not the user's and not the agent's.** The
+`SessionStart` hook spawns the daemon detached and does not wait on readiness; Claude
+Code retries an initial HTTP connection three times with exponential backoff, which
+comfortably covers the gap. Nothing asks a human to run a command in the normal path.
+
+An `http`-type MCP entry has no `command`, and `alwaysLoad` only blocks on *connecting* —
+it never starts anything. So the process must be brought up out of band, and the hook is
+the confirmed, stable way to do it.
+
+*Considered and rejected: plugin **monitors*** (`monitors/monitors.json`), which Claude
+Code does start at session start and on reload. Three disqualifiers, all confirmed: every
+line a monitor writes to stdout is delivered to Claude as a **notification**, so a server
+would spam the conversation; monitors explicitly **cannot reference `${user_config.*}`**,
+which is where the port and any token live; and they carry **no documented crash-restart**,
+are marked experimental with a schema that may change, and need a full session restart
+rather than `/reload-plugins` to pick up changes. LSP servers are the only component with
+a real supervision contract (`restartOnCrash`, `maxRestarts`, `shutdownTimeout`) — worth
+remembering if host-owned supervision ever becomes worth the abuse of declaring a
+non-LSP process as one.
+
+Regardless of transport, the server must **never log to stdout** — file only. That is a
+hard constraint under monitors and merely good hygiene otherwise.
+
+`engram_start`, `engram_stop`, and `engram_status` are also exposed as MCP tools so the
+agent can manage the server mid-session. They cannot bootstrap a cold start — if the
+server is down, its own tools are unreachable — so their descriptions must say what they
+are for (restart, deliberate stop, health) rather than implying they can revive it.
+
+**The adoption denominator changes.** One `server-start` record per session was only ever
+valid because stdio gave one process per session. A daemon starts once, so that count
+collapses to 1 and the probe would silently under-report. It is replaced by a
+`session-open` record emitted whenever the server mints a new `Mcp-Session-Id` — exactly
+one per Claude Code session, and a real identity rather than a proxy.
+
 ### Reading the M0 numbers honestly
 
 Two documented behaviours distort the adoption metric, and both must be known before
