@@ -11,7 +11,7 @@
           },
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/engram\" hook session-start"
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/engram-exec.sh\" hook session-start"
           }
         ]
       }
@@ -21,7 +21,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/engram\" hook subagent-start"
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/engram-exec.sh\" hook subagent-start"
           }
         ]
       }
@@ -31,7 +31,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/engram\" hook pre-compact"
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/engram-exec.sh\" hook pre-compact"
           }
         ]
       }
@@ -42,7 +42,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/engram\" hook file-touched"
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/engram-exec.sh\" hook file-touched"
           }
         ]
       }

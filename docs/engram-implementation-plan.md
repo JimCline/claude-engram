@@ -442,11 +442,34 @@ identifiers, on every version bump, makes the history unusable in a handful of r
 There is also no documented mechanism for selecting a per-platform path, so `.mcp.json`
 can name exactly one `command`.
 
-The likely resolution, to be designed when remote distribution is actually wanted:
-`plugin/bin/engram` becomes a small committed launcher script that detects the platform,
-resolves a real binary from a stable location outside the version-pinned plugin cache,
-and `exec`s it. Two constraints on that design, both learned the hard way elsewhere in
-this plan:
+**This is now built, and it was a correctness fix before it was a distribution one.** The
+bundled binary had a defect nobody was looking for, found by reasoning about what
+installing the plugin would do to the daemon already running.
+
+A bundled copy lives under the version-pinned cache, so its path changes on every version
+bump: `…/0.2.0/bin/engram` becomes `…/0.3.0/bin/engram`. D14's daemon proves ownership by
+executable path before it will signal anything — correctly, since that is what stops it
+killing a recycled pid. After an upgrade the new binary therefore cannot recognise the
+running server as its own. It declines to replace it (right), fails to bind the port
+(inevitable), asks `/health`, gets the *old* version back, and returns
+`PortHeldByStranger`. `ensure-server.sh` swallows that by design. **The old daemon runs
+forever, the new one never starts, and memory silently disappears after an upgrade** —
+precisely when someone is most likely to blame the new version for something else.
+
+A stable install path removes the failure rather than defending against it. With
+`~/.local/bin/engram` the path does not change across upgrades, so ownership resolves, the
+version check finds a stale daemon, and it is replaced exactly as intended.
+
+So the plugin now ships **no binary at all**. `hooks/resolve-engram.sh` locates one —
+`$ENGRAM_BIN`, then `$HOME/.local/bin/engram`, then `PATH` — and `hooks/engram-exec.sh`
+`exec`s it. PATH is checked last on purpose: a hook inherits whatever environment launched
+Claude Code, and a GUI launch can carry a minimal PATH that never included `~/.local/bin`.
+`.mcp.json` needed no change, since it names a URL rather than a command — a second,
+unplanned dividend of D14.
+
+The two constraints below were written for a launcher that *fetches*. This one resolves
+instead, which satisfies both trivially: no network on any path, and the hot path costs
+three `stat` calls. They still apply the day fetching is added.
 
 - **Pin the binary version inside the launcher.** The launcher is versioned with the
   plugin; the binary it fetches is not. Naming the exact expected version is what makes
@@ -458,8 +481,14 @@ this plan:
   `additionalContext` — a silent failure here would look exactly like the agent choosing
   not to use memory, which is the one confusion D12 says we cannot afford.
 
-Until then, local directory marketplace only, and the version-bump-per-change loop is a
-developer cost rather than a user-facing one.
+The cost is that the plugin is no longer self-contained: installed from a marketplace with
+no binary present, it does nothing. That is why the missing-binary case is the one thing
+`ensure-server.sh` says out loud. Every other hook fails silent — a hook that errors is
+worse than one that no-ops — but `SessionStart` has a channel that reaches someone, and
+silence there is indistinguishable from memory simply not working, which D12 names as the
+one confusion we cannot afford. The E2E test asserts that message appears, and asserts the
+success path stays completely silent, since anything printed there becomes a line of the
+agent's prompt every session.
 
 ### D14 — A supervised local HTTP server replaces stdio
 
