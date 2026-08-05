@@ -35,9 +35,14 @@ touch what can be regenerated — the FTS index, salience, denormalized paths, i
 code facts. Neither may ever create, alter, or delete a fact body, predicate, validity
 window, or supersession row (D8).
 
-**Every connection sets its own pragmas.** `foreign_keys` and `busy_timeout` are
-connection-scoped and default off/zero. Setting them in a schema file configures
-nothing. Open through the one shared routine.
+**Every connection sets its own pragmas.** `foreign_keys`, `busy_timeout`, and
+`synchronous` are connection-scoped. Setting them in a schema file configures the
+connection that applied the file and nothing else. Open through the one shared routine,
+`EngramDatabase.Open`. Measured, because the obvious version of this rule is half wrong:
+a raw `Microsoft.Data.Sqlite` connection already reads back `foreign_keys=1` — the
+provider sends it — but `busy_timeout=0` and `synchronous=2`. Deleting the `foreign_keys`
+line breaks no test; deleting either of the others does. Keep all three, and do not write
+a guard that claims to protect the first.
 
 **Every write is `BEGIN IMMEDIATE`.** A deferred transaction that upgrades to a writer
 raises `SQLITE_BUSY_SNAPSHOT`, which `busy_timeout` cannot wait out (D4).

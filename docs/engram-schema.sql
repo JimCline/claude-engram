@@ -27,14 +27,24 @@ PRAGMA journal_mode = WAL;
 --     PRAGMA foreign_keys = ON;
 --     PRAGMA busy_timeout = 5000;
 --
--- foreign_keys is the dangerous one: SQLite defaults it OFF, so a connection
--- that forgets it loses every foreign-key guarantee in this file silently, with
--- no error at any point. Verified: an UPDATE writing superseded_by = 2 while
--- fact 2 did not exist was accepted by a connection that had not set it.
+-- foreign_keys is the one with teeth: SQLite the engine defaults it OFF, so a
+-- connection that forgets it loses every foreign-key guarantee in this file
+-- silently, with no error at any point. Verified against the sqlite3 CLI: an
+-- UPDATE writing superseded_by = 2 while fact 2 did not exist was accepted.
 --
--- Two integration tests guard this (D9): one asserting `PRAGMA foreign_keys`
--- reads back 1 on a freshly opened connection, and one asserting a dangling
--- reference is rejected through the real open path.
+-- Measured caveat, so nobody mistakes what is holding the line: the provider we
+-- actually use, Microsoft.Data.Sqlite, already sends `PRAGMA foreign_keys = 1`
+-- when it opens. A raw connection through it reads back fk=1, busy=0, sync=2,
+-- journal=delete. So of the three pragmas, only busy_timeout and synchronous are
+-- doing work our code has to do; setting foreign_keys ourselves is insurance
+-- against a connection string that says `Foreign Keys=False`, or a swap to a
+-- provider without the courtesy. Keep it — the cost is one statement and the
+-- failure it prevents is silent — but do not expect deleting it to break a test.
+--
+-- Three integration tests guard this (D9): one asserting `PRAGMA foreign_keys`
+-- reads back 1 on a freshly opened connection, one asserting a dangling
+-- reference is rejected through the real open path, and one on busy_timeout,
+-- which is the one that genuinely fails when the open routine stops setting it.
 --
 -- busy_timeout pairs with BEGIN IMMEDIATE on every write (D4). A deferred
 -- transaction that later upgrades to a writer raises SQLITE_BUSY_SNAPSHOT, which

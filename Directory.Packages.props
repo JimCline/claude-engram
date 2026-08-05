@@ -2,6 +2,9 @@
 
   <PropertyGroup>
     <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+    <!-- Lets a PackageVersion below raise a transitive dependency without any project
+         taking a direct reference to a package its code never names. -->
+    <CentralPackageTransitivePinningEnabled>true</CentralPackageTransitivePinningEnabled>
   </PropertyGroup>
 
   <ItemGroup>
@@ -11,6 +14,13 @@
     <PackageVersion Include="ModelContextProtocol" Version="2.0.0" />
     <PackageVersion Include="ModelContextProtocol.AspNetCore" Version="2.0.0" />
     <PackageVersion Include="Microsoft.Extensions.Hosting" Version="10.0.10" />
+    <!-- Pulls SQLitePCLRaw.bundle_e_sqlite3 transitively, which is the statically linked
+         SQLite D1 specifies. No separate reference needed. -->
+    <PackageVersion Include="Microsoft.Data.Sqlite" Version="10.0.10" />
+    <!-- Microsoft.Data.Sqlite 10.0.10 resolves the bundle at 2.1.11, whose native SQLite is
+         GHSA-2m69-gcr7-jv3q (high, affects <= 2.1.11). Warnings are errors, so this is a
+         build break rather than an advisory. Pinned forward to the first clean release. -->
+    <PackageVersion Include="SQLitePCLRaw.bundle_e_sqlite3" Version="2.1.12" />
   </ItemGroup>
 
 </Project>
