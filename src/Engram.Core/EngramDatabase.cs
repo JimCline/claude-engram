@@ -31,7 +31,7 @@ public static class EngramDatabase
     private const string SchemaResourceName = "Engram.Core.Schema.sql";
 
     /// <summary>Opens a configured connection. Does not create or verify the schema.</summary>
-    public static SqliteConnection Open(EngramHome home) => Open(home.DatabasePath);
+    public static SqliteConnection Open(EngramHome home) => Open(home.DatabasePath, home.LibDir);
 
     /// <summary>Opens a configured connection, creating the schema if the file is new.</summary>
     public static SqliteConnection OpenInitialized(EngramHome home)
@@ -49,7 +49,13 @@ public static class EngramDatabase
         }
     }
 
-    public static SqliteConnection Open(string databasePath)
+    /// <param name="libraryDirectory">
+    /// Where to look for <c>sqlite-vec</c>. Omitting it opens a connection that cannot answer a
+    /// vector query — correct for a caller with no home to resolve one from, and a trap for any
+    /// other caller, because connection pooling can make the missing extension look present.
+    /// Prefer <see cref="Open(EngramHome)"/>, which supplies it.
+    /// </param>
+    public static SqliteConnection Open(string databasePath, string? libraryDirectory = null)
     {
         var directory = Path.GetDirectoryName(databasePath);
         if (!string.IsNullOrEmpty(directory))
@@ -69,6 +75,12 @@ public static class EngramDatabase
         try
         {
             Configure(connection);
+
+            // Best-effort and deliberately unexamined here: an instance without embeddings is
+            // the ordinary case, not a fault. VectorExtension explains why this cannot be
+            // deferred to the callers that query vectors.
+            VectorExtension.Load(connection, libraryDirectory);
+
             return connection;
         }
         catch

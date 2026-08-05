@@ -1687,6 +1687,43 @@ distance collapsed to ~0 and the ordering it "confirmed" was degenerate. Spike D
 KNN ordering with properly separated vectors; this run adds nothing on that point and should
 not be cited for it.
 
+**Spike G — what loading `sqlite-vec` costs per connection (2026-08-05, measured).** Spike D
+established that extensions are connection-scoped and that pooling hides it, and turned that
+into a prohibition: never infer loadedness from a successful query. It did not say *where* the
+load goes, and the two candidate answers differ in kind. An opt-in loader — the vector lane
+asks for the extension on the connections it uses — keeps the cost off every other path, at
+the price of a defect class that is invisible exactly where it would be caught: a caller who
+forgets still passes, because some earlier connection loaded the module and the pool recycled
+its handle, and the failure surfaces only in a process that draws a cold one. An unconditional
+loader in `EngramDatabase.Open` removes that class outright and charges every open for it.
+Which is right is a question about a number, so the number was measured rather than argued.
+
+**0.195 ms on a cold connection, 0.036 ms on a pooled one**, over 200 opens each. The database
+open it rides along with is 1.0–1.5 ms, so the eager load is under a fifth of a cost the caller
+is already paying, and comfortably inside the margin the primer hooks run in. `file-touched` is
+untouched by this because it never opens the database at all. **So the loader is unconditional**,
+in `Open`, and no caller can forget it.
+
+Two supporting facts make that shape possible. **Loading the extension twice on one connection
+is a no-op, not an error** — which is what lets `Open` load eagerly without breaking a caller
+who loads again to learn the resulting state, since the state is a return value and cannot be
+looked up. And **a failed load leaves the connection fully usable**: the `SqliteException` is
+catchable and `SELECT 1` still answers afterwards, so an unreadable extension costs the vector
+lane and nothing else, and recall degrades to FTS5 instead of failing. That is what justifies
+`Load` never throwing, and what separates the three states it reports — an absent `lib/` is the
+ordinary condition of an instance that never opted into embeddings, while a file that is present
+and will not load is a fault `doctor` has to name differently.
+
+One check failed, and the failure is the useful part: **`LoadExtension` succeeds without
+`EnableExtensions(true)`**. The provider enables loading around the call itself, so the
+`EnableExtensions` line every sqlite-vec example carries is cargo here. It is omitted, having
+been shown unnecessary rather than assumed so.
+
+Spike D's pooling finding was re-checked in the same run and still holds, and it is now pinned
+by a test rather than a memory — `AConnectionThatLoadedNothing_StillInheritsTheExtensionFromThePool`
+fails loudly if the provider ever stops recycling handles, which would make the whole argument
+above obsolete rather than merely wrong.
+
 ---
 
 ## 2. Riskiest assumption, and how it gets tested first

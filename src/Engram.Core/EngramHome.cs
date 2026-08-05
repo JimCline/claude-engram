@@ -13,6 +13,18 @@ public sealed class EngramHome
     public string ReportDir { get; }
 
     /// <summary>
+    /// Optional native libraries — <c>sqlite-vec</c> and llama.cpp — fetched by
+    /// <c>engram init --with-embeddings</c> (D1).
+    /// </summary>
+    /// <remarks>
+    /// Deliberately not created by <c>init</c>, unlike every other directory here. An empty
+    /// <c>lib/</c> claims a feature is installed when it is not, and the two states this
+    /// system has to distinguish are "embeddings are off" and "embeddings are on and
+    /// broken". A directory that exists either way erases that distinction for `doctor`.
+    /// </remarks>
+    public string LibDir { get; }
+
+    /// <summary>
     /// Which MCP tool permissions we granted in Claude Code's settings, so the uninstaller can
     /// take back exactly those and nothing the user wrote themselves.
     /// </summary>
@@ -34,6 +46,7 @@ public sealed class EngramHome
         ModelsDir = Path.Combine(root, "models");
         QueueDir = Path.Combine(root, "queue");
         ReportDir = Path.Combine(root, "report");
+        LibDir = Path.Combine(root, "lib");
         GrantedPermissionsPath = Path.Combine(root, "granted-permissions.json");
         ClaudeSettingsPath = Path.Combine(userProfileDirectory, ".claude", "settings.json");
     }
