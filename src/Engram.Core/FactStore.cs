@@ -177,6 +177,33 @@ public static class FactStore
     }
 
     /// <summary>
+    /// Every subject and predicate this store has ever held a fact for, including facts that
+    /// have since been closed.
+    /// </summary>
+    /// <remarks>
+    /// The question this answers is "was anything ever believed about this?", which is not
+    /// the same as "is anything believed about it now" and cannot be derived from the live
+    /// set. A closed fact and a fact that never existed are indistinguishable in
+    /// <see cref="ReadLive"/>, and treating them alike is how a re-seed resurrects what a
+    /// user deliberately forgot.
+    /// </remarks>
+    public static HashSet<(string Path, string Predicate)> ReadEverWritten(SqliteConnection connection)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText =
+            "SELECT DISTINCT e.path, f.predicate FROM fact f JOIN entity e ON e.id = f.subject_id;";
+
+        var seen = new HashSet<(string, string)>();
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            seen.Add((reader.GetString(0), reader.GetString(1)));
+        }
+
+        return seen;
+    }
+
+    /// <summary>
     /// What was believed at an instant. The half-open window is deliberate: a fact closed at
     /// T and its replacement opened at T must not both answer a query as of T.
     /// </summary>

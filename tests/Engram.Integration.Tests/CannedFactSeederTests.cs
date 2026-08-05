@@ -50,6 +50,60 @@ public class CannedFactSeederTests
         Assert.Equal(1L, fixture.Scalar("SELECT COUNT(*) FROM supersession;"));
     }
 
+    // The trap a corpus version bump sets. Forgetting a fact leaves nothing live, so a seeder
+    // that decides from the live set alone cannot tell "deleted" from "never existed" and
+    // writes it straight back. Re-seeding with a REVISED body, which is the only reason to
+    // bump the version at all, is the exact path that reaches this.
+    [Fact]
+    public void Seed_WithARevisedBody_DoesNotResurrectAFactTheUserForgot()
+    {
+        using var fixture = new SeedFixture();
+        var original = CannedFacts.All[0];
+        CannedFactSeeder.Seed(fixture.Connection, [original], T0);
+
+        var stored = Assert.Single(FactStore.ReadLive(fixture.Connection));
+        FactStore.Forget(fixture.Connection, stored.Id, "user cleared this", T0.AddDays(1));
+
+        var revised = original with { Body = "A materially better version of a deleted fact." };
+        var written = CannedFactSeeder.Seed(fixture.Connection, [revised], T0.AddDays(2));
+
+        Assert.Equal(0, written);
+        Assert.Empty(FactStore.ReadLive(fixture.Connection));
+    }
+
+    // The same protection, without a revision: re-running an unchanged corpus must not
+    // undo a forget either.
+    [Fact]
+    public void Seed_RerunAfterAForget_LeavesTheFactForgotten()
+    {
+        using var fixture = new SeedFixture();
+        CannedFactSeeder.Seed(fixture.Connection, T0);
+
+        var victim = FactStore.ReadLive(fixture.Connection)[0];
+        FactStore.Forget(fixture.Connection, victim.Id, "user cleared this", T0.AddDays(1));
+
+        var written = CannedFactSeeder.Seed(fixture.Connection, T0.AddDays(2));
+
+        Assert.Equal(0, written);
+        Assert.Equal(CannedFacts.All.Count - 1, FactStore.ReadLive(fixture.Connection).Count);
+    }
+
+    // The flip side, so the skip is not simply "never write anything twice": a fact that was
+    // never in this store still gets written, even though the corpus has been seeded before.
+    [Fact]
+    public void Seed_WithANewFact_StillWritesItAfterAnEarlierSeed()
+    {
+        using var fixture = new SeedFixture();
+        var original = CannedFacts.All[0];
+        CannedFactSeeder.Seed(fixture.Connection, [original], T0);
+
+        var addition = original with { Subject = "a brand new subject", Body = "A statement never seeded before." };
+        var written = CannedFactSeeder.Seed(fixture.Connection, [original, addition], T0.AddDays(1));
+
+        Assert.Equal(1, written);
+        Assert.Equal(2, FactStore.ReadLive(fixture.Connection).Count);
+    }
+
     [Fact]
     public void Seed_PlacesFactsUnderTheirTopic()
     {

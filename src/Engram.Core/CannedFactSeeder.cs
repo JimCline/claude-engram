@@ -42,10 +42,13 @@ public static class CannedFactSeeder
     /// returns how many facts were written.
     /// </summary>
     /// <remarks>
-    /// The recorded version is what keeps seeding out of the read path. Deciding "is this
-    /// store already seeded?" by counting rows would be wrong in the one case that matters:
-    /// a user who has forgotten every seeded fact has an empty store, and re-seeding would
-    /// resurrect exactly what they asked to be rid of.
+    /// The recorded version keeps seeding out of the read path. It is a short-circuit, not a
+    /// safety mechanism: deciding "is this store already seeded?" by counting rows would be
+    /// wrong for a user who has forgotten every seeded fact, but the protection against
+    /// resurrecting those facts lives in <see cref="Seed"/>, which will not rewrite a
+    /// subject and predicate this store has held before. Bumping the version to ship a
+    /// revised corpus is therefore safe: revisions land on facts still live, and facts the
+    /// user deleted stay deleted.
     /// </remarks>
     public static int SeedOnce(SqliteConnection connection, DateTimeOffset now)
     {
@@ -74,6 +77,16 @@ public static class CannedFactSeeder
     /// <see cref="FactStore.Remember"/> supersedes on a subject+predicate collision. Without
     /// the skip, a second run would close all 51 facts and rewrite them identically,
     /// producing a supersession history that records a change nobody made.
+    ///
+    /// Four cases, and the third is the one that is easy to get wrong:
+    /// <list type="bullet">
+    /// <item>live, same body — nothing changed, skip.</item>
+    /// <item>live, different body — a real corpus revision, supersede.</item>
+    /// <item>not live but written before — the user forgot it, skip. Deciding this from the
+    /// live set alone is impossible: a forgotten fact and a fact that never existed look
+    /// identical there, so a revision would resurrect everything anybody had deleted.</item>
+    /// <item>never written — new statement, write it.</item>
+    /// </list>
     /// </remarks>
     /// <summary>
     /// Creates the topic node for each topic in <paramref name="facts"/>, carrying the
@@ -82,10 +95,10 @@ public static class CannedFactSeeder
     /// <remarks>
     /// Separate from <see cref="SeedOnce"/>, and deliberately not gated on the corpus
     /// version. A store seeded by an earlier build has the facts but not these nodes, and
-    /// the only way a version gate could reach it is by re-running the seed — which, on a
-    /// store where the user has forgotten seeded facts, would write them all back. Topic
-    /// nodes are addressing metadata rather than belief content, so creating them is not
-    /// a fact write and needs no such gate.
+    /// tying their appearance to a corpus version bump would mean display metadata could
+    /// only be repaired by declaring the corpus revised. Topic nodes are addressing
+    /// metadata rather than belief content, so creating them is not a fact write and needs
+    /// no such gate.
     /// </remarks>
     public static void EnsureTopics(
         SqliteConnection connection,
@@ -110,11 +123,13 @@ public static class CannedFactSeeder
 
     public static int Seed(SqliteConnection connection, IReadOnlyList<CannedFact> facts, DateTimeOffset now)
     {
-        var existing = new Dictionary<(string Path, string Predicate), string>();
+        var live = new Dictionary<(string Path, string Predicate), string>();
         foreach (var stored in FactStore.ReadLive(connection))
         {
-            existing[(stored.SubjectPath, stored.Predicate)] = stored.Body;
+            live[(stored.SubjectPath, stored.Predicate)] = stored.Body;
         }
+
+        var everWritten = FactStore.ReadEverWritten(connection);
 
         var written = 0;
         using var transaction = EngramDatabase.BeginWrite(connection);
@@ -124,12 +139,25 @@ public static class CannedFactSeeder
         foreach (var fact in facts)
         {
             var path = PathFor(fact);
+            var key = (path, fact.Predicate);
 
-            // Same body means nothing changed. A DIFFERENT body for the same subject and
-            // predicate is a genuine revision of the corpus, and falls through to Remember so
-            // it supersedes properly instead of being silently dropped.
-            if (existing.TryGetValue((path, fact.Predicate), out var body) && body == fact.Body)
+            if (live.TryGetValue(key, out var body))
             {
+                // Same body means nothing changed. A DIFFERENT body is a genuine revision of
+                // the corpus, and falls through to Remember so it supersedes properly instead
+                // of being silently dropped.
+                if (body == fact.Body)
+                {
+                    continue;
+                }
+            }
+            else if (everWritten.Contains(key))
+            {
+                // Not live, but this store held it once: the user forgot it. Re-seeding would
+                // hand back exactly what they asked to be rid of, and a corpus revision is not
+                // consent to undo that. Silence is the only correct answer, including when the
+                // authored body has since changed — a better version of a fact somebody
+                // deleted is still a fact somebody deleted.
                 continue;
             }
 
