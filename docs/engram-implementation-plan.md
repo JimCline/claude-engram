@@ -138,6 +138,38 @@ For M0/M1, ship all four of these together — they only work as a set:
    fixing that with lock-and-retry. This makes the < 10 ms budget unconditional rather
    than "true unless an indexer chunk is committing."
 
+   **Measured** on the published binary (21.2 MB, macOS arm64, 120 samples after 20
+   warmup, interleaved against a floor of `engram home` — same process, no database):
+
+   | | p50 | p95 | p99 | vs floor |
+   |---|---|---|---|---|
+   | `home` (floor, no database) | 7.80 ms | 8.58 ms | 9.35 ms | — |
+   | `file-touched` | 7.82 ms | 8.32 ms | 8.98 ms | **+0.02 ms** |
+   | `session-start` (reads) | 10.18 ms | 10.79 ms | 11.13 ms | +2.38 ms |
+   | `user-prompt` (writes) | 9.92 ms | 10.99 ms | 11.88 ms | +2.12 ms |
+
+   Three things fall out, and the third is the one that matters.
+
+   The budget holds, including at p99, and the unconditional part holds too: with an
+   indexer-shaped writer committing 200-row `BEGIN IMMEDIATE` chunks back to back — 929
+   chunks during the run — `file-touched` moved to p50 9.29 / p99 9.96 ms. Half a
+   millisecond of shared disk, no tail. A hook that never opens the database cannot wait
+   on a lock, which is the whole claim.
+
+   The file-per-invocation design survives the case it was written for. Eight concurrent
+   hooks (a multi-file edit) ran at p50 11.02 / p99 14.13 ms, and across the entire
+   benchmark **580 invocations produced 580 spool files** — no record lost, at any width.
+
+   **The hook's own work is unmeasurable; the budget is process start.** +0.02 ms is
+   noise, and 99.7% of the 7.82 ms is spent before `RunFileTouched` is reached. So rule 4
+   is not a stylistic preference about tidiness — opening the database costs 2.1–2.4 ms,
+   which is more than the ~2.2 ms of headroom left, and `file-touched` would breach at
+   p50. What threatens this budget in future is **binary size, not hook complexity**:
+   spike A measured 3.44 ms of process start at 1.06 MB, and the same start now costs
+   7.80 ms at 21.2 MB. That is a second, independent reason D1 keeps `sqlite-vec` and
+   llama.cpp side-loaded rather than linked — quite apart from AOT-hostility, linking
+   them would spend the hook budget on a lane this hook does not use.
+
 Rule 4 is about `file-touched`, not about hooks as a category, and the distinction is
 load-bearing enough to state: everything justifying it — per-edit frequency, the
 concurrent-append race, the unconditional sub-10 ms budget — describes that hook and
@@ -1236,6 +1268,15 @@ start itself. That single path is why AOT stays.
 > budget were re-derived at 25 ms, non-AOT would clear it and this decision should be
 > reopened. Someone should either write down where 10 ms came from or measure what
 > `file-touched` latency users actually notice.
+>
+> **Measured, and the ratio moved.** Same command on the same machine, published both
+> ways: AOT p50 **8.15 ms**, self-contained without AOT p50 **23.28 ms** (p99 27.80) —
+> **2.86×**, not 5.4×. Spike A's ratio was taken on a 1.06 MB binary; at 21.2 MB the fixed
+> cost of process start dominates both builds and the multiple shrinks. The decision is
+> unchanged at the stated budget — AOT clears 10 ms and non-AOT misses it by more than
+> twice over — but the margin behind it is not what it was, and the hypothetical is now
+> answered rather than open: at a 25 ms budget non-AOT would clear p50 and miss p99, which
+> is not clearing it. What is still not written down is where 10 ms came from.
 
 So the boundary is not *this project is AOT*. It is **the latency-critical process is AOT,
 and everything else may be whatever it needs to be.** D1 already drew exactly this line for
@@ -1348,6 +1389,12 @@ number below is measured, not estimated.
 The hook budget is < 100 ms cold and < 10 ms for `file-touched`. AOT clears both with an
 order of magnitude to spare; the non-AOT build would burn roughly twice the entire
 `file-touched` budget doing nothing but starting. **D1's premise holds.**
+
+The premise still holds; the spare does not. That table is a 1.06 MB binary with nothing
+linked into it. The shipped binary is 21.2 MB with the MCP SDK and `Microsoft.Data.Sqlite`
+in it, and starts in 7.80 ms — 22% of headroom against the 10 ms budget, not an order of
+magnitude. The number to carry forward is the current one; see the measurement under D4
+rule 4. It is why binary size is now a latency decision.
 
 **Spike B — MCP SDK under AOT.** `ModelContextProtocol` 2.0.0 with
 `Microsoft.Extensions.Hosting` 10.0.10. Publish succeeded with **zero IL2xxx/IL3xxx

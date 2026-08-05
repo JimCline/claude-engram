@@ -47,8 +47,16 @@ a guard that claims to protect the first.
 **Every write is `BEGIN IMMEDIATE`.** A deferred transaction that upgrades to a writer
 raises `SQLITE_BUSY_SNAPSHOT`, which `busy_timeout` cannot wait out (D4).
 
-**`file-touched` never opens the database.** It appends to a spool file and exits. Its
-budget is 10 ms and it must hold unconditionally, not just when nothing else is writing.
+**`file-touched` never opens the database.** It writes one spool file per invocation —
+its own, never a shared one — and exits. Its budget is 10 ms and it must hold
+unconditionally, not just when nothing else is writing. Measured on the published binary:
+p50 7.82 ms, of which **+0.02 ms is the hook and the rest is process start**; opening the
+database costs 2.1–2.4 ms, which is more than the headroom left. Under an indexer-shaped
+writer committing back-to-back chunks it moves to p50 9.29 ms and does not grow a tail,
+because a hook that never opens the database cannot wait on a lock. `FileTouchedBudgetTests`
+guards the margin, not the absolute number, so it fails when the rule breaks rather than
+when the machine is busy.
+
 This rule is about that hook, not about hooks: D4 justifies it entirely by per-edit
 frequency and write contention. The primer hooks — `session-start`, `subagent-start` —
 do take a short read and close it, because a primer that reports memory from a hardcoded
@@ -57,6 +65,11 @@ message the user sends: it is the only place a fact stated in passing can be cau
 capture the model has to opt into is a capture that does not happen. Each of those was
 measured against the version it replaced — a hook that opens the database is a decision
 with a number behind it, never a default.
+
+The budget's remaining headroom is 22% and it is all process start, so **binary size is a
+latency decision**: 1.06 MB started in 3.44 ms, 21.2 MB starts in 7.80 ms. That is a
+second reason, independent of AOT-hostility, that D1 keeps `sqlite-vec` and llama.cpp
+side-loaded rather than linked.
 
 **Anything destructive is dry-run first.** `repair`, `compact`, `forget`, and the
 installer print what they would do and require an explicit flag to act. Anything editing
