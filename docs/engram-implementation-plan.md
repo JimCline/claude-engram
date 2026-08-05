@@ -777,6 +777,26 @@ it is noise. Before this is built, measure the real distribution of facts-per-se
 the author's own instance. If the median session yields fewer than roughly five facts,
 the view does not earn its tokens and this decision lapses.
 
+**Measured, and lapsed.** The author's instance, replayed into a scratch home so the real
+one was not touched: **7 sessions had written a fact, 34 facts between them, distribution
+`[1, 1, 1, 1, 2, 8, 20]` — median 1 against a gate of 5.** Not marginal, and the mean
+(4.9) misses too. Seventeen sessions had run in total, so across *all* sessions the median
+is 0; the reported figure is already the generous one, because a session row exists only
+once that session has written.
+
+The shape is the interesting part, and it is not "sessions are uniformly thin" — it is
+bimodal. One design-heavy session produced 20 facts and would make a fine timeline; five of
+the seven produced one or two and would produce a window containing only the anchor. A
+median gate is the right test for exactly this: the view's value is concentrated in rare
+sessions, and building it would mean paying tokens on the tool surface (D17) in every
+session to serve the few.
+
+What would reopen this is density, not time — if a later milestone makes facts routine
+rather than deliberate (digest actually persisting, or a capture path wider than
+first-person statements), re-run the measurement before assuming the answer still holds.
+`engram probe` reports the distribution now, so re-running it is one command rather than a
+study.
+
 ### D17 — The tool surface is a per-session token cost with a stated ceiling
 
 Measured 2026-08-05: the four memory tools in `EngramMcpTools.cs` cost **2,399 characters
@@ -1584,8 +1604,11 @@ which that project does not evidence**, and it is now the whole of this group.
 
 **D. Cheap, unblocked, do whenever**
 
-10. **D16's gate** — measure the real facts-per-session distribution on the author's
-    instance. Median below ~5 lapses the decision; above it, build the expand view.
+10. ~~**D16's gate** — measure the real facts-per-session distribution on the author's
+    instance.~~ — **done.** Median **1** against a gate of 5 (`[1, 1, 1, 1, 2, 8, 20]`
+    across 7 fact-writing sessions), so D16 lapses and the expand view is not built. The
+    measurement lives in `engram probe` rather than in a one-off script, because a gate
+    whose evidence cannot be re-taken is a gate that quietly stops being true.
 11. ~~§1's intro still says *"Six architectural forks were adjudicated with Fable"*~~ —
     done. The count reflects the decisions actually present, and the Fable provenance
     stays scoped to six rather than being extended to decisions whose origin is not mine

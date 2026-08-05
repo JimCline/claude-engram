@@ -57,6 +57,12 @@ internal static class ProbeReportFormatter
         stdout.WriteLine($"  partial  {report.Coverage.PartialCount,4}  ({FormatPercent(report.Coverage.PartialPercent)})");
         stdout.WriteLine($"  none     {report.Coverage.NoneCount,4}  ({FormatPercent(report.Coverage.NonePercent)})");
 
+        if (report.FactsPerSession is { } density)
+        {
+            stdout.WriteLine();
+            WriteFactsPerSession(stdout, density);
+        }
+
         if (report.TopQueries.Count > 0)
         {
             stdout.WriteLine();
@@ -74,6 +80,25 @@ internal static class ProbeReportFormatter
             stdout.WriteLine();
             stdout.WriteLine($"{report.SkippedLines} malformed line(s) skipped.");
         }
+    }
+
+    public static void WriteFactsPerSession(TextWriter stdout, FactsPerSessionStat density)
+    {
+        stdout.WriteLine("Facts per session (D16 gate):");
+
+        if (density.Sessions == 0)
+        {
+            stdout.WriteLine("  no session has written a fact yet — nothing to measure");
+            return;
+        }
+
+        stdout.WriteLine(
+            $"  median {density.Median:0.0}  ·  min {density.Min}  ·  max {density.Max}  " +
+            $"({density.Facts} facts across {density.Sessions} session(s))");
+        stdout.WriteLine(density.MeetsGate
+            ? $"  median is at or above the gate of {density.Gate} — the session-timeline view earns its tokens"
+            : $"  median is below the gate of {density.Gate} — D16 lapses; a neighbour window this thin is noise");
+        stdout.WriteLine($"  {density.Note}");
     }
 
     private static string FormatPercent(double percent) => $"{percent:0.0}%";

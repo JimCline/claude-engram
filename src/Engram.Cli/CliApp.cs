@@ -67,7 +67,7 @@ public static class CliApp
         writer.WriteLine("  stop                               stop the running MCP server");
         writer.WriteLine("  status                             report whether the MCP server is running");
         writer.WriteLine("  hook <event>                       hook entrypoint: session-start|subagent-start|pre-compact|user-prompt|file-touched");
-        writer.WriteLine("  probe [options]                    summarize telemetry.jsonl for the M0 adoption probe");
+        writer.WriteLine("  probe [options]                    summarize telemetry and store density for the M0 adoption probe");
         writer.WriteLine("  permissions [options]              allow Claude Code to call Engram's memory tools unprompted");
         writer.WriteLine();
         writer.WriteLine("serve/start options:");

@@ -53,12 +53,19 @@ public sealed record TelemetryProbeReport(
     [property: JsonPropertyName("coverage")] TelemetryCoverageStat Coverage,
     [property: JsonPropertyName("mean_tokens_per_recall")] double MeanTokensPerRecall,
     [property: JsonPropertyName("median_tokens_per_recall")] double MedianTokensPerRecall,
-    [property: JsonPropertyName("top_queries")] IReadOnlyList<TelemetryQueryCount> TopQueries);
+    [property: JsonPropertyName("top_queries")] IReadOnlyList<TelemetryQueryCount> TopQueries,
+    // Read from the store, not from these records, and null when there is no store to read.
+    // It rides along on the probe because this is the command that answers "what is this
+    // instance actually doing", and D16 is one of the questions that asks.
+    [property: JsonPropertyName("facts_per_session")] FactsPerSessionStat? FactsPerSession = null);
 
 public sealed record TelemetryProbeEmptyReport(
     [property: JsonPropertyName("has_records")] bool HasRecords,
     [property: JsonPropertyName("message")] string Message,
-    [property: JsonPropertyName("skipped_lines")] int SkippedLines);
+    [property: JsonPropertyName("skipped_lines")] int SkippedLines,
+    // A store can hold facts before any telemetry exists — init imports them — so an empty
+    // probe still answers D16 rather than reporting nothing at all.
+    [property: JsonPropertyName("facts_per_session")] FactsPerSessionStat? FactsPerSession = null);
 
 [JsonSerializable(typeof(TelemetryProbeReport))]
 [JsonSerializable(typeof(TelemetryProbeEmptyReport))]
@@ -66,7 +73,10 @@ public sealed partial class TelemetryProbeJsonContext : JsonSerializerContext;
 
 public static class TelemetrySummarizer
 {
-    public static TelemetryProbeReport? Summarize(IReadOnlyList<TelemetryRecord> records, int skippedLines)
+    public static TelemetryProbeReport? Summarize(
+        IReadOnlyList<TelemetryRecord> records,
+        int skippedLines,
+        FactsPerSessionStat? factsPerSession = null)
     {
         if (records.Count == 0)
         {
@@ -171,7 +181,8 @@ public static class TelemetrySummarizer
                 coverageNone, Percent(coverageNone, coverageTotal)),
             MeanTokensPerRecall: tokenValues.Count == 0 ? 0 : Math.Round(tokenValues.Average(), 1, MidpointRounding.AwayFromZero),
             MedianTokensPerRecall: Median(tokenValues),
-            TopQueries: topQueries);
+            TopQueries: topQueries,
+            FactsPerSession: factsPerSession);
     }
 
     private static TelemetryAdoptionStat AdoptionStat(List<TelemetryRecord> kindRecords, HashSet<string> mcpSessionIds, int mcpSessionCount)
