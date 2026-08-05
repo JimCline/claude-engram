@@ -1,0 +1,32 @@
+tool: engram_digest
+Flush the durable learnings from this session in one call, before context is compacted or the session ends. Accepts up to 25 short learnings plus an optional summary. This milestone does not persist anything yet; it only confirms receipt to measure whether digest fires unprompted.
+  param: learnings
+  Up to 25 short, self-contained facts learned this session.
+  param: session_summary
+  A one- or two-sentence summary of the session.
+
+tool: engram_forget
+Retract a fact Engram captured about the user, by its bracketed id (e.g. "u1a2b3c4d"). Use it whenever the user says something stored is wrong, private, or no longer true. Retracted facts stop appearing in recall immediately. Call engram_recall first if you need to find the id.
+  param: id
+  The bracketed id of the captured fact to retract, e.g. "u1a2b3c4d".
+
+tool: engram_recall
+Check memory BEFORE reading files or exploring the repo. Searches Engram's stored facts (decisions, conventions, gotchas, contracts) and returns a token-budgeted, ranked digest with fact handles and a coverage estimate. Call this first for any question about how this project works, what was decided, or why something is the way it is — it is far cheaper than rediscovering the answer by reading source.
+  param: query
+  What you want to know, as a few keywords or a short question.
+  param: budget_tokens
+  Maximum tokens to spend on the response. Defaults to 500.
+
+tool: engram_remember
+Save a durable note to this session's working memory — state you would otherwise have to keep repeating in context, and would lose to compaction or to a subagent returning an incomplete report. Call it whenever you learn something worth keeping for the rest of this session: a decision, a constraint, a partial result, a dead end already ruled out. If you are a subagent, pass your own name in `agent` so the note is attributed to whichever worker learned it. `engram_recall` ranks these above long-term memory for the rest of this session, and they stay recallable in later sessions too — so this is worth calling for anything that would still be true next week, not only for what you need in the next ten minutes.
+  param: statement
+  The fact to remember, as a short, self-contained statement.
+  param: subject
+  What or who the fact is about, if not obvious from the statement.
+  param: evidence
+  Where this was learned — a file path, PR, or command output.
+  param: agent
+  Your own name, if you are a subagent recording this fact rather than the main agent.
+  param: supersedes
+  The bracketed id of a raw user-statement capture this restates, e.g. "u1a2b3c4d". Closes that capture so the rewritten version replaces it instead of duplicating it.
+

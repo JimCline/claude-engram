@@ -38,3 +38,6 @@ scratch/
 # The plugin ships no binary — its hooks resolve an installed one (D13). Kept
 # ignored so a stale bundled copy from before that change can never be committed.
 plugin/bin/
+
+# Written by the MCP description golden test on mismatch; never committed.
+*.golden.txt.actual

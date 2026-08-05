@@ -21,8 +21,8 @@ stated as an erratum with a reason. Nothing here changes the spec's goals.
 
 ## 1. Decisions (locked)
 
-Six architectural forks were adjudicated with Fable. Each is now a decision, not an
-option.
+Twenty-five architectural forks are locked below. Each is a decision, not an option.
+Six of them were adjudicated with Fable.
 
 ### D1 — Packaging: AOT core, Roslyn sidecar, native libs in the data directory
 
@@ -1504,9 +1504,11 @@ which that project does not evidence**, and it is now the whole of this group.
 
 10. **D16's gate** — measure the real facts-per-session distribution on the author's
     instance. Median below ~5 lapses the decision; above it, build the expand view.
-11. §1's intro still says *"Six architectural forks were adjudicated with Fable"* — stale
-    since D14, staler now. Needs a count fix, left alone here only because the
-    provenance claim for D15–D20 is not mine to assert.
+11. ~~§1's intro still says *"Six architectural forks were adjudicated with Fable"*~~ —
+    done. The count now reflects the 25 decisions actually present, and the Fable
+    provenance stays scoped to six rather than being extended to decisions whose origin
+    is not mine to assert. That was the only thing blocking the fix; the two claims did
+    not have to travel together.
 
 **E. Provenance tier (D19) — independent of A–D; run it alongside A**
 

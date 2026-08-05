@@ -49,7 +49,7 @@ This closes the human-like loop: *recall → use → amend → re-store*, with d
 
 ### 2.2 Hard requirements
 
-- **Language/runtime:** C# / .NET 9+, published as Native AOT single-file binaries per platform (win-x64, linux-x64, osx-arm64, osx-x64). No runtime install required.
+- **Language/runtime:** C# / .NET 9+, published as Native AOT per platform (win-x64, linux-x64, osx-arm64, osx-x64). No runtime install required. Not single-file: SQLite is loaded at runtime from a library beside the executable, since a static e_sqlite3 is published only for browser-wasm — see D1 in the implementation plan.
 - **Storage:** SQLite only (WAL mode). **One database** — `~/.engram/engram.db` — holding the entire memory tree; repos, projects, and user memory are path branches, not separate files. FTS5 for lexical search (built into SQLite). `sqlite-vec` extension loaded *only* when embeddings are enabled.
 - **Zero services:** no daemons required for core operation. An optional file-watcher mode exists but is opt-in.
 - **Pluggable embeddings:** in-process LLamaSharp (GGUF) *or* any OpenAI-compatible local endpoint (LM Studio, Ollama). Lazy-loaded, idle-unloaded. The system is fully functional with embeddings disabled (lexical + graph lanes).
