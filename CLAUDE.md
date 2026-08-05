@@ -47,8 +47,12 @@ a guard that claims to protect the first.
 **Every write is `BEGIN IMMEDIATE`.** A deferred transaction that upgrades to a writer
 raises `SQLITE_BUSY_SNAPSHOT`, which `busy_timeout` cannot wait out (D4).
 
-**Hooks never open the database.** `file-touched` appends to a spool file and exits. Its
+**`file-touched` never opens the database.** It appends to a spool file and exits. Its
 budget is 10 ms and it must hold unconditionally, not just when nothing else is writing.
+This rule is about that hook, not about hooks: D4 justifies it entirely by per-edit
+frequency and write contention. The primer hooks — `session-start`, `subagent-start` —
+do take a short read and close it, because a primer that reports memory from a hardcoded
+list disagrees with recall the moment a fact is forgotten. No hook writes.
 
 **Anything destructive is dry-run first.** `repair`, `compact`, `forget`, and the
 installer print what they would do and require an explicit flag to act. Anything editing

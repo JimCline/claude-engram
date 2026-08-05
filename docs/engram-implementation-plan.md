@@ -138,6 +138,18 @@ For M0/M1, ship all four of these together — they only work as a set:
    fixing that with lock-and-retry. This makes the < 10 ms budget unconditional rather
    than "true unless an indexer chunk is committing."
 
+Rule 4 is about `file-touched`, not about hooks as a category, and the distinction is
+load-bearing enough to state: everything justifying it — per-edit frequency, the
+concurrent-append race, the unconditional sub-10 ms budget — describes that hook and
+only that hook. The primer hooks (`session-start`, `subagent-start`) fire once per
+session or per spawn, take a read, and close it. They may open the database, and must,
+because a primer sourced from a hardcoded list stops agreeing with recall the moment a
+fact is forgotten — it keeps announcing memory the user has cleared. Measured over 3
+rounds of 40 invocations of the published binary: 10.6 ms hardcoded vs 12.1 ms reading
+the store. Note the hardcoded version already exceeded 10 ms on process start alone,
+which is the clearest evidence that the sub-10 ms budget was never a claim about these
+hooks. No hook writes; that part does generalize.
+
 Salience bumps are batched in memory and flushed best-effort — a dropped bump is
 harmless, and it is not worth contending for the write lock.
 

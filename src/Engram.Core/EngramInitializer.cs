@@ -26,7 +26,12 @@ public static class EngramInitializer
         var existed = File.Exists(home.DatabasePath);
 
         using var connection = EngramDatabase.OpenInitialized(home);
-        CannedFactSeeder.SeedOnce(connection, DateTimeOffset.UtcNow);
+        var now = DateTimeOffset.UtcNow;
+        CannedFactSeeder.SeedOnce(connection, now);
+
+        // Runs every time rather than once, so a store seeded before topic nodes existed
+        // acquires them without re-running the seed. Idempotent, and writes no facts.
+        CannedFactSeeder.EnsureTopics(connection, now);
 
         return new InitializedPath(home.DatabasePath, Created: !existed);
     }

@@ -19,6 +19,8 @@ public static class CannedFactSeeder
 
     public const string SubjectKind = "concept";
 
+    public const string TopicKind = "topic";
+
     /// <summary>
     /// Authored, not derived: a human wrote these bodies, so they are <c>stated</c> and not
     /// regenerable. Marking them regenerable would invite `repair` to discard the entire
@@ -73,6 +75,39 @@ public static class CannedFactSeeder
     /// the skip, a second run would close all 51 facts and rewrite them identically,
     /// producing a supersession history that records a change nobody made.
     /// </remarks>
+    /// <summary>
+    /// Creates the topic node for each topic in <paramref name="facts"/>, carrying the
+    /// authored display text as its name. Idempotent, and writes no facts.
+    /// </summary>
+    /// <remarks>
+    /// Separate from <see cref="SeedOnce"/>, and deliberately not gated on the corpus
+    /// version. A store seeded by an earlier build has the facts but not these nodes, and
+    /// the only way a version gate could reach it is by re-running the seed — which, on a
+    /// store where the user has forgotten seeded facts, would write them all back. Topic
+    /// nodes are addressing metadata rather than belief content, so creating them is not
+    /// a fact write and needs no such gate.
+    /// </remarks>
+    public static void EnsureTopics(
+        SqliteConnection connection,
+        SqliteTransaction? transaction,
+        IReadOnlyList<CannedFact> facts,
+        DateTimeOffset now)
+    {
+        var createdAt = now.ToUnixTimeSeconds();
+
+        foreach (var topic in facts.Select(f => f.Topic).Distinct(StringComparer.Ordinal))
+        {
+            FactStore.EnsureEntity(connection, transaction, TopicPath(topic), TopicKind, createdAt, displayName: topic);
+        }
+    }
+
+    public static void EnsureTopics(SqliteConnection connection, DateTimeOffset now)
+    {
+        using var transaction = EngramDatabase.BeginWrite(connection);
+        EnsureTopics(connection, transaction, CannedFacts.All, now);
+        transaction.Commit();
+    }
+
     public static int Seed(SqliteConnection connection, IReadOnlyList<CannedFact> facts, DateTimeOffset now)
     {
         var existing = new Dictionary<(string Path, string Predicate), string>();
@@ -83,6 +118,8 @@ public static class CannedFactSeeder
 
         var written = 0;
         using var transaction = EngramDatabase.BeginWrite(connection);
+
+        EnsureTopics(connection, transaction, facts, now);
 
         foreach (var fact in facts)
         {

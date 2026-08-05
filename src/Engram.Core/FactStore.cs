@@ -284,7 +284,8 @@ public static class FactStore
         SqliteTransaction? transaction,
         string path,
         string kind,
-        long createdAt)
+        long createdAt,
+        string? displayName = null)
     {
         var existing = ScalarLong(
             connection,
@@ -298,9 +299,19 @@ public static class FactStore
         }
 
         // The name is the last path segment, denormalized for display. A path with no
-        // separator is its own name.
-        var separator = path.LastIndexOf('/');
-        var name = separator >= 0 && separator < path.Length - 1 ? path[(separator + 1)..] : path;
+        // separator is its own name. A caller supplies the name explicitly when the
+        // segment is a slug: "claude-code hooks" and "claude code hooks" slug identically,
+        // so the display text is not recoverable from the path and has to be stored.
+        string name;
+        if (displayName is not null)
+        {
+            name = displayName;
+        }
+        else
+        {
+            var separator = path.LastIndexOf('/');
+            name = separator >= 0 && separator < path.Length - 1 ? path[(separator + 1)..] : path;
+        }
 
         return ScalarLong(
             connection,

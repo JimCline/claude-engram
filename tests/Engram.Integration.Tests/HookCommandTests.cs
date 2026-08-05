@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Engram.Cli;
+using Engram.Core;
 
 namespace Engram.Integration.Tests;
 
@@ -22,6 +23,51 @@ public class HookCommandTests
         Assert.Equal("SessionStart", hookSpecificOutput.GetProperty("hookEventName").GetString());
         Assert.False(string.IsNullOrWhiteSpace(hookSpecificOutput.GetProperty("additionalContext").GetString()));
     }
+
+    // The whole reason the primer moved onto the store: a forgotten fact has to stop being
+    // announced. Reading a hardcoded list cannot express this, and would keep telling the
+    // user about memory they explicitly cleared.
+    [Fact]
+    public void SessionStart_AfterEverythingWasForgotten_AnnouncesNoFacts()
+    {
+        using var sandbox = new SandboxHome();
+
+        using (var connection = EngramDatabase.OpenInitialized(sandbox.Home))
+        {
+            foreach (var fact in FactStore.ReadLive(connection))
+            {
+                FactStore.Forget(connection, fact.Id, "user cleared memory", DateTimeOffset.UtcNow);
+            }
+        }
+
+        var stdout = new StringWriter();
+        var exitCode = CliApp.Run(["--home", sandbox.Home.Root, "hook", "session-start"], stdout, new StringWriter());
+
+        Assert.Equal(0, exitCode);
+        Assert.DoesNotContain("Memory holds", stdout.ToString(), StringComparison.Ordinal);
+    }
+
+    // The topic names the primer prints are display text the corpus was authored with, and
+    // the path only carries a slug. Asserting on the rendered primer rather than on the
+    // catalog, because a slug leaking here is what the model would actually read.
+    [Fact]
+    public void SessionStart_PrintsTopicsAsAuthored_NotAsSlugs()
+    {
+        using var sandbox = new SandboxHome();
+        var stdout = new StringWriter();
+
+        CliApp.Run(["--home", sandbox.Home.Root, "hook", "session-start"], stdout, new StringWriter());
+
+        var output = stdout.ToString();
+        Assert.Contains("claude-code hooks", output, StringComparison.Ordinal);
+        Assert.DoesNotContain("claude-code-hooks", output, StringComparison.Ordinal);
+    }
+
+    // The matching "unreadable database" case is an end-to-end test, not one of these.
+    // Microsoft.Data.Sqlite pools connections per process, so corrupting the file here is
+    // invisible: the read is served from a pooled connection that still has the old pages
+    // cached, and the hook cheerfully reports all 51 facts. Checked — that is how the first
+    // version of this test passed while proving nothing.
 
     [Fact]
     public void SessionStart_MissingHomeDirectory_ExitsZeroAndWritesNothing()

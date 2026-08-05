@@ -1,3 +1,5 @@
+using Microsoft.Data.Sqlite;
+
 namespace Engram.Core;
 
 /// <summary>
@@ -21,17 +23,38 @@ public static class FactCatalog
         using var connection = EngramDatabase.OpenInitialized(home);
 
         var facts = FactStore.ReadLive(connection);
+        var topics = ReadTopicNames(connection);
         var catalog = new List<CannedFact>(facts.Count);
 
         foreach (var fact in facts)
         {
-            catalog.Add(ToCannedFact(fact, now));
+            catalog.Add(ToCannedFact(fact, now, topics));
         }
 
         return catalog;
     }
 
-    public static CannedFact ToCannedFact(StoredFact fact, DateTimeOffset now) => new(
+    /// <summary>
+    /// Maps each topic node's path to the display text it was authored with.
+    /// </summary>
+    public static Dictionary<string, string> ReadTopicNames(SqliteConnection connection)
+    {
+        var names = new Dictionary<string, string>(StringComparer.Ordinal);
+
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT path, name FROM entity WHERE kind = $kind;";
+        command.Parameters.AddWithValue("$kind", CannedFactSeeder.TopicKind);
+
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            names[reader.GetString(0)] = reader.GetString(1);
+        }
+
+        return names;
+    }
+
+    public static CannedFact ToCannedFact(StoredFact fact, DateTimeOffset now, IReadOnlyDictionary<string, string>? topicNames = null) => new(
         // The store's own id is the identity (D2). The 'f' keeps the handle shape the model
         // already sees in recall output, and strips back to the id when a tool takes one.
         Id: "f" + fact.Id.ToString(System.Globalization.CultureInfo.InvariantCulture),
@@ -39,22 +62,22 @@ public static class FactCatalog
         Predicate: fact.Predicate,
         Body: fact.Body,
         Scope: fact.Scope,
-        Topic: TopicOf(fact.SubjectPath),
+        Topic: TopicOf(fact.SubjectPath, topicNames),
         AgeDays: AgeDaysOf(fact, now),
         Evidence: fact.Evidence);
 
     /// <summary>
-    /// The topic segment of a seeded path, or a fallback for facts stored elsewhere.
+    /// The display text of a seeded path's topic, or a fallback for facts stored elsewhere.
     /// </summary>
     /// <remarks>
-    /// This returns the slug, not the display text the corpus was authored with —
-    /// "claude-code-hooks", not "claude-code hooks". Nothing renders it today: recall formats
-    /// only id, body, scope and age. When the primer moves onto the store it will need the
-    /// display form, and the way to get it is a topic entity carrying the original text as
-    /// its name, because de-slugging cannot work — "claude-code hooks" and "claude code hooks"
-    /// produce the same slug.
+    /// The path only carries the slug. The primer prints this string to the model verbatim,
+    /// so it resolves through the topic node, which stores the text the corpus was authored
+    /// with — de-slugging cannot substitute, since "claude-code hooks" and "claude code
+    /// hooks" produce the same slug. Without a node to resolve against, the slug is returned
+    /// as-is: a store written before topic nodes existed should read as slightly wrong
+    /// rather than not read at all.
     /// </remarks>
-    public static string TopicOf(string path)
+    public static string TopicOf(string path, IReadOnlyDictionary<string, string>? topicNames = null)
     {
         var prefix = CannedFactSeeder.Root + "/";
         if (!path.StartsWith(prefix, StringComparison.Ordinal))
@@ -64,8 +87,14 @@ public static class FactCatalog
 
         var rest = path[prefix.Length..];
         var separator = rest.IndexOf('/');
+        var slug = separator < 0 ? rest : rest[..separator];
 
-        return separator < 0 ? rest : rest[..separator];
+        if (topicNames is not null && topicNames.TryGetValue(prefix + slug, out var name))
+        {
+            return name;
+        }
+
+        return slug;
     }
 
     private static int AgeDaysOf(StoredFact fact, DateTimeOffset now)

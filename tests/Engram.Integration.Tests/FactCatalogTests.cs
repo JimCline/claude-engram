@@ -108,6 +108,40 @@ public class FactCatalogTests
         Assert.False(second.Single(p => p.Path == sandbox.Home.DatabasePath).Created);
     }
 
+    // Every authored topic has to survive the round trip as written. Comparing the whole set
+    // rather than one example, so a slug leaking through for any single topic fails.
+    [Fact]
+    public void ReadLongTerm_PreservesEveryTopicAsAuthored()
+    {
+        using var sandbox = new SandboxHome(initialize: false);
+        EngramInitializer.Initialize(sandbox.Home);
+
+        var actual = FactCatalog.ReadLongTerm(sandbox.Home, T0).Select(f => f.Topic).ToHashSet(StringComparer.Ordinal);
+        var expected = CannedFacts.All.Select(f => f.Topic).ToHashSet(StringComparer.Ordinal);
+
+        Assert.Equal(expected, actual);
+    }
+
+    // Topic nodes are addressing metadata, not belief content: creating them must not put a
+    // fact in the store, or `repair` and the append-only rule are both being lied to.
+    [Fact]
+    public void EnsureTopics_WritesNoFactsAndIsIdempotent()
+    {
+        using var sandbox = new SandboxHome(initialize: false);
+        using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
+
+        CannedFactSeeder.EnsureTopics(connection, T0);
+        CannedFactSeeder.EnsureTopics(connection, T0.AddDays(1));
+
+        Assert.Empty(FactStore.ReadLive(connection));
+
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT COUNT(*) FROM entity WHERE kind = 'topic';";
+        Assert.Equal(
+            (long)CannedFacts.All.Select(f => f.Topic).Distinct(StringComparer.Ordinal).Count(),
+            command.ExecuteScalar());
+    }
+
     [Theory]
     [InlineData("/knowledge/claude-code-hooks/subagentstart-envelope", "claude-code-hooks")]
     [InlineData("/knowledge/this-project", "this-project")]

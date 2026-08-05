@@ -69,7 +69,8 @@ CREATE TABLE entity (
                                        --   /people/jim/preferences
                                        --   /code/acme-api/src/Auth.cs#ValidateToken
   kind       TEXT    NOT NULL,         -- machine|repo|project|module|file|symbol|
-                                       -- concept|decision|convention|preference|person|tool
+                                       -- concept|decision|convention|preference|person|
+                                       -- tool|topic
   name       TEXT    NOT NULL,         -- last path segment, denormalized for display
   created_at INTEGER NOT NULL,
   meta       TEXT                      -- JSON: language, signature, disk locations
