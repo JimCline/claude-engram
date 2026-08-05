@@ -1437,6 +1437,17 @@ deferred out of M0, and the seeded corpus carries no paths at all — so this is
 documentation and the default `[taxonomy] roots`, with no store to migrate. After a public
 release it would mean re-addressing every indexed fact in every installed store.
 
+**Left open: how a repo learns which project it belongs to.** Nesting makes that binding a
+precondition for addressing any indexed fact, and it cannot be a prompt — a first index
+that stops to ask a question is a first index that does not happen. The leading candidate
+is to default the project to the repo's own directory name, so a solo codebase lands at
+`/projects/engram/code/engram/…` with no configuration at all, and to let a repo be re-bound
+in config when a project genuinely spans several. That keeps the common case zero-effort and
+makes the multi-repo case declared rather than guessed, which matters because guessing it
+wrong re-addresses a subtree. Deliberately not decided here: there is no multi-codebase
+project to test it against yet, and the cost of deciding it late is one default, not a
+migration.
+
 ---
 
 ## PreCompact cannot inject context
