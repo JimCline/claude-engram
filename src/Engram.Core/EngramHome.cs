@@ -11,7 +11,6 @@ public sealed class EngramHome
     public string ModelsDir { get; }
     public string QueueDir { get; }
     public string ReportDir { get; }
-    public string UserFactsDir { get; }
 
     /// <summary>
     /// Which MCP tool permissions we granted in Claude Code's settings, so the uninstaller can
@@ -35,7 +34,6 @@ public sealed class EngramHome
         ModelsDir = Path.Combine(root, "models");
         QueueDir = Path.Combine(root, "queue");
         ReportDir = Path.Combine(root, "report");
-        UserFactsDir = Path.Combine(root, "user-facts");
         GrantedPermissionsPath = Path.Combine(root, "granted-permissions.json");
         ClaudeSettingsPath = Path.Combine(userProfileDirectory, ".claude", "settings.json");
     }

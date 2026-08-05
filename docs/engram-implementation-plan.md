@@ -1378,11 +1378,17 @@ may drop. The seeder's refusal to rewrite any subject+predicate the store has he
 is what makes a retraction survive a corpus revision, so this composes rather than leaking.
 
 The cost is a handle change — `u1a2b3c4d` becomes `f42` — which the golden file surfaced as
-an intended diff rather than a silent one. Existing JSON captures are replayed into the
-store in timestamp order on `init`, rewrites landing at the address of the capture they
-replaced so the supersession chain survives the move, and the files are left on disk: they
-are the only copy of the pre-migration state, and an upgrade does not delete a user's data
-as a side effect.
+an intended diff rather than a silent one.
+
+**The replay that carried this across has since been deleted.** `init` used to import the
+pre-database JSON captures and session JSONL in timestamp order, rewrites landing at the
+address of the capture they replaced so the supersession chain survived the move. It existed
+for exactly one installation — the author's — and Engram has not shipped, so no other store
+can contain those files. Carrying ~350 lines of import into a first public release would
+mean every new user's first command runs a migration for files that cannot exist, and the
+`user-facts/` directory it read is gone with it. If a pre-release store still holds the only
+copy of something, the supported move is to read it out before upgrading, not to make the
+released binary carry the reader forever.
 
 ---
 
@@ -1778,7 +1784,7 @@ numeric confidence score. Both are rejected in D19. No visualization or dashboar
     would mean a Node runtime, which D20 rejects in principle.
 
 **Standing tension to re-read before starting C.** D18 gates M4 behind M0/M1 telemetry
-showing paraphrase misses, and the corpus is ~51 facts as of capture. The owner has
+showing paraphrase misses, and the seeded corpus is 45 facts. The owner has
 said they want semantic search regardless; B is pure risk-retirement and worth doing
 either way, but C's payoff scales with corpus size and with the gap in time between the
 session that wrote a fact and the one that queries it.

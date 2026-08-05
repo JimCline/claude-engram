@@ -38,13 +38,6 @@ public static class EngramInitializer
             transaction.Commit();
         }
 
-        // This is the migration point for the JSON captures, and it is here rather than in
-        // the MCP server or a hook because init is the one command an upgrade is guaranteed
-        // to run: the installer invokes it, and it already verifies the binary can open a
-        // store. Its own marker makes a second call free.
-        LegacyUserFacts.Import(connection, home, now);
-        LegacySessionFacts.Import(connection, home, now);
-
         return new InitializedPath(home.DatabasePath, Created: !existed);
     }
 
