@@ -529,6 +529,44 @@ collapses to 1 and the probe would silently under-report. It is replaced by a
 `session-open` record emitted whenever the server mints a new `Mcp-Session-Id` — exactly
 one per Claude Code session, and a real identity rather than a proxy.
 
+**Verified, with one dependency worth stating plainly (2026-08-04).** A throwaway AOT
+spike confirmed `ModelContextProtocol.AspNetCore` 2.0.0 on
+`WebApplication.CreateSlimBuilder` publishes with **zero trim warnings**, produces a
+16.6 MB native binary linking only system frameworks, and serves a full
+`initialize` → `tools/list` → `tools/call` handshake from the published binary.
+
+But `HttpServerTransportOptions.Stateless` **defaults to `true`** as of the 2026-07-28
+protocol revision, and in stateless mode the server mints **no session identity at all** —
+the first spike run produced no `Mcp-Session-Id` on any response. Everything above that
+depends on that header requires `WithHttpTransport(o => o.Stateless = false)` set
+deliberately.
+
+That is a real dependency, not a formality. The SDK describes stateful mode as *"a
+back-compat-only escape hatch for legacy clients"* (SEP-2567), so this design rests on a
+mode the ecosystem is moving away from. In stateless mode nothing distinguishes one Claude
+Code session from another at the transport layer, because Claude Code does not send its own
+session id to MCP servers (§D12 research). Worth revisiting whenever the SDK version moves.
+
+**Noted, not built: the primer could carry the session id instead.** The `SessionStart`
+hook already receives Claude Code's real `session_id` on stdin. The primer could name it,
+and the agent could pass it back on `remember` and `recall` — no transport involvement, so
+it survives a stateless-only future.
+
+It is also, on its face, the better design. Today's two id-spaces do not join: hooks record
+under Claude Code's `session_id`, the server under its own. That split is why compaction
+survival is a timestamp heuristic, why the probe carries two separate session counts, and
+why the session-memory primer line had to be deleted as structurally dead. `Mcp-Session-Id`
+does not close it — it is a *third* id. A primer-carried id would be the same one the hooks
+use, making all three of those exact rather than approximate, and it extends to subagents
+through the `SubagentStart` primer.
+
+Its cost is the reason it is not being built yet: it depends on the model actually passing
+a parameter, and D12's whole finding is that every demand made of the model is somewhere
+adoption leaks. It would have to be optional, validated against session ids the hooks have
+registered, falling back to `Mcp-Session-Id` when absent or unrecognised. Whether the model
+reliably passes parameters is something M0's telemetry can answer, so this waits for
+evidence rather than being adopted on the strength of the argument.
+
 ### Reading the M0 numbers honestly
 
 Two documented behaviours distort the adoption metric, and both must be known before
