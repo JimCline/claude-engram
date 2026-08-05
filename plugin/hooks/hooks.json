@@ -1,0 +1,37 @@
+{
+  "description": "Engram's three hooks are the entire mechanism by which memory reaches the model without the model asking for it. SessionStart fires on startup, resume, /clear, and after a compaction — every point where the agent's context is otherwise empty or thinner than a moment ago — and injects the session primer that names the memory tools and gives the agent a reason to call them. PreCompact fires just before a compaction discards context; it cannot inject anything back (Claude Code exposes no injection channel on that event), so it only records the event to telemetry — the actual 'flush what you know before you lose it' nudge lives in the primer and the recall footer instead, both already seen every session. PostToolUse on Edit/Write/MultiEdit/NotebookEdit fires after every file change and drops a tiny spool record under the Engram home's queue directory; the hook itself never opens the database (writes stay off the hot path), it only marks that a file changed so a later reindex knows what to look at. All three exit 0 unless the home is uninitialized, in which case they are no-ops — a plugin installed but never `engram init`-ed does nothing rather than erroring.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/engram\" hook session-start"
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/engram\" hook pre-compact"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/engram\" hook file-touched"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,33 @@
+{
+  "name": "engram",
+  "owner": {
+    "name": "Jim Cline",
+    "url": "https://github.com/JimCline"
+  },
+  "metadata": {
+    "description": "Local, fully private temporal memory for Claude Code, built by Jim Cline.",
+    "version": "1.0.0"
+  },
+  "plugins": [
+    {
+      "name": "engram",
+      "source": "./plugin",
+      "description": "Local-only temporal memory for Claude Code sessions. Adds an MCP server plus SessionStart, PreCompact, and file-touched hooks backed by a single-binary, append-only SQLite store at ~/.engram — no account, no network calls, no daemon. Facts are never mutated or deleted, only superseded, with the reason for every revision recorded.",
+      "version": "0.1.0",
+      "author": {
+        "name": "Jim Cline"
+      },
+      "license": "MIT",
+      "keywords": [
+        "memory",
+        "mcp",
+        "hooks",
+        "sqlite",
+        "local-first",
+        "context",
+        "knowledge-graph"
+      ],
+      "category": "productivity"
+    }
+  ]
+}

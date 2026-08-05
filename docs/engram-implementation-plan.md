@@ -406,6 +406,39 @@ One place we are already better and should protect it: Codebase-Memory's `index_
 returns no timestamp and no freshness signal at all. Engram's `file_state.blob_sha` /
 `indexed_at` design (§5.3) is a genuine improvement over a real, actively used tool.
 
+### D13 — Distribution: a build artifact cannot ship in a remote marketplace
+
+Engram ships as a Claude Code plugin (marketplace at the repository root, plugin under
+`plugin/`). Locally that works: `scripts/build-plugin.sh` publishes the AOT binary into
+`plugin/bin/`, which is gitignored, and `.mcp.json` and `hooks.json` reference it through
+`${CLAUDE_PLUGIN_ROOT}`.
+
+That arrangement does not survive the move to a **remote** marketplace, which is the
+intended end state. Claude Code clones the repository, so anything the manifests
+reference must be committed — but committing a ~11 MB binary for each of four runtime
+identifiers, on every version bump, makes the history unusable in a handful of releases.
+There is also no documented mechanism for selecting a per-platform path, so `.mcp.json`
+can name exactly one `command`.
+
+The likely resolution, to be designed when remote distribution is actually wanted:
+`plugin/bin/engram` becomes a small committed launcher script that detects the platform,
+resolves a real binary from a stable location outside the version-pinned plugin cache,
+and `exec`s it. Two constraints on that design, both learned the hard way elsewhere in
+this plan:
+
+- **Pin the binary version inside the launcher.** The launcher is versioned with the
+  plugin; the binary it fetches is not. Naming the exact expected version is what makes
+  skew impossible rather than merely unlikely (the same reasoning as D1's protocol
+  version between core and sidecar).
+- **Never fetch on the hot path.** `file-touched` has a sub-10 ms budget (D4); a
+  launcher that might download 11 MB cannot sit in front of it. Bootstrapping belongs in
+  `SessionStart`, which runs once per session and can report a missing binary as
+  `additionalContext` — a silent failure here would look exactly like the agent choosing
+  not to use memory, which is the one confusion D12 says we cannot afford.
+
+Until then, local directory marketplace only, and the version-bump-per-change loop is a
+developer cost rather than a user-facing one.
+
 ### Reading the M0 numbers honestly
 
 Two documented behaviours distort the adoption metric, and both must be known before

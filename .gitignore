@@ -34,3 +34,6 @@ scratch/
 *.db
 *.db-wal
 *.db-shm
+
+# Plugin binary is a build artifact, produced by scripts/build-plugin.sh
+plugin/bin/

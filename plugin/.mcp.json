@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "engram": {
+      "command": "${CLAUDE_PLUGIN_ROOT}/bin/engram",
+      "args": ["mcp"]
+    }
+  }
+}
