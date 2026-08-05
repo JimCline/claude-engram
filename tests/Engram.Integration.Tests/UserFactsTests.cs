@@ -230,7 +230,7 @@ public class UserFactsTests
     [Fact]
     public void FingerprintIgnoresCaseAndPunctuation()
     {
-        Assert.Equal(UserFacts.Fingerprint("I use Dvorak."), UserFacts.Fingerprint("i  use   dvorak"));
-        Assert.NotEqual(UserFacts.Fingerprint("I use Dvorak"), UserFacts.Fingerprint("I use Colemak"));
+        Assert.Equal(FactStore.Fingerprint("I use Dvorak."), FactStore.Fingerprint("i  use   dvorak"));
+        Assert.NotEqual(FactStore.Fingerprint("I use Dvorak"), FactStore.Fingerprint("I use Colemak"));
     }
 }

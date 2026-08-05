@@ -25,80 +25,93 @@ public class EngramMcpToolsTests
     }
 
     [Fact]
-    public void Remember_ThenRecallSameSession_ReturnsTheFactWithASessionHandle()
+    public void Remember_ThenRecallSameSession_ReturnsTheNoteInTheSessionTier()
     {
         using var sandbox = new SandboxHome();
         var session = new McpSessionId("session-a");
 
-        EngramMcpTools.Remember(sandbox.Home, session, Initialized, "The build pipeline retries flaky uploads three times before failing.");
+        var handle = HandleOf(EngramMcpTools.Remember(
+            sandbox.Home, session, Initialized, "The build pipeline retries flaky uploads three times before failing."));
 
         var result = EngramMcpTools.Recall(sandbox.Home, session, Initialized, "flaky uploads retries");
 
-        Assert.Contains("[s001]", result);
-        Assert.Contains("flaky uploads", result);
+        Assert.Contains($"[{handle}]", result);
+        Assert.Contains("three times before failing", result);
+        Assert.Contains("(session)", result);
     }
 
     [Fact]
-    public void Remember_ThenRecallDifferentSession_ReturnsThePriorSessionFactWithAQualifiedHandle()
+    public void Remember_ThenRecallDifferentSession_ReturnsThePriorSessionNoteWithItsSessionMarked()
     {
         using var sandbox = new SandboxHome();
         var writer = new McpSessionId("session-a");
         var reader = new McpSessionId("session-b");
 
-        EngramMcpTools.Remember(sandbox.Home, writer, Initialized, "The build pipeline retries flaky uploads three times before failing.");
+        var handle = HandleOf(EngramMcpTools.Remember(
+            sandbox.Home, writer, Initialized, "The build pipeline retries flaky uploads three times before failing."));
 
         var result = EngramMcpTools.Recall(sandbox.Home, reader, Initialized, "flaky uploads retries");
 
-        Assert.DoesNotContain("[s001]", result);
-        Assert.Contains("[s001@p1]", result);
-        Assert.Contains("flaky uploads", result);
+        Assert.Contains($"[{handle}]", result);
+        Assert.Contains("session · p1 ·", result);
+        Assert.Contains("three times before failing", result);
         Assert.DoesNotContain("coverage: none", result);
     }
 
     [Fact]
-    public void Recall_PriorAndCurrentSessionShareTheSameHandleNumber_HandlesAreDistinguishableInOutput()
+    public void Recall_CurrentSessionNoteRanksAboveAPriorSessionNote_AndBothAreDistinguishable()
     {
         using var sandbox = new SandboxHome();
         var priorSession = new McpSessionId("session-old");
         var currentSession = new McpSessionId("session-new");
 
-        EngramMcpTools.Remember(sandbox.Home, priorSession, Initialized, "The nightly backup job runs at 2am UTC.");
-        EngramMcpTools.Remember(sandbox.Home, currentSession, Initialized, "The nightly backup job now also verifies checksums.");
+        var priorHandle = HandleOf(EngramMcpTools.Remember(
+            sandbox.Home, priorSession, Initialized, "The nightly backup job runs at 2am UTC."));
+        var currentHandle = HandleOf(EngramMcpTools.Remember(
+            sandbox.Home, currentSession, Initialized, "The nightly backup job now also verifies checksums."));
 
         var result = EngramMcpTools.Recall(sandbox.Home, currentSession, Initialized, "nightly backup job");
 
-        var currentHandleIndex = result.IndexOf("[s001] ", StringComparison.Ordinal);
-        var priorHandleIndex = result.IndexOf("[s001@p1]", StringComparison.Ordinal);
+        var currentHandleIndex = result.IndexOf($"[{currentHandle}]", StringComparison.Ordinal);
+        var priorHandleIndex = result.IndexOf($"[{priorHandle}]", StringComparison.Ordinal);
 
-        Assert.True(currentHandleIndex >= 0, "current-session handle [s001] should be present");
-        Assert.True(priorHandleIndex >= 0, "prior-session handle [s001@p1] should be present");
+        Assert.True(currentHandleIndex >= 0, $"current-session handle [{currentHandle}] should be present");
+        Assert.True(priorHandleIndex >= 0, $"prior-session handle [{priorHandle}] should be present");
         Assert.True(currentHandleIndex < priorHandleIndex, "current-session fact must rank above the prior-session fact");
     }
 
+    // The reason session notes moved onto the store. In the JSONL format there was no way to
+    // express a retracted note, so engram_forget refused them outright and a mistaken note
+    // stayed recallable for good.
     [Fact]
-    public void Recall_MalformedSessionFileInSessionsDirectory_IsSkippedAndRecallStillSucceeds()
+    public void Forget_RetractsASessionNoteAndItStopsBeingRecalled()
     {
         using var sandbox = new SandboxHome();
-        var session = new McpSessionId("session-current");
+        var session = new McpSessionId("session-a");
 
-        var sessionsDir = Path.Combine(sandbox.Home.Root, "sessions");
-        Directory.CreateDirectory(sessionsDir);
-        File.WriteAllText(Path.Combine(sessionsDir, "session-corrupt.jsonl"), "{not valid json at all\n");
+        var handle = HandleOf(EngramMcpTools.Remember(
+            sandbox.Home, session, Initialized, "The build pipeline retries flaky uploads three times before failing."));
 
-        var result = EngramMcpTools.Recall(sandbox.Home, session, Initialized, "anything at all");
+        var response = EngramMcpTools.Forget(sandbox.Home, session, Initialized, handle);
+        Assert.Contains("Retracted", response);
 
-        Assert.Contains("RECALL", result);
+        // On the body, not the query: recall echoes the query in its header and again in the
+        // gap message, so asserting the query terms are gone passes even when nothing was
+        // retracted at all.
+        var result = EngramMcpTools.Recall(sandbox.Home, session, Initialized, "flaky uploads retries");
+        Assert.DoesNotContain("three times before failing", result);
+        Assert.DoesNotContain($"[{handle}]", result);
     }
 
     [Fact]
-    public void Remember_ReturnsRealHandleInResponseText()
+    public void Remember_ReturnsAFactHandleInResponseText()
     {
         using var sandbox = new SandboxHome();
         var session = new McpSessionId("session-a");
 
         var response = EngramMcpTools.Remember(sandbox.Home, session, Initialized, "Statement one.");
 
-        Assert.Contains("[s001]", response);
+        Assert.Matches(@"^\[f\d+\] remembered:", response);
     }
 
     [Fact]
@@ -115,14 +128,25 @@ public class EngramMcpToolsTests
     }
 
     [Fact]
-    public void Remember_UninitialisedHome_DoesNotPersistAndCreatesNoSessionFile()
+    public void Remember_UninitialisedHome_DoesNotPersist()
     {
         using var sandbox = new SandboxHome(initialize: false);
         var session = new McpSessionId("session-a");
 
         var response = EngramMcpTools.Remember(sandbox.Home, session, new McpHomeState(false), "Statement one.");
 
-        Assert.DoesNotContain("[s001]", response);
-        Assert.False(Directory.Exists(Path.Combine(sandbox.Home.Root, "sessions")));
+        Assert.DoesNotContain("remembered:", response);
+        Assert.False(File.Exists(sandbox.Home.DatabasePath));
+    }
+
+    /// <summary>
+    /// The handle out of a tool response, so these assert on the id the model was actually
+    /// handed rather than on one guessed from a counter that no longer exists.
+    /// </summary>
+    private static string HandleOf(string response)
+    {
+        var close = response.IndexOf(']', StringComparison.Ordinal);
+        Assert.True(response.StartsWith('[') && close > 1, $"expected a bracketed handle, got: {response}");
+        return response[1..close];
     }
 }

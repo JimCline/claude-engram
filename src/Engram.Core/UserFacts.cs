@@ -1,5 +1,3 @@
-using System.Security.Cryptography;
-using System.Text;
 using Microsoft.Data.Sqlite;
 
 namespace Engram.Core;
@@ -66,7 +64,7 @@ public static class UserFacts
     public const string LearnedVia = "stated";
 
     public static string PathFor(UserFactTopic topic, string statement) =>
-        TopicPath(topic) + "/" + Fingerprint(statement);
+        TopicPath(topic) + "/" + FactStore.Fingerprint(statement);
 
     public static string TopicPath(UserFactTopic topic) =>
         topic == UserFactTopic.Instruction ? InstructionPath : AboutYouPath;
@@ -215,41 +213,4 @@ public static class UserFacts
         return result.FactId;
     }
 
-    /// <summary>
-    /// Eight hex characters of SHA-256 over the statement with case, punctuation, and runs of
-    /// whitespace normalized away, so "I use Dvorak." and "i use dvorak" address one entity.
-    /// </summary>
-    /// <remarks>
-    /// Eight characters is 32 bits. At the scale this holds — a few thousand statements from
-    /// one person — a collision is remote, and its consequence is bounded: two unrelated
-    /// statements would share a subject, so the second would supersede the first rather than
-    /// corrupt anything. Widening this is a path change and would strand existing entities,
-    /// so it is a migration, not a tweak.
-    /// </remarks>
-    public static string Fingerprint(string statement)
-    {
-        var normalized = Normalize(statement);
-        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(normalized));
-
-        return Convert.ToHexStringLower(hash.AsSpan(0, 4));
-    }
-
-    private static string Normalize(string statement)
-    {
-        var builder = new StringBuilder(statement.Length);
-
-        foreach (var character in statement)
-        {
-            if (char.IsLetterOrDigit(character))
-            {
-                builder.Append(char.ToLowerInvariant(character));
-            }
-            else if (builder.Length > 0 && builder[^1] != ' ')
-            {
-                builder.Append(' ');
-            }
-        }
-
-        return builder.ToString().TrimEnd();
-    }
 }

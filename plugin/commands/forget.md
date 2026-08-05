@@ -20,10 +20,9 @@ kept, and a command that over-deletes is as bad as one that cannot delete at all
 
 **If `$ARGUMENTS` is empty**, ask what they want forgotten.
 
-Any stored fact can be retracted, including the ones Engram ships with — it is the user's
-memory. Session notes (ids like `s001`, or `s001@p1` from an earlier session) cannot be
-retracted this way; if the user asks for one of those, say so plainly rather than
-reporting a success that did not happen.
+Any stored fact can be retracted, including the ones Engram ships with and notes taken
+during a session — it is the user's memory, and every id in recall's output is one
+`engram_forget` accepts.
 
 Report what the tool returned. The original is closed rather than erased — facts here are
 append-only, so the record shows that something was retracted without keeping the content

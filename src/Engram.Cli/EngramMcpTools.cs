@@ -26,15 +26,16 @@ public sealed class EngramMcpTools
         [Description("Maximum tokens to spend on the response. Defaults to 500.")] int? budget_tokens = null)
     {
         var budget = budget_tokens is > 0 ? budget_tokens.Value : RecallEngine.DefaultBudgetTokens;
-        var currentSessionFacts = SessionFactStore.ReadAll(home, session.Value);
-        var priorSessionFacts = SessionFactStore.ReadAllExcept(home, session.Value);
 
-        // One read, because what the user stated about themselves is now a fact like any
-        // other. It used to be fetched separately and appended here, which meant recall's
-        // idea of long-term memory was assembled at the call site out of two stores that
-        // could disagree.
+        // One connection, one temporal model. Recall used to assemble its idea of memory at
+        // this call site from three stores — a JSON directory, a JSONL file per session, and
+        // the database — which is three chances for them to disagree about what is still
+        // believed. Every tier below is now a partition of one live-fact read.
         var now = DateTimeOffset.UtcNow;
-        var longTermFacts = FactCatalog.ReadLongTerm(home, now);
+        using var connection = EngramDatabase.OpenInitialized(home);
+
+        var longTermFacts = FactCatalog.ReadLongTerm(connection, now);
+        var (currentSessionFacts, priorSessionFacts) = SessionFacts.Read(connection, session.Value, now);
 
         var result = RecallEngine.Pack(query, longTermFacts, currentSessionFacts, priorSessionFacts, budget);
 
@@ -112,7 +113,12 @@ public sealed class EngramMcpTools
             return $"[{FactCatalog.HandleFor(replacementId.Value)}] replaced capture [{supersedes}]: \"{statement}\"";
         }
 
-        var handle = SessionFactStore.Append(home, session.Value, statement, subject, evidence, agent);
+        long factId;
+        using (var connection = EngramDatabase.OpenInitialized(home))
+        {
+            factId = SessionFacts.Append(
+                connection, session.Value, statement, subject, evidence, agent, DateTimeOffset.UtcNow);
+        }
 
         Telemetry.Append(home, new TelemetryRecord(
             Timestamp: DateTime.UtcNow.ToString("o"),
@@ -123,15 +129,15 @@ public sealed class EngramMcpTools
         var evidenceText = string.IsNullOrWhiteSpace(evidence) ? string.Empty : $" (evidence: {evidence})";
         var agentText = string.IsNullOrWhiteSpace(agent) ? string.Empty : $" [via {agent}]";
 
-        return $"[{handle}] remembered: {subjectText} — \"{statement}\"{evidenceText}{agentText}";
+        return $"[{FactCatalog.HandleFor(factId)}] remembered: {subjectText} — \"{statement}\"{evidenceText}{agentText}";
     }
 
     [McpServerTool(Name = "engram_forget")]
     [Description(
         "Retract a stored fact by its bracketed id (e.g. \"f42\"). Use it whenever the user says something "
-            + "stored is wrong, private, or no longer true. Retracted facts stop appearing in recall "
-            + "immediately, and stay retracted — nothing re-seeds them. Call engram_recall first if you need "
-            + "to find the id. Session notes (ids like \"s001\") cannot be retracted this way.")]
+            + "stored is wrong, private, or no longer true, and to clear a session note that turned out to be "
+            + "mistaken. Retracted facts stop appearing in recall immediately, and stay retracted — nothing "
+            + "re-seeds them. Call engram_recall first if you need to find the id.")]
     public static string Forget(
         EngramHome home,
         McpSessionId session,
@@ -145,15 +151,15 @@ public sealed class EngramMcpTools
 
         if (!FactCatalog.TryParseHandle(id, out var factId))
         {
-            return $"'{id}' is not a fact handle; they look like 'f42'. Session notes (\"s001\") and "
-                + "prior-session notes (\"s001@p1\") are not retractable. Nothing was retracted.";
+            return $"'{id}' is not a fact handle; they look like 'f42'. Nothing was retracted.";
         }
 
-        // Any live fact, including a seeded one. Once user facts became ordinary facts there
-        // was no honest way to keep the distinction: refusing to close a fact because of
-        // where it came from would be the store telling a user which of their own memories
-        // they are allowed to drop. The seeder already declines to write back anything this
-        // store has held before, so a retraction survives a corpus revision.
+        // Any live fact — seeded, captured from the user, or a note this session took.
+        // Refusing to close one because of where it came from would be the store telling a
+        // user which of their own memories they are allowed to drop, and once every tier is
+        // an ordinary fact there is nothing left to base the refusal on. The seeder already
+        // declines to write back anything this store has held before, so a retraction
+        // survives a corpus revision.
         using var connection = EngramDatabase.OpenInitialized(home);
         var closed = FactStore.Forget(connection, factId, "retracted by the user", DateTimeOffset.UtcNow);
 

@@ -42,8 +42,9 @@ public class SessionMemoryTests
             EngramProcess.Run(home.Root, "stop");
         }
 
-        Assert.Contains("[s001]", recallText);
-        Assert.Contains("nightly ETL job dedups", recallText);
+        // The whole line, because the tier is carried by the annotation: a note that came back
+        // ranked as prior-session memory would still contain the body and the handle.
+        Assert.Matches(@"\[f\d+\] The nightly ETL job dedups on customer_id before load\. \(session\)", recallText);
 
         var (exitCode, stdout, stderr) = EngramProcess.Run(home.Root, "probe", "--json");
         Assert.Equal(0, exitCode);
@@ -94,11 +95,13 @@ public class SessionMemoryTests
             EngramProcess.Run(home.Root, "stop");
         }
 
-        Assert.Contains("staging database migration ran clean", recallText);
-        Assert.Contains("@p1]", recallText);
-        Assert.Contains("(session · ", recallText);
-        Assert.Contains("d)", recallText);
-        Assert.DoesNotContain("[s001] ", recallText);
+        Assert.Matches(
+            @"\[f\d+\] The staging database migration ran clean on 2026-08-04\. \(session · p1 · \d+d\)",
+            recallText);
+
+        // "(session)" with nothing after it is the current-session annotation, and this note
+        // was taken in a different one.
+        Assert.DoesNotContain("(session)", recallText);
 
         var (exitCode, stdout, stderr) = EngramProcess.Run(home.Root, "probe", "--json");
         Assert.Equal(0, exitCode);

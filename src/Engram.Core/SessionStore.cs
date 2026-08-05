@@ -15,6 +15,24 @@ public static class SessionStore
     public const string ClaudeCodeHost = "claude-code";
 
     /// <summary>
+    /// The row id for a host session identifier, or null if that session has never written.
+    /// </summary>
+    /// <remarks>
+    /// Separate from <see cref="EnsureSession"/> so read paths have something to call. A
+    /// read that creates a session row would put every recall behind the write lock, and
+    /// would leave a row for every session that only ever asked a question.
+    /// </remarks>
+    public static long? FindSession(SqliteConnection connection, string externalId)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT id FROM session WHERE external_id = $external;";
+        command.Parameters.AddWithValue("$external", externalId);
+
+        var value = command.ExecuteScalar();
+        return value is null or DBNull ? null : Convert.ToInt64(value);
+    }
+
+    /// <summary>
     /// Returns the row id for a host session identifier, creating the row if this is the
     /// first thing that session has written.
     /// </summary>

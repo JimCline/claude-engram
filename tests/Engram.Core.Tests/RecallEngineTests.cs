@@ -141,9 +141,9 @@ public class RecallEngineTests
         {
             new("f900", "wal-starvation", "decided", "WAL starvation retry backoff decided after incident review.", "project", "topic", 0),
         };
-        var sessionFacts = new List<SessionFactRecord>
+        var sessionFacts = new List<SessionFact>
         {
-            new("s001", "2026-08-04T00:00:00Z", "sess-1", "Checked the WAL theory, not the cause."),
+            new(FactId: 901, SessionId: 1, "Checked the WAL theory, not the cause.", Subject: null, Agent: null, AgeDays: 0),
         };
 
         var ranked = RecallEngine.RankSessionFacts("wal starvation retry backoff", sessionFacts);
@@ -155,7 +155,7 @@ public class RecallEngineTests
         Assert.Equal(1, result.SessionFactCount);
         Assert.Equal(1, result.LongTermFactCount);
 
-        var sessionIndex = result.Text.IndexOf("[s001]", StringComparison.Ordinal);
+        var sessionIndex = result.Text.IndexOf("[f901]", StringComparison.Ordinal);
         var longTermIndex = result.Text.IndexOf("[f900]", StringComparison.Ordinal);
 
         Assert.True(sessionIndex >= 0);
@@ -166,26 +166,26 @@ public class RecallEngineTests
     [Fact]
     public void Pack_SessionFactLine_ShowsSessionScopeAndAgentName()
     {
-        var sessionFacts = new List<SessionFactRecord>
+        var sessionFacts = new List<SessionFact>
         {
-            new("s001", "2026-08-04T00:00:00Z", "sess-1", "Ran the migration dry-run against staging.", Agent: "migration-worker"),
+            new(FactId: 901, SessionId: 1, "Ran the migration dry-run against staging.", Subject: null, Agent: "migration-worker", AgeDays: 0),
         };
 
         var result = RecallEngine.Pack("migration dry-run staging", [], sessionFacts, RecallEngine.DefaultBudgetTokens);
 
-        Assert.Contains("[s001] Ran the migration dry-run against staging. (session · migration-worker)", result.Text);
+        Assert.Contains("[f901] Ran the migration dry-run against staging. (session · migration-worker)", result.Text);
     }
 
     [Fact]
     public void Pack_CurrentSessionFactAlwaysRanksAbovePriorSessionFact_EvenWhenPriorSessionFactScoresHigher()
     {
-        var currentSessionFacts = new List<SessionFactRecord>
+        var currentSessionFacts = new List<SessionFact>
         {
-            new("s001", "2026-08-04T00:00:00Z", "sess-current", "Checked the WAL theory, not the cause."),
+            new(FactId: 901, SessionId: 1, "Checked the WAL theory, not the cause.", Subject: null, Agent: null, AgeDays: 0),
         };
-        var priorSessionFacts = new List<SessionFactRecord>
+        var priorSessionFacts = new List<SessionFact>
         {
-            new("s001", "2026-07-01T00:00:00Z", "sess-prior", "WAL starvation retry backoff decided after incident review."),
+            new(FactId: 902, SessionId: 2, "WAL starvation retry backoff decided after incident review.", Subject: null, Agent: null, AgeDays: 34),
         };
 
         var rankedCurrent = RecallEngine.RankSessionFacts("wal starvation retry backoff", currentSessionFacts);
@@ -197,8 +197,8 @@ public class RecallEngineTests
         Assert.Equal(1, result.SessionFactCount);
         Assert.Equal(1, result.PriorSessionFactCount);
 
-        var currentIndex = result.Text.IndexOf("[s001] ", StringComparison.Ordinal);
-        var priorIndex = result.Text.IndexOf("[s001@p1]", StringComparison.Ordinal);
+        var currentIndex = result.Text.IndexOf("[f901]", StringComparison.Ordinal);
+        var priorIndex = result.Text.IndexOf("[f902]", StringComparison.Ordinal);
 
         Assert.True(currentIndex >= 0);
         Assert.True(priorIndex >= 0);
@@ -212,9 +212,9 @@ public class RecallEngineTests
         {
             new("f900", "storage-engine", "states", "The WAL is flushed to disk before commit.", "code", "topic", 0),
         };
-        var priorSessionFacts = new List<SessionFactRecord>
+        var priorSessionFacts = new List<SessionFact>
         {
-            new("s001", "2026-07-01T00:00:00Z", "sess-prior", "WAL starvation retry backoff decided after incident review."),
+            new(FactId: 901, SessionId: 2, "WAL starvation retry backoff decided after incident review.", Subject: null, Agent: null, AgeDays: 34),
         };
 
         var rankedLongTerm = RecallEngine.Rank("wal starvation retry backoff", longTermFacts);
@@ -223,7 +223,7 @@ public class RecallEngineTests
 
         var result = RecallEngine.Pack("wal starvation retry backoff", longTermFacts, [], priorSessionFacts, RecallEngine.DefaultBudgetTokens);
 
-        var priorIndex = result.Text.IndexOf("[s001@p1]", StringComparison.Ordinal);
+        var priorIndex = result.Text.IndexOf("[f901]", StringComparison.Ordinal);
         var longTermIndex = result.Text.IndexOf("[f900]", StringComparison.Ordinal);
 
         Assert.True(priorIndex >= 0);
@@ -234,30 +234,34 @@ public class RecallEngineTests
     [Fact]
     public void Pack_PriorSessionFactLine_ShowsAgeInDaysAndAgentName()
     {
-        var timestamp = DateTimeOffset.UtcNow.AddDays(-3).ToString("o");
-        var priorSessionFacts = new List<SessionFactRecord>
+        var priorSessionFacts = new List<SessionFact>
         {
-            new("s001", timestamp, "sess-prior", "Ran the migration dry-run against staging.", Agent: "migration-worker"),
+            new(FactId: 901, SessionId: 2, "Ran the migration dry-run against staging.", Subject: null, Agent: "migration-worker", AgeDays: 3),
         };
 
         var result = RecallEngine.Pack("migration dry-run staging", [], [], priorSessionFacts, RecallEngine.DefaultBudgetTokens);
 
-        Assert.Contains("[s001@p1] Ran the migration dry-run against staging. (session · migration-worker · 3d)", result.Text);
+        Assert.Contains("[f901] Ran the migration dry-run against staging. (session · p1 · migration-worker · 3d)", result.Text);
     }
 
+    // Handles are globally unique now, so they no longer collide the way "s001" in two
+    // sessions did — but they also no longer say which notes came from one sitting, which is
+    // the whole reason the discriminator survived the move onto the store.
     [Fact]
-    public void Pack_TwoDistinctPriorSessionsShareAHandleNumber_DiscriminatorsKeepThemDistinguishable()
+    public void Pack_PriorSessionDiscriminator_GroupsNotesBySessionRatherThanByFact()
     {
-        var priorSessionFacts = new List<SessionFactRecord>
+        var priorSessionFacts = new List<SessionFact>
         {
-            new("s001", "2026-08-01T00:00:00Z", "sess-alpha", "Alpha session noted the backup window."),
-            new("s001", "2026-08-02T00:00:00Z", "sess-beta", "Beta session also noted the backup window."),
+            new(FactId: 901, SessionId: 7, "Alpha session noted the backup window.", Subject: null, Agent: null, AgeDays: 4),
+            new(FactId: 902, SessionId: 7, "Alpha session also timed the backup window.", Subject: null, Agent: null, AgeDays: 4),
+            new(FactId: 903, SessionId: 9, "Beta session widened the backup window.", Subject: null, Agent: null, AgeDays: 3),
         };
 
         var result = RecallEngine.Pack("backup window", [], [], priorSessionFacts, RecallEngine.DefaultBudgetTokens);
 
-        Assert.Contains("[s001@p1]", result.Text);
-        Assert.Contains("[s001@p2]", result.Text);
-        Assert.Equal(2, result.PriorSessionFactCount);
+        Assert.Contains("[f901] Alpha session noted the backup window. (session · p1 · 4d)", result.Text);
+        Assert.Contains("[f902] Alpha session also timed the backup window. (session · p1 · 4d)", result.Text);
+        Assert.Contains("[f903] Beta session widened the backup window. (session · p2 · 3d)", result.Text);
+        Assert.Equal(3, result.PriorSessionFactCount);
     }
 }

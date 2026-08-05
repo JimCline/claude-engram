@@ -6,7 +6,7 @@ Flush the durable learnings from this session in one call, before context is com
   A one- or two-sentence summary of the session.
 
 tool: engram_forget
-Retract a stored fact by its bracketed id (e.g. "f42"). Use it whenever the user says something stored is wrong, private, or no longer true. Retracted facts stop appearing in recall immediately, and stay retracted — nothing re-seeds them. Call engram_recall first if you need to find the id. Session notes (ids like "s001") cannot be retracted this way.
+Retract a stored fact by its bracketed id (e.g. "f42"). Use it whenever the user says something stored is wrong, private, or no longer true, and to clear a session note that turned out to be mistaken. Retracted facts stop appearing in recall immediately, and stay retracted — nothing re-seeds them. Call engram_recall first if you need to find the id.
   param: id
   The bracketed id of the fact to retract, e.g. "f42".
 

@@ -356,6 +356,30 @@ window is the session that wrote it.
 - **They age by salience, never by deletion.** A year-old session note still exists; it
   simply stops outranking anything. This is what keeps the branch from turning recall
   into an archaeology dig.
+
+  That is about *time*, and it was over-read as being about retraction. Session notes
+  spent M0 in a per-session JSONL file, a format with no notion of a closed record at
+  all, which made a note the one kind of memory that could be written and never taken
+  back: `engram_forget` refused them by construction, and a note the model got wrong
+  stayed recallable for good. Notes are ordinary facts now, closed by the same
+  `FactStore.Forget` as everything else. Aging still never deletes; a user still can.
+
+- **The path segment is the `session` row id, not the host's session string.** D11 wrote
+  `/sessions/<session-id>/…` when the session id was a file name. As a path segment it is
+  a hazard: the host's identifier is opaque text that may contain a `/`, and a segment
+  that invents a level of hierarchy silently reparents a whole session's notes. Slugging
+  it instead lets two distinct sessions collide on one segment, which at the leaf is not
+  a display problem but one session's note superseding another's. `session.external_id`
+  is already the bridge between the host's string and a foreign key (D19), so the path
+  uses the row id and reads names back through the entity table.
+
+- **A note's leaf is a fingerprint of its own statement.** `ux_fact_live` is unique over
+  subject and predicate, so a root holding many independent statements needs a
+  per-statement address or each new note closes the last. Two behaviours then fall out of
+  addressing rather than policy code: recording the same statement twice in one session
+  returns the existing handle instead of writing a supersession row that claims a belief
+  changed when the text is identical, and two sessions reaching the same conclusion keep
+  two notes, because the session segment sits above the fingerprint.
 - **Subagents need their own primer, and it has a trap.** Spec §8 says subagent sharing
   is "about provenance and scope, not transport" because subagents inherit the MCP
   server. That is transport-correct and adoption-blind: **`SessionStart` hooks do not

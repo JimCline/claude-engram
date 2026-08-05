@@ -43,6 +43,7 @@ public static class EngramInitializer
         // to run: the installer invokes it, and it already verifies the binary can open a
         // store. Its own marker makes a second call free.
         LegacyUserFacts.Import(connection, home, now);
+        LegacySessionFacts.Import(connection, home, now);
 
         return new InitializedPath(home.DatabasePath, Created: !existed);
     }

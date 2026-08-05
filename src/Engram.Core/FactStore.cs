@@ -337,6 +337,70 @@ public static class FactStore
         return string.Join(" OR ", quoted);
     }
 
+    /// <summary>
+    /// Eight hex characters of SHA-256 over a statement with case, punctuation, and runs of
+    /// whitespace normalized away, for use as a path segment. "I use Dvorak." and
+    /// "i use dvorak" address one entity.
+    /// </summary>
+    /// <remarks>
+    /// This is what lets a statement be its own subject. <c>ux_fact_live</c> is unique over
+    /// subject and predicate, so anything writing many independent statements under one root
+    /// needs a per-statement address or each one closes the last.
+    ///
+    /// Eight characters is 32 bits. At the scale this holds — one person's statements and
+    /// session notes — a collision is remote, and its consequence is bounded: two unrelated
+    /// statements would share a subject, so the second would supersede the first rather than
+    /// corrupt anything. Widening it is a path change that would strand existing entities,
+    /// so it is a migration, not a tweak.
+    /// </remarks>
+    public static string Fingerprint(string statement)
+    {
+        var builder = new System.Text.StringBuilder(statement.Length);
+
+        foreach (var character in statement)
+        {
+            if (char.IsLetterOrDigit(character))
+            {
+                builder.Append(char.ToLowerInvariant(character));
+            }
+            else if (builder.Length > 0 && builder[^1] != ' ')
+            {
+                builder.Append(' ');
+            }
+        }
+
+        var hash = System.Security.Cryptography.SHA256.HashData(
+            System.Text.Encoding.UTF8.GetBytes(builder.ToString().TrimEnd()));
+
+        return Convert.ToHexStringLower(hash.AsSpan(0, 4));
+    }
+
+    /// <summary>
+    /// Maps the path of every entity of one kind to the display text it was created with.
+    /// </summary>
+    /// <remarks>
+    /// Path segments are slugs, so display text is not recoverable from a path — "claude-code
+    /// hooks" and "claude code hooks" slug identically, and an agent named
+    /// "task-gopher:task-gopher" loses its colon. Anything printing a segment to the model
+    /// resolves it through here instead.
+    /// </remarks>
+    public static Dictionary<string, string> ReadEntityNames(SqliteConnection connection, string kind)
+    {
+        var names = new Dictionary<string, string>(StringComparer.Ordinal);
+
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT path, name FROM entity WHERE kind = $kind;";
+        command.Parameters.AddWithValue("$kind", kind);
+
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            names[reader.GetString(0)] = reader.GetString(1);
+        }
+
+        return names;
+    }
+
     public static long EnsureEntity(
         SqliteConnection connection,
         SqliteTransaction? transaction,

@@ -12,7 +12,7 @@ public enum RecallCoverage
 
 public sealed record RankedFact(CannedFact Fact, int Score);
 
-public sealed record RankedSessionFact(SessionFactRecord Fact, int Score);
+public sealed record RankedSessionFact(SessionFact Fact, int Score);
 
 public sealed record RecallPackResult(
     string Text,
@@ -30,7 +30,7 @@ file enum FactSource
     PriorSession,
 }
 
-file readonly record struct RankedOther(string Line, int Score, string Id, string SessionId, bool IsPriorSessionFact);
+file readonly record struct RankedOther(string Line, int Score, string Id, long SessionId, bool IsPriorSessionFact);
 
 public static class RecallEngine
 {
@@ -69,7 +69,7 @@ public static class RecallEngine
             .ToList();
     }
 
-    public static IReadOnlyList<RankedSessionFact> RankSessionFacts(string query, IReadOnlyList<SessionFactRecord> facts)
+    public static IReadOnlyList<RankedSessionFact> RankSessionFacts(string query, IReadOnlyList<SessionFact> facts)
     {
         var queryTerms = TokenizeQuery(query);
         if (queryTerms.Count == 0)
@@ -90,7 +90,7 @@ public static class RecallEngine
 
         return scored
             .OrderByDescending(r => r.Score)
-            .ThenBy(r => r.Fact.Id, StringComparer.Ordinal)
+            .ThenBy(r => r.Fact.FactId)
             .ToList();
     }
 
@@ -107,15 +107,15 @@ public static class RecallEngine
     public static RecallPackResult Pack(
         string query,
         IReadOnlyList<CannedFact> facts,
-        IReadOnlyList<SessionFactRecord> currentSessionFacts,
+        IReadOnlyList<SessionFact> currentSessionFacts,
         int budgetTokens) =>
         Pack(query, facts, currentSessionFacts, [], budgetTokens);
 
     public static RecallPackResult Pack(
         string query,
         IReadOnlyList<CannedFact> facts,
-        IReadOnlyList<SessionFactRecord> currentSessionFacts,
-        IReadOnlyList<SessionFactRecord> priorSessionFacts,
+        IReadOnlyList<SessionFact> currentSessionFacts,
+        IReadOnlyList<SessionFact> priorSessionFacts,
         int budgetTokens)
     {
         var rankedCurrentSession = RankSessionFacts(query, currentSessionFacts);
@@ -124,16 +124,16 @@ public static class RecallEngine
         var discriminators = BuildPriorSessionDiscriminators(priorSessionFacts);
 
         var otherRanked = rankedLongTerm
-            .Select(r => new RankedOther(FormatFactLine(r.Fact), r.Score, r.Fact.Id, string.Empty, IsPriorSessionFact: false))
+            .Select(r => new RankedOther(FormatFactLine(r.Fact), r.Score, r.Fact.Id, 0, IsPriorSessionFact: false))
             .Concat(rankedPriorSession.Select(r => new RankedOther(
                 FormatPriorSessionFactLine(r.Fact, discriminators[r.Fact.SessionId]),
                 r.Score,
-                r.Fact.Id,
+                FactCatalog.HandleFor(r.Fact.FactId),
                 r.Fact.SessionId,
                 IsPriorSessionFact: true)))
             .OrderByDescending(r => r.Score)
             .ThenBy(r => r.Id, StringComparer.Ordinal)
-            .ThenBy(r => r.SessionId, StringComparer.Ordinal)
+            .ThenBy(r => r.SessionId)
             .ToList();
 
         var coverage = ClassifyCoverage(rankedCurrentSession.Count + otherRanked.Count);
@@ -189,15 +189,18 @@ public static class RecallEngine
             string.Join('\n', lines), factCount, tokensUsed, coverage, sessionFactCount, longTermFactCount, priorSessionFactCount);
     }
 
-    private static Dictionary<string, string> BuildPriorSessionDiscriminators(IReadOnlyList<SessionFactRecord> priorSessionFacts)
+    // p1, p2, … so the model can tell which notes came from the same earlier session. Ids
+    // are globally unique now and carry no such grouping on their own, and "these three
+    // findings are from one sitting" is information a reader acts on.
+    private static Dictionary<long, string> BuildPriorSessionDiscriminators(IReadOnlyList<SessionFact> priorSessionFacts)
     {
         var sessionIds = priorSessionFacts
             .Select(f => f.SessionId)
-            .Distinct(StringComparer.Ordinal)
-            .OrderBy(id => id, StringComparer.Ordinal)
+            .Distinct()
+            .Order()
             .ToList();
 
-        var map = new Dictionary<string, string>(StringComparer.Ordinal);
+        var map = new Dictionary<long, string>();
         for (var i = 0; i < sessionIds.Count; i++)
         {
             map[sessionIds[i]] = "p" + (i + 1);
@@ -216,30 +219,21 @@ public static class RecallEngine
     private static string FormatFactLine(CannedFact fact) =>
         $"[{fact.Id}] {fact.Body} ({fact.Scope} · {fact.AgeDays}d)";
 
-    private static string FormatSessionFactLine(SessionFactRecord fact)
+    private static string FormatSessionFactLine(SessionFact fact)
     {
         var scope = string.IsNullOrWhiteSpace(fact.Agent) ? "session" : $"session · {fact.Agent}";
-        return $"[{fact.Id}] {fact.Statement} ({scope})";
+        return $"[{FactCatalog.HandleFor(fact.FactId)}] {fact.Statement} ({scope})";
     }
 
-    private static string FormatPriorSessionFactLine(SessionFactRecord fact, string discriminator)
+    // The session discriminator sits in the annotation rather than inside the handle, where
+    // it used to read "[s001@p1]". A handle is what a tool takes back; overloading it with
+    // grouping meant the string the model saw was not the string engram_forget accepts.
+    private static string FormatPriorSessionFactLine(SessionFact fact, string discriminator)
     {
-        var ageDays = ComputeAgeDays(fact.Timestamp);
         var scope = string.IsNullOrWhiteSpace(fact.Agent)
-            ? $"session · {ageDays}d"
-            : $"session · {fact.Agent} · {ageDays}d";
-        return $"[{fact.Id}@{discriminator}] {fact.Statement} ({scope})";
-    }
-
-    private static int ComputeAgeDays(string timestamp)
-    {
-        if (!DateTimeOffset.TryParse(timestamp, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var parsed))
-        {
-            return 0;
-        }
-
-        var age = DateTimeOffset.UtcNow - parsed;
-        return age.TotalDays > 0 ? (int)age.TotalDays : 0;
+            ? $"session · {discriminator} · {fact.AgeDays}d"
+            : $"session · {discriminator} · {fact.Agent} · {fact.AgeDays}d";
+        return $"[{FactCatalog.HandleFor(fact.FactId)}] {fact.Statement} ({scope})";
     }
 
     private static string GapsMessage(string query, RecallCoverage coverage) => coverage switch

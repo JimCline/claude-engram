@@ -218,6 +218,23 @@ revision, not a reinstall. Capture without a delete key was not something worth 
 The classifier biases toward silence. A missed fact costs one repetition; a wrongly
 captured one is a sentence the user did not choose to have written down.
 
+### What the agent notes during a session
+
+`engram_remember` writes working memory — a decision, a constraint, a partial result, a
+dead end already ruled out — the state the model would otherwise carry in context and
+lose to compaction or to a subagent's incomplete report. Recall ranks the current
+session's notes above everything else, and later sessions still see them, annotated with
+which sitting they came from.
+
+These are ordinary facts in the same store as everything else, which is what makes them
+retractable: `engram_forget` takes the id of a session note exactly as it takes the id of
+a fact Engram shipped with. A subagent that passes its own name in `agent` has its notes
+attributed to it, so "which worker learned this" survives the worker.
+
+Recording the same statement twice in one session records it once — a note is addressed by
+its own text — while two different sessions reaching the same conclusion keep both, because
+they are two observations rather than one repeated.
+
 ### Slash commands
 
 `plugin/commands/` adds eight, all namespaced `/engram:`:
@@ -230,12 +247,12 @@ captured one is a sentence the user did not choose to have written down.
 | `/engram:status` | Server pid, port, version, uptime, and whether the home is initialised. |
 | `/engram:start` | Start the server. |
 | `/engram:stop` | Stop it. |
-| `/engram:forget <id>` | Retract a captured fact — wrong, private, or no longer true. |
+| `/engram:forget <id>` | Retract anything memory holds — a captured fact, a session note, a shipped one. |
 | `/engram:doctor` | Read-only diagnosis: resolved binary, port holder, home contents, telemetry, log tail. |
 
 The split in how they reach engram is deliberate. `recall`, `remember`, and `digest` go
 through the MCP tools, because that is where the ranking, the token budget, and the
-session store live. The four lifecycle and diagnostic commands shell out to the binary
+session identity live. The four lifecycle and diagnostic commands shell out to the binary
 instead — when the server is down its MCP tools disappear along with it, so an
 MCP-backed `status` could only ever answer "running", and an MCP-backed `start` could
 never cold-start the thing it exists to start.

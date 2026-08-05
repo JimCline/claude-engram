@@ -70,7 +70,7 @@ CREATE TABLE entity (
                                        --   /code/acme-api/src/Auth.cs#ValidateToken
   kind       TEXT    NOT NULL,         -- machine|repo|project|module|file|symbol|
                                        -- concept|decision|convention|preference|person|
-                                       -- tool|topic|statement
+                                       -- tool|topic|statement|session|agent|note
   name       TEXT    NOT NULL,         -- last path segment, denormalized for display
   created_at INTEGER NOT NULL,
   meta       TEXT                      -- JSON: language, signature, disk locations
@@ -124,7 +124,7 @@ CREATE TABLE fact (
   body          TEXT    NOT NULL,   -- distilled statement, target <= 60 tokens
   object_id     INTEGER REFERENCES entity(id),
   path          TEXT    NOT NULL,   -- denormalized subject path, prefix-searchable
-  scope         TEXT    NOT NULL,   -- user | project | code
+  scope         TEXT    NOT NULL,   -- user | project | code | session
 
   -- Provenance (D19). How well grounded the belief is, ordinal and ranked
   -- stated > observed > inferred. Read by a model, which must be able to tell

@@ -21,37 +21,36 @@ public static class FactCatalog
         // checkpoint starvation caused by long-lived read snapshots in the MCP loop, so the
         // connection must not outlive the read.
         using var connection = EngramDatabase.OpenInitialized(home);
+        return ReadLongTerm(connection, now);
+    }
 
+    /// <summary>
+    /// Everything believed right now except this session's working memory.
+    /// </summary>
+    /// <remarks>
+    /// The <c>/sessions</c> exclusion is what keeps a session note from being counted twice:
+    /// recall ranks working memory in its own tier, and the primer describes what is stored
+    /// by topic. Without it a note taken ten minutes ago would appear in recall beside itself
+    /// and the primer would announce a session id as a subject area.
+    /// </remarks>
+    public static IReadOnlyList<CannedFact> ReadLongTerm(SqliteConnection connection, DateTimeOffset now)
+    {
         var facts = FactStore.ReadLive(connection);
-        var topics = ReadTopicNames(connection);
+        var topics = FactStore.ReadEntityNames(connection, CannedFactSeeder.TopicKind);
         var catalog = new List<CannedFact>(facts.Count);
+        var sessionPrefix = SessionFacts.Root + "/";
 
         foreach (var fact in facts)
         {
+            if (fact.SubjectPath.StartsWith(sessionPrefix, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
             catalog.Add(ToCannedFact(fact, now, topics));
         }
 
         return catalog;
-    }
-
-    /// <summary>
-    /// Maps each topic node's path to the display text it was authored with.
-    /// </summary>
-    public static Dictionary<string, string> ReadTopicNames(SqliteConnection connection)
-    {
-        var names = new Dictionary<string, string>(StringComparer.Ordinal);
-
-        using var command = connection.CreateCommand();
-        command.CommandText = "SELECT path, name FROM entity WHERE kind = $kind;";
-        command.Parameters.AddWithValue("$kind", CannedFactSeeder.TopicKind);
-
-        using var reader = command.ExecuteReader();
-        while (reader.Read())
-        {
-            names[reader.GetString(0)] = reader.GetString(1);
-        }
-
-        return names;
     }
 
     /// <summary>

@@ -37,7 +37,7 @@ public static class DefaultConfig
 
         [taxonomy]
         # top-level roots of the memory tree; extendable without migration
-        roots = ["/knowledge", "/user", "/machine", "/code", "/projects", "/people", "/concepts"]
+        roots = ["/knowledge", "/user", "/sessions", "/machine", "/code", "/projects", "/people", "/concepts"]
         default_user = "jim"          # preference-kind facts route to /people/<default_user>/…
         # /knowledge holds the seeded corpus; /user holds what the user stated about
         # themselves, one entity per statement. Both were in use before they were listed
