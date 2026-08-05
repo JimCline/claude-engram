@@ -11,6 +11,8 @@ public static class TelemetryEventKind
     public const string SessionStart = "session-start";
     public const string ServerStart = "server-start";
     public const string SessionOpen = "session-open";
+
+    public const string SubagentStart = "subagent-start";
     public const string PreCompact = "pre-compact";
     public const string FileTouched = "file-touched";
 }
@@ -25,7 +27,9 @@ public sealed record TelemetryRecord(
     [property: JsonPropertyName("coverage")] string? Coverage = null,
     [property: JsonPropertyName("session_fact_count")] int? SessionFactCount = null,
     [property: JsonPropertyName("long_term_fact_count")] int? LongTermFactCount = null,
-    [property: JsonPropertyName("prior_session_fact_count")] int? PriorSessionFactCount = null);
+    [property: JsonPropertyName("prior_session_fact_count")] int? PriorSessionFactCount = null,
+    [property: JsonPropertyName("agent_id")] string? AgentId = null,
+    [property: JsonPropertyName("agent_type")] string? AgentType = null);
 
 [JsonSerializable(typeof(TelemetryRecord))]
 internal sealed partial class TelemetryJsonContext : JsonSerializerContext;

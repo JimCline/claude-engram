@@ -65,7 +65,7 @@ public static class CliApp
         writer.WriteLine("  start [--port <n>]                 start the MCP server as a detached daemon");
         writer.WriteLine("  stop                               stop the running MCP server");
         writer.WriteLine("  status                             report whether the MCP server is running");
-        writer.WriteLine("  hook <event>                       hook entrypoint: session-start|pre-compact|file-touched");
+        writer.WriteLine("  hook <event>                       hook entrypoint: session-start|subagent-start|pre-compact|file-touched");
         writer.WriteLine("  probe [options]                    summarize telemetry.jsonl for the M0 adoption probe");
         writer.WriteLine();
         writer.WriteLine("serve/start options:");

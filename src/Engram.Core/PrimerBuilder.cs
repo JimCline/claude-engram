@@ -9,6 +9,16 @@ public static class PrimerBuilder
         "use engram_remember for durable facts you learn; flush learnings via engram_digest " +
         "before the session ends.";
 
+    // A subagent's situation differs from the main session's in one way that matters: it
+    // reports back through a summary, and a summary is lossy by construction. Anything it
+    // learned that did not fit the report is gone at handoff unless it was written down.
+    // That is the gap D11's session memory exists to close, so it is what this says.
+    private const string SubagentInstruction =
+        "Engram memory is shared with the session that spawned you. Call engram_recall before " +
+        "exploring files — what you are about to work out may already be recorded. Write anything " +
+        "durable you learn with engram_remember before you report back: your report is a summary, " +
+        "and summaries lose the details the next agent needs.";
+
     private const string ExamplesHeader = "Examples:";
     private const int MaxClusters = 5;
     private const int MaxExampleFacts = 2;
@@ -23,6 +33,21 @@ public static class PrimerBuilder
         TryAppendLine(lines, ref tokens, CoverageLine(facts));
 
         AppendExamples(lines, ref tokens, TopFacts(facts, MaxExampleFacts));
+
+        return string.Join('\n', lines);
+    }
+
+    /// <summary>
+    /// The primer delivered at every subagent spawn. Carries no examples: a subagent's
+    /// context is spent on its task, and what it needs is the instruction and the shape
+    /// of what is already known, not a demonstration.
+    /// </summary>
+    public static string BuildForSubagent(IReadOnlyList<CannedFact> facts)
+    {
+        var lines = new List<string> { SubagentInstruction };
+        var tokens = TokenEstimator.Estimate(SubagentInstruction);
+
+        TryAppendLine(lines, ref tokens, CoverageLine(facts));
 
         return string.Join('\n', lines);
     }

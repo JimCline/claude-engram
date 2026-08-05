@@ -344,6 +344,28 @@ The payoff is testable in a way the rest of the design is not: write a fact, get
 compacted, recall it. That is the tool visibly paying for itself inside a single
 session, rather than a bet on value that only materializes next week.
 
+#### The subagent primer, and the one thing it is built to find out
+
+`SubagentStart` now delivers a shorter primer than `SessionStart` — no examples, since a
+subagent's context is spent on its task — differing in one point: a subagent reports back
+through a summary, and a summary is lossy by construction, so anything it learned that did
+not fit the report is gone at handoff unless it was written down. That is precisely the gap
+this decision exists to close, so it is what the primer says.
+
+One thing is deliberately not assumed. **Whether a subagent is handed its parent's
+`session_id` or one of its own decides whether session memory is shared across the spawn
+for free.** If it matches, a subagent's writes land in the parent's file and sharing needs
+no further work; if it does not, a parent id has to be threaded through explicitly. Rather
+than guess, the hook records the session id it was handed along with `agent_id` and
+`agent_type`, so the first real probe run answers it by comparing those records against the
+`session-start` ones.
+
+The envelope is the whole risk here, and it fails silently: bare stdout is discarded on this
+event while `SessionStart` accepts it, so the habit formed there actively misleads. The E2E
+test therefore asserts the parsed envelope rather than the exit code — verified by setting
+`hookEventName` to `SessionStart`, the exact copy-paste mistake this invites, and confirming
+the test fails.
+
 ### D12 — Adoption evidence from two sibling tools already on this machine
 
 Both were inspected directly (2026-08-04). The findings bear on the spec's central
