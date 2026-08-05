@@ -66,7 +66,7 @@ public class HookCommandTests
     // The matching "unreadable database" case is an end-to-end test, not one of these.
     // Microsoft.Data.Sqlite pools connections per process, so corrupting the file here is
     // invisible: the read is served from a pooled connection that still has the old pages
-    // cached, and the hook cheerfully reports all 51 facts. Checked — that is how the first
+    // cached, and the hook cheerfully reports all 45 facts. Checked — that is how the first
     // version of this test passed while proving nothing.
 
     [Fact]

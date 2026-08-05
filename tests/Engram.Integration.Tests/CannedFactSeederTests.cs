@@ -18,7 +18,7 @@ public class CannedFactSeederTests
         Assert.Equal(CannedFacts.All.Count, FactStore.ReadLive(fixture.Connection).Count);
     }
 
-    // Re-running must be a no-op, not 51 supersessions recording a change nobody made.
+    // Re-running must be a no-op, not 45 supersessions recording a change nobody made.
     [Fact]
     public void Seed_RunTwice_WritesNothingTheSecondTime()
     {

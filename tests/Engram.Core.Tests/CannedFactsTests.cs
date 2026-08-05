@@ -22,7 +22,7 @@ public class CannedFactsTests
     [Fact]
     public void All_HasExpectedFactCount()
     {
-        Assert.Equal(51, CannedFacts.All.Count);
+        Assert.Equal(45, CannedFacts.All.Count);
     }
 
     [Fact]

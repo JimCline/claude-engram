@@ -75,7 +75,7 @@ public static class CannedFactSeeder
     /// Idempotent by necessity rather than by politeness. Seeding is not a one-shot
     /// migration — it runs against whatever database is already there, and
     /// <see cref="FactStore.Remember"/> supersedes on a subject+predicate collision. Without
-    /// the skip, a second run would close all 51 facts and rewrite them identically,
+    /// the skip, a second run would close all 45 facts and rewrite them identically,
     /// producing a supersession history that records a change nobody made.
     ///
     /// Four cases, and the third is the one that is easy to get wrong:
