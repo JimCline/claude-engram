@@ -1984,6 +1984,67 @@ recorded here so nobody adds a test that pretends to guard it. Measured end to e
 query comes back from `engram_recall`, and the same query with the lane off returns nothing, which
 is the control that makes the first result mean anything.
 
+### D37 — `doctor` reads the instance and refuses to repair it
+
+Every `Problems` list in the settings readers, and the never-throw contract on `EmbedderFactory`
+that returns a `Reason` instead of an exception, were built for a reader that did not exist. Until
+now `explain` was the only thing that surfaced any of it, and only for the retrieval path — so a
+local model with no weights, an endpoint serving a different width than the config claims, a
+`sqlite-vec` that failed to load, and a config line that would not parse were all diagnosable in
+principle and invisible in practice. `engram doctor` is that reader.
+
+**It opens the store with `Open` and never `OpenInitialized`, and this is the decision the rest
+follows from.** `OpenInitialized` migrates an out-of-date schema on open, and D31 makes that
+migration snapshot first. Reaching for it here would not merely be a side effect: it would make
+the single most useful thing doctor can say — *your store is a schema behind* — unsayable, because
+asking the question performs the answer. A diagnostic may not repair the state it was asked to
+describe. The end-to-end test snapshots every file in the home by size and mtime around a doctor
+run and asserts nothing moved, which fails on the new file in `backups/` well before anyone
+notices the version changed.
+
+The same rule at the other end of the command. `provider = "local"` is checked by looking for the
+weights and for `llama-server`, never by resolving an embedder, because resolving one launches
+llama.cpp (D35). A diagnostic that started a model process to find out whether a model process
+would start has both answered the question and changed it, and leaves several hundred megabytes
+resident behind a command the user expected to read. The test installs a stand-in `llama-server`
+that touches a marker file when executed and asserts the marker never appears.
+
+**`Off` is not a failure, and the exit code says so.** Only `Broken` fails; `provider = "none"` is
+a supported configuration (D18), a server that is not running is one the hooks and the CLI do not
+need, and an unbuilt indexer is a fact about the milestone rather than a fault. A doctor that
+reported red for a choice the user made is one people stop reading, which costs the real faults
+their audience. Exit 1 therefore means *something is broken*, not *something is imperfect*, and
+`doctor` is safe to put in a script.
+
+**Every check runs inside a wrapper that turns a throwing check into one broken row.** Not
+defensive habit: a diagnostic is reached for when something is already wrong, so the state most
+likely to make a check throw is exactly the state someone is running it in. A report that dies on
+its first bad check is useless precisely when it is needed.
+
+**One network call, on a deadline of its own.** The endpoint is asked its width, because D34's
+failure mode is silent — a mismatched `dim` errors nowhere and stores vectors that rank like
+noise, so no amount of reading configuration can find it. `Diagnostics.ProbeDeadline` is three
+seconds and deliberately replaces the configured timeout rather than honouring it: an indexing run
+should wait a configured thirty seconds for a busy endpoint, and a person asking what is broken
+should not. A merely slow provider is reported unreachable here, which is the right answer to *is
+it answering now*, and is why the fix line names `engram embed --probe` — the command that waits.
+Measured: a dead endpoint against a configured 120 s timeout returns in well under 30 s, and the
+whole integration suite for this command runs in 612 ms.
+
+Two things the checks are structured around rather than merely reporting. The check logic lives in
+`Engram.Core` and only rendering lives in the command, on the same split as `RetrievalExplainer`
+and `ExplainCommand`, so the tests assert on states rather than parsing text — and so a doctor
+that reimplemented a check could not silently disagree with the code it reports on. And
+`ClaudeSettingsPath` is the one input a sandboxed home cannot sandbox, since Claude Code's
+settings live in the user profile wherever Engram lives; it is therefore overridable, because a
+test that let it default would be asserting on whoever ran it.
+
+`--json` is indented and omits null fixes, unlike `probe --json` which feeds a pipeline: this one
+exists to be pasted into a bug report by someone who could not work out what was wrong. It is
+covered end-to-end against the published binary rather than the JIT build, because a
+source-generated `JsonSerializerContext` is exactly the shape that works under reflection and
+fails once trimmed.
+
 ## PreCompact cannot inject context
 
 Spec §10.1 assumes `PreCompact` can "inject one instruction" the same way `SessionStart`

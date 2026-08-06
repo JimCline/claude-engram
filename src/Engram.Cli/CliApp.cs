@@ -42,6 +42,7 @@ public static class CliApp
             "start" => StartCommand.Run(homePath, rest, stdout, stderr),
             "stop" => StopCommand.Run(homePath, rest, stdout, stderr),
             "status" => StatusCommand.Run(homePath, rest, stdout, stderr),
+            "doctor" => DoctorCommand.Run(homePath, rest, stdout, stderr),
             "hook" => HookCommand.Run(homePath, rest, stdout, stderr),
             "probe" => ProbeCommand.Run(homePath, rest, stdout, stderr),
             "permissions" => PermissionsCommand.Run(homePath, rest, stdout, stderr),
@@ -71,6 +72,7 @@ public static class CliApp
         writer.WriteLine("  start [--port <n>]                 start the MCP server as a detached daemon");
         writer.WriteLine("  stop                               stop the running MCP server");
         writer.WriteLine("  status                             report whether the MCP server is running");
+        writer.WriteLine("  doctor [options]                   check the whole instance, and say what to type about it");
         writer.WriteLine("  hook <event>                       hook entrypoint: session-start|subagent-start|pre-compact|user-prompt|file-touched");
         writer.WriteLine("  probe [options]                    summarize telemetry and store density for the M0 adoption probe");
         writer.WriteLine("  permissions [options]              allow Claude Code to call Engram's memory tools unprompted");
@@ -93,6 +95,11 @@ public static class CliApp
         writer.WriteLine("  prune [--apply]                    thin old snapshots to the configured hourly/daily/weekly limits");
         writer.WriteLine("  restore [name] [--apply]           put a snapshot back, keeping the current store as a new snapshot");
         writer.WriteLine("  replay [file] [--apply]            read facts.jsonl into the store, adding what it does not have");
+        writer.WriteLine();
+        writer.WriteLine("doctor options (read-only; exit 1 only when something is broken):");
+        writer.WriteLine("  --json                             emit the checks as JSON, for pasting into a bug report");
+        writer.WriteLine("  --offline                          skip the one network call, to the embedding endpoint");
+        writer.WriteLine("  --no-repo                          skip the indexing check for the current directory");
         writer.WriteLine();
         writer.WriteLine("scan options:");
         writer.WriteLine("  --skipped                          name every skipped file and why");

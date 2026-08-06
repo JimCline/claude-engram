@@ -138,6 +138,19 @@ any later one (D32). `backup replay` is additive and idempotent, matching on sub
 body and `valid_from`: it never rewrites or closes a fact the target store already had, because a
 recovery tool that can retire live beliefs is worse than the loss it was called to fix.
 
+**`doctor` reads; it may not repair.** It opens the store with `EngramDatabase.Open`, never
+`OpenInitialized` — the latter migrates on open and D31 makes that migration snapshot first, which
+would make the most useful thing it can say, *your store is a schema behind*, unsayable: asking
+would perform the answer. The same rule at the other end — `provider = "local"` is checked by
+looking for the weights and for `llama-server`, never by resolving an embedder, because resolving
+one launches llama.cpp (D35). Both are guarded: an end-to-end test snapshots every file in the home
+by size and mtime around a run and asserts nothing moved, and an integration test installs a
+stand-in `llama-server` that touches a marker when executed and asserts the marker never appears.
+Only `Broken` sets exit 1 — `Off` is a supported configuration, not a fault, and a doctor that
+reported red for a choice the user made is one people stop reading. Every check runs inside a
+wrapper that turns a throwing check into one broken row, because the state most likely to make a
+check throw is the state someone is running doctor in (D37).
+
 ## Build constraints
 
 - .NET 10, `net10.0`. Warnings are errors.
