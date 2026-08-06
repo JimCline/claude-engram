@@ -57,4 +57,32 @@ public class HookSubagentStartTests
         Assert.Equal("agent-abc", record.GetProperty("agent_id").GetString());
         Assert.Equal("plugin:task-gopher", record.GetProperty("agent_type").GetString());
     }
+
+    // This is the larger population by far — 336 spawns against 54 sessions on the instance that
+    // prompted the change — so a subagent record that says nothing about memory is most of the
+    // evidence there is. The agent fields must survive alongside the primer fields: they are set
+    // separately from the shared record, which is exactly the kind of seam that drops one silently.
+    [Fact]
+    public void SubagentStart_RecordsThePrimerAndTheAgentTogether()
+    {
+        Assert.SkipUnless(EndToEndBinary.Path is not null, EndToEndBinary.SkipReason);
+
+        using var home = new TestHome();
+
+        var result = EngramProcess.RunWithStdin(
+            home.Root,
+            """{"session_id":"parent-session-123","agent_id":"agent-abc","agent_type":"explorer"}""",
+            "hook",
+            "subagent-start");
+        Assert.Equal(0, result.ExitCode);
+
+        var record = JsonDocument.Parse(
+            File.ReadAllLines(Path.Combine(home.Root, "telemetry.jsonl")).Single()).RootElement;
+
+        Assert.True(record.GetProperty("long_term_fact_count").GetInt32() > 0);
+        Assert.InRange(record.GetProperty("tokens_returned").GetInt32(), 1, 300);
+        Assert.Equal(JsonValueKind.Null, record.GetProperty("fact_count").ValueKind);
+        Assert.Equal("agent-abc", record.GetProperty("agent_id").GetString());
+        Assert.Equal("explorer", record.GetProperty("agent_type").GetString());
+    }
 }

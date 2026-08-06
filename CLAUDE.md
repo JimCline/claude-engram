@@ -1,7 +1,7 @@
 # Engram — working rules
 
 Read `docs/engram-implementation-plan.md` before any non-trivial change. It holds
-forty-five decisions (D1–D45) that resolve questions the spec left open, and each one was
+forty-six decisions (D1–D46) that resolve questions the spec left open, and each one was
 reached by argument or measurement, not preference. `docs/engram-schema.sql` is the authority for
 database shape.
 
@@ -286,6 +286,17 @@ different response shape, and returning facts beneath it would be worse than the
 Score mass, the spec's other input, is still open on purpose — one unmeasured knob is a rule, two are
 a preference. `Corroborated` is public because its `> 1` is the whole rule and `Pack` cannot reach it
 from a unit test (`CannedFact` has no numeric id, so lexical ranks need a real store) (D44).
+
+**A primer record says what it delivered, and `fact_count` stays null.** `session-start` and
+`subagent-start` write `long_term_fact_count` and `tokens_returned`; they must not write
+`fact_count`, which on a `recall` record means facts returned to the model and on a primer means
+nothing — a primer returns a count line and up to two example bodies. A nearby number in that field
+is how D43 happened. Before this, 54 session-start and 336 subagent-start records carried every
+memory field null, leaving `recall` — 7 events, opt-in, on one day — as the only visible read path,
+which understates delivery by construction because the primer reaches every session whether or not a
+tool is called. Recording it does not make D6's or D18's gate *met*; it makes them answerable going
+forward, and nothing retroactive is recoverable. Two end-to-end tests hold it; the null one is the
+load-bearing half (D46).
 
 **The M4 gate is unmet, and the number that looks like it isn't.** 28.6% of recalls returning
 `coverage: none` reads as a paraphrase-miss rate. Both of them fired ~82 minutes *before* the fact

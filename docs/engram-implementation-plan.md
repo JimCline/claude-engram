@@ -2478,6 +2478,43 @@ degrades to lexical recall with llama.cpp's own log attached, and `openai-compat
 you start yourself is the standing fallback. Anyone with the hardware should treat
 `-p:EngramGpu=cuda12` as unexercised past the point where the library loads.
 
+### D46 — The primer records what it delivered, because the gates are unreadable without it
+
+**Decision.** `session-start` and `subagent-start` write `long_term_fact_count` and
+`tokens_returned` on their telemetry records. `fact_count` stays null on a primer record, and that
+is deliberate.
+
+**Found by trying to read D6's gate and discovering there was nothing to read.** M3 is held behind
+evidence that missed recalls are substantially code-structure questions. Going to look, this
+instance had 54 `session-start` and 336 `subagent-start` records with **every** memory field null:
+they recorded that a session began and nothing about whether memory reached it. The only measured
+read path was `recall` — 7 events, all on one day, none in the 24 hours after — and recall is a tool
+the model chooses to call. So the record understated delivery by construction, because the primer
+reaches every session and every spawn whether or not a tool call ever happens. A gate cannot be read
+off a population that omits the path memory actually travels, and neither D6's gate nor D18's could
+be.
+
+**What the numbers do and do not say, stated now rather than after they are misread.** Recording
+this does not make M3's gate met; it makes it answerable from here forward. Nothing retroactive is
+recoverable — the 390 existing primer records stay null, so any comparison spanning this change is
+between different things. And the counts still say nothing about *use*: a primer that arrives and is
+ignored looks identical to one that is read. What becomes visible is delivery, which is the half
+that was missing.
+
+**`fact_count` stays null, which is the entire care in this change.** On a `recall` record it means
+facts returned to the model. A primer returns no facts — it returns a count line and, at session
+start, up to two example bodies. Filling the same field with a nearby number is precisely how the
+probe's two session counts came to be subtracted from each other and printed as an outage for every
+session in which the model simply never asked (D43). `long_term_fact_count` is what the store held
+and `tokens_returned` is what was injected: both are well-defined for a primer, and both mean the
+same thing on a recall record, so they are the two that can be compared across kinds without
+inventing a correspondence. Two end-to-end tests hold the line, and the null one is the load-bearing
+half.
+
+**No new I/O.** The facts were already read to build the primer and the token estimate runs over a
+string bounded at 300 tokens, so this adds a count and an arithmetic pass to hooks that had already
+paid for the read. It is not `file-touched`, which may not open the store at all (D4).
+
 ## PreCompact cannot inject context
 
 Spec §10.1 assumes `PreCompact` can "inject one instruction" the same way `SessionStart`
@@ -2952,6 +2989,14 @@ Tiering, language priority, and the registry that makes new languages cost one r
 code-structure questions. If they are not, M3 shrinks or moves behind M4. If they *are*,
 it is built here: per **D20**, Engram does not outsource this to Graphify or any other
 external server, because an MCP dependency is still a dependency.
+
+**Gate status: unread, not failed.** Going to check it turned up 7 recalls total on the instance
+that has been running this repo, none of them code-structure questions, and 390 primer records
+carrying nothing about memory at all — so the population the gate asks about barely exists and the
+larger delivery path was not recorded. D46 fixes the recording. Until enough accumulates, "the gate
+is not met" and "the gate cannot be evaluated" are different statements and only the second is true.
+Reading 7 events as evidence *against* code-structure questions would be the same mistake as reading
+28.6% `coverage: none` as a paraphrase-miss rate (D44).
 
 ### M4 — Embeddings
 

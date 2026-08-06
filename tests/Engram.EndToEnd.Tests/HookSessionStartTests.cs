@@ -101,4 +101,53 @@ public class HookSessionStartTests
 
         Assert.Equal(["session-aaa", "session-bbb"], sessionIds);
     }
+
+    // The primer reaches every session whether or not the model calls a tool, so a record that
+    // omits it makes `recall` the only visible read path — and recall is opt-in. That is the
+    // measurement D6's gate on M3 and D18's on M4 both need, and neither could be read off the
+    // 54 session-start records this instance had accumulated with every memory field null.
+    [Fact]
+    public void SessionStart_RecordsWhatThePrimerDelivered_NotMerelyThatOneStarted()
+    {
+        Assert.SkipUnless(EndToEndBinary.Path is not null, EndToEndBinary.SkipReason);
+
+        using var home = new TestHome();
+
+        var (exitCode, stdout, _) = EngramProcess.Run(home.Root, "hook", "session-start");
+        Assert.Equal(0, exitCode);
+
+        var primer = JsonDocument.Parse(stdout).RootElement
+            .GetProperty("hookSpecificOutput").GetProperty("additionalContext").GetString();
+        Assert.False(string.IsNullOrWhiteSpace(primer));
+
+        var record = JsonDocument.Parse(
+            File.ReadAllLines(Path.Combine(home.Root, "telemetry.jsonl")).Single()).RootElement;
+
+        var longTerm = record.GetProperty("long_term_fact_count");
+        Assert.NotEqual(JsonValueKind.Null, longTerm.ValueKind);
+        Assert.True(longTerm.GetInt32() > 0, "the seeded home holds facts, so the primer reported some");
+
+        var tokens = record.GetProperty("tokens_returned");
+        Assert.NotEqual(JsonValueKind.Null, tokens.ValueKind);
+        Assert.InRange(tokens.GetInt32(), 1, 300);
+    }
+
+    // fact_count means "facts returned to the model" on a recall record. A primer returns a count
+    // line and up to two example bodies, which is not that — and filling the field with something
+    // almost-right is how the probe came to subtract two disjoint session counts from each other
+    // (D43). Null is the honest value and it has to stay null.
+    [Fact]
+    public void SessionStart_LeavesFactCountNull_BecauseAPrimerReturnsNoFacts()
+    {
+        Assert.SkipUnless(EndToEndBinary.Path is not null, EndToEndBinary.SkipReason);
+
+        using var home = new TestHome();
+
+        Assert.Equal(0, EngramProcess.Run(home.Root, "hook", "session-start").ExitCode);
+
+        var record = JsonDocument.Parse(
+            File.ReadAllLines(Path.Combine(home.Root, "telemetry.jsonl")).Single()).RootElement;
+
+        Assert.Equal(JsonValueKind.Null, record.GetProperty("fact_count").ValueKind);
+    }
 }

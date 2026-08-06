@@ -169,17 +169,46 @@ internal static class HookCommand
         }
     }
 
+    /// <summary>
+    /// A telemetry record for a primer hook, saying what the primer actually delivered.
+    /// </summary>
+    /// <remarks>
+    /// <para>Both primer hooks previously wrote a bare timestamp and session id, so 54
+    /// <c>session-start</c> and 336 <c>subagent-start</c> records carried nothing about memory at
+    /// all. That left <c>recall</c> — 7 events, and a tool the model has to choose to call — as the
+    /// only evidence that memory ever reaches anyone, which understates delivery by construction:
+    /// the primer reaches every session and every spawn whether or not a tool is called. Neither
+    /// D6's gate on M3 nor D18's on M4 can be read off a record that omits the path memory actually
+    /// travels.</para>
+    ///
+    /// <para><b><c>FactCount</c> stays null on purpose, and that is the whole care here.</b> On a
+    /// <c>recall</c> record it means facts returned to the model. A primer returns no facts — it
+    /// returns a count line and, at session start, up to two example bodies — so filling the same
+    /// field with something almost-right is exactly how the probe's two session counts came to be
+    /// subtracted from each other (D43). <c>LongTermFactCount</c> is what the store held and
+    /// <c>TokensReturned</c> is what was injected, both well-defined for a primer and both directly
+    /// comparable to the same fields on a recall.</para>
+    /// </remarks>
+    private static TelemetryRecord PrimerRecord(
+        string sessionId,
+        string kind,
+        IReadOnlyList<CannedFact> facts,
+        string primer) =>
+        new(Timestamp: DateTime.UtcNow.ToString("o"),
+            SessionId: sessionId,
+            Kind: kind,
+            LongTermFactCount: facts.Count,
+            TokensReturned: TokenEstimator.Estimate(primer));
+
     private static int RunSessionStart(EngramHome home, TextWriter stdout, HookStdinInput? payload)
     {
         var sessionId = ResolveSessionId(payload);
-        var primer = PrimerBuilder.Build(LongTermFacts(home));
+        var facts = LongTermFacts(home);
+        var primer = PrimerBuilder.Build(facts);
 
         try
         {
-            Telemetry.Append(home, new TelemetryRecord(
-                Timestamp: DateTime.UtcNow.ToString("o"),
-                SessionId: sessionId,
-                Kind: TelemetryEventKind.SessionStart));
+            Telemetry.Append(home, PrimerRecord(sessionId, TelemetryEventKind.SessionStart, facts, primer));
         }
         catch
         {
@@ -224,7 +253,8 @@ internal static class HookCommand
     // primer simply never arrives, which is indistinguishable from a subagent ignoring it.
     private static int RunSubagentStart(EngramHome home, TextWriter stdout, HookStdinInput? payload)
     {
-        var primer = PrimerBuilder.BuildForSubagent(LongTermFacts(home));
+        var facts = LongTermFacts(home);
+        var primer = PrimerBuilder.BuildForSubagent(facts);
 
         try
         {
@@ -232,12 +262,12 @@ internal static class HookCommand
             // probe run, whether it matches its parent's. If it does, session facts are
             // shared across the spawn with no further work; if not, D11's sharing needs a
             // parent id threaded through instead of being assumed.
-            Telemetry.Append(home, new TelemetryRecord(
-                Timestamp: DateTime.UtcNow.ToString("o"),
-                SessionId: ResolveSessionId(payload),
-                Kind: TelemetryEventKind.SubagentStart,
-                AgentId: payload?.AgentId,
-                AgentType: payload?.AgentType));
+            Telemetry.Append(home, PrimerRecord(
+                ResolveSessionId(payload), TelemetryEventKind.SubagentStart, facts, primer) with
+            {
+                AgentId = payload?.AgentId,
+                AgentType = payload?.AgentType,
+            });
         }
         catch
         {
