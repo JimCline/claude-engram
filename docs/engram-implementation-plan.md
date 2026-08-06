@@ -21,7 +21,7 @@ stated as an erratum with a reason. Nothing here changes the spec's goals.
 
 ## 1. Decisions (locked)
 
-Forty architectural forks are locked below. Each is a decision, not an option.
+Forty-one architectural forks are locked below. Each is a decision, not an option.
 Six of them were adjudicated with Fable.
 
 ### D1 — Packaging: AOT core, Roslyn sidecar, native libs in the data directory
@@ -2164,6 +2164,65 @@ their own backup. Measured on the real instance, in a copy of the home rather th
 to 81 live and 13 closed, and a second `--apply` wrote 0. Four attempted breaks of the converter —
 chain member keeping its own address, retraction treated as a statement, directive mapped to
 `about-you`, address invented instead of fingerprinted — each failed a test.
+
+### D41 — the edit queue is folded, not pruned, and session start does it
+
+D39 gave `file-touched` a reason to write one file per edit and never read. It did not give anything
+a reason to delete them. The consumer is the code indexer, which is not built, so the queue only
+grows: 1102 entries on the author's instance, and rising with every keystroke that lands in a file.
+A queue that grows without bound waiting for a consumer that does not exist is a defect in the
+binary shipping today, whichever milestone the consumer arrives in.
+
+The fix is not to prune by age or count, and the reason is worth stating because pruning is the
+obvious move. **A consumer of this queue re-reads the file's current content.** The queue says
+*which* files to look at, never what they said. So for a given path, knowing it was touched at t1,
+t2 and t3 tells a consumer nothing that t3 alone does not — the redundancy is exact, and removing it
+loses nothing rather than losing a little. Pruning by age would discard a path that is still dirty;
+folding cannot. On the real instance this collapses 1102 entries to 1, because every one of them
+predates D39 and carries no path, and D39's own argument settles that case too: a bare timestamp
+answers one bit no matter how many of them there are.
+
+Two rules, asymmetric on purpose. For a **path**, keep the **newest** — the timestamp there means
+last touched, and the content is read fresh regardless. For a **pathless** entry keep the
+**oldest**, because a bare timestamp's only possible use is as a watermark, *there are unindexed
+changes at least this old*, and the earlier one is the safe reading of a set of them.
+
+**It only ever deletes.** Nothing renames or rewrites a spool file, and that is what buys
+concurrency safety without a lock: two compactions racing converge on the same directory; a
+`file-touched` running alongside creates a name no listing contains, so its entry survives; a
+`Drain` running alongside removes files the compactor would have removed, or files it would have
+kept, which is not a loss because draining is consuming them. Surviving names still lead with
+`DateTime.Ticks`, so `Drain`'s lexicographic sort is still chronological — asserted, because a
+future compactor tempted to rewrite entries into one file would pass every other test.
+
+**Unreadable is not unparseable.** The writer holds `FileShare.None`, so a compaction racing an edit
+can be refused the read on Windows. An entry whose bytes could not be obtained is left alone;
+deleting on a transient error would destroy an edit that was fine. An entry that *was* read and made
+no sense is deleted, because `Drain` drops it anyway and keeping it means carrying it forever.
+
+The bound does not rest on the assumption that a person edits few files: past 10,000 distinct paths
+the newest are kept and the rest are reported, never dropped silently. That ceiling takes a
+parameter so a test can watch it fire at a size a test can afford to write — a guard proven only by
+argument is a guard nobody has seen fire.
+
+**Where it runs is the part that matters.** `engram queue compact --apply` exists, but a bound that
+depends on someone noticing is not a bound. Session start already forks one detached child for
+`backup take --if-due` (D31), and that child is the housekeeping slot: it now runs the compaction
+too, in the same fork, guarded by `--if-large` so an ordinary queue costs one directory listing and
+no reads. `BackupLauncher` became `MaintenanceLauncher` to stop the name from lying. A second
+`Process.Start` would have doubled the one cost the parent actually pays — the fork — to save
+nothing, since both children are detached either way.
+
+`doctor` still reports the queue as `Off` rather than a warning, because a backlog is the expected
+state until the indexer exists and D37 reserves red for faults. Past the compaction threshold it
+gains a fix, since a queue that large means the automatic pass has not been running. It counts and
+does not read; `engram queue status` is where the more useful figure, how many distinct files are
+behind the number, is printed, precisely so doctor does not open a thousand files to draw one row.
+
+Six attempted breaks each failed a test: keep the oldest per path, keep the newest pathless, delete
+what could not be read, skip the ceiling, ignore the threshold, and stop spawning the compaction at
+session start. That last one is the only test that has ever covered the detached child at all —
+`backup take --if-due` had been spawned untested since D31.
 
 ## PreCompact cannot inject context
 

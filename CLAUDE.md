@@ -1,7 +1,7 @@
 # Engram — working rules
 
 Read `docs/engram-implementation-plan.md` before any non-trivial change. It holds
-forty decisions (D1–D40) that resolve questions the spec left open, and each one was
+forty-one decisions (D1–D41) that resolve questions the spec left open, and each one was
 reached by argument or measurement, not preference. `docs/engram-schema.sql` is the authority for
 database shape.
 
@@ -92,6 +92,21 @@ The budget's remaining headroom is 22% and it is all process start, so **binary 
 latency decision**: 1.06 MB started in 3.44 ms, 21.2 MB starts in 7.80 ms. That is a
 second reason, independent of AOT-hostility, that D1 keeps `sqlite-vec` and llama.cpp
 side-loaded rather than linked.
+
+**The queue is folded, never pruned.** `file-touched` writes and never reads, so nothing deleted
+spool files and the queue only grew — 1102 entries before `SpoolCompactor` existed. It removes only
+entries a later one makes redundant, which loses nothing rather than losing a little: a consumer
+re-reads the file's current content, so three touches of one path carry exactly what the newest one
+does. Pruning by age would discard a path that is still dirty. Per path keep the **newest** (it means
+last touched); for entries with no path keep the **oldest**, because a bare timestamp is only ever a
+watermark and the earlier one is the safe reading. It **only deletes** — never renames, never
+rewrites — and that, not a lock, is why a compaction, a `Drain`, and a `file-touched` can run at
+once. Surviving names still lead with `DateTime.Ticks`, so `Drain`'s sort stays chronological; a
+compactor that rewrote entries into one file would pass every other test. Unreadable is not
+unparseable: bytes that could not be obtained are left alone, because deleting on a transient
+`FileShare.None` collision destroys a good edit. Session start's detached child runs it with
+`--if-large`, in the same fork as `backup take --if-due` — `MaintenanceLauncher` owns both, and a
+bound that depends on someone typing the command is not a bound (D41).
 
 **Anything destructive is dry-run first.** `repair`, `compact`, `forget`, `backup prune`,
 `backup restore`, `backup replay`, and the installer print what they would do and require an

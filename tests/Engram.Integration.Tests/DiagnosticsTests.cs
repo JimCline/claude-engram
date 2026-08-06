@@ -429,29 +429,58 @@ public sealed class DiagnosticsTests : IDisposable
     }
 
     /// <summary>
-    /// <c>file-touched</c> spools an edit per invocation and <see cref="SpoolReader.Drain"/> is
-    /// called by nothing in production, so the count only rises. Counting it is the whole check —
-    /// a doctor that stayed silent about a directory filling up would be hiding the one number
-    /// that says so.
+    /// <c>file-touched</c> spools an edit per invocation and its consumer, the code indexer, is not
+    /// built. Counting is the whole check — a doctor that stayed silent about a directory filling
+    /// up would be hiding the one number that says so.
     /// </summary>
     [Fact]
-    public void SpooledEditsAreCounted_AndSaidToBeGoingNowhere()
+    public void SpooledEditsAreCounted_AndSaidToBeWaitingForAnIndexer()
     {
         using var sandbox = new SandboxHome();
 
         Assert.Contains("empty", Check(Run(sandbox), "edit queue").Detail, StringComparison.Ordinal);
 
-        Directory.CreateDirectory(sandbox.Home.QueueDir);
-        for (var i = 0; i < 3; i++)
-        {
-            File.WriteAllText(Path.Combine(sandbox.Home.QueueDir, $"{i}.spool"), "{}");
-        }
+        Spool(sandbox, 3);
 
         var queue = Check(Run(sandbox), "edit queue");
 
         Assert.Equal(DiagnosisState.Off, queue.State);
         Assert.Contains("3 edits", queue.Detail, StringComparison.Ordinal);
-        Assert.Contains("nothing drains them", queue.Detail, StringComparison.Ordinal);
+        Assert.Contains("waiting for an indexer", queue.Detail, StringComparison.Ordinal);
+
+        // A backlog is the expected state until that indexer exists, so there is nothing to fix.
+        Assert.Null(queue.Fix);
+    }
+
+    /// <summary>
+    /// Past the compaction threshold the count stops being ordinary.
+    /// </summary>
+    /// <remarks>
+    /// Session start compacts an oversized queue on its own, so a queue this large means that pass
+    /// has not been running — an install with no hooks, or a home nothing has opened in a while.
+    /// Still <see cref="DiagnosisState.Off"/>, because it is not a fault (D37); the fix appears
+    /// because there is now something a person can usefully type.
+    /// </remarks>
+    [Fact]
+    public void AnOversizedQueue_GainsTheCompactionFixWithoutBecomingAFault()
+    {
+        using var sandbox = new SandboxHome();
+
+        Spool(sandbox, SpoolCompactor.Threshold + 1);
+
+        var queue = Check(Run(sandbox), "edit queue");
+
+        Assert.Equal(DiagnosisState.Off, queue.State);
+        Assert.Equal("engram queue compact --apply", queue.Fix);
+    }
+
+    private static void Spool(SandboxHome sandbox, int count)
+    {
+        Directory.CreateDirectory(sandbox.Home.QueueDir);
+        for (var i = 0; i < count; i++)
+        {
+            File.WriteAllText(Path.Combine(sandbox.Home.QueueDir, $"{i}.spool"), "{}");
+        }
     }
 
     [Fact]

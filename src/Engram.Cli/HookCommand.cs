@@ -186,14 +186,14 @@ internal static class HookCommand
         }
 
         // Fire and forget, and swallowing everything is deliberate: a session must start even if
-        // no snapshot can be taken. The child decides for itself whether one is due, so this
+        // no housekeeping can run. The child decides for itself whether each job is due, so this
         // costs a fork whether or not it ends up doing any work — cheaper than reading config
         // and fingerprinting the store here to find out, which is the work itself.
         try
         {
             if (Environment.ProcessPath is { Length: > 0 } executable)
             {
-                BackupLauncher.SpawnIfDue(executable, home.Root);
+                MaintenanceLauncher.Spawn(executable, home.Root);
             }
         }
         catch

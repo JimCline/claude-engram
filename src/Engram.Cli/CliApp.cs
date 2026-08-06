@@ -51,6 +51,7 @@ public static class CliApp
             "scan" => ScanCommand.Run(homePath, rest, stdout, stderr),
             "explain" => ExplainCommand.Run(homePath, rest, stdout, stderr),
             "backup" => BackupCommand.Run(homePath, rest, stdout, stderr),
+            "queue" => QueueCommand.Run(homePath, rest, stdout, stderr),
             _ => Usage(stderr),
         };
     }
@@ -91,6 +92,11 @@ public static class CliApp
         writer.WriteLine("  scan [path] [options]              report what indexing would read there, and what it would skip");
         writer.WriteLine("  explain <query> [options]          show why recall ranks what it ranks, and what it leaves out");
         writer.WriteLine("  backup <take|list|prune|restore|replay|import>  snapshot the store, or put the facts back");
+        writer.WriteLine("  queue <status|compact>             report the file-touched edit queue, or fold it down");
+        writer.WriteLine();
+        writer.WriteLine("queue options:");
+        writer.WriteLine("  compact [--apply]                  keep the newest entry per file and delete the rest");
+        writer.WriteLine("  compact --apply --if-large         only when the queue has grown; what session start runs");
         writer.WriteLine();
         writer.WriteLine("backup options:");
         writer.WriteLine("  take --if-due                      snapshot only if the interval has passed and the store has changed");

@@ -76,11 +76,11 @@ public static class SpoolReader
     /// A timestamp on the first line, and optionally a path on the second.
     /// </summary>
     /// <remarks>
-    /// An unparseable entry is dropped rather than thrown on. This is a queue written by a hook
-    /// that swallows its own errors to protect the budget, so a truncated file is a thing that
-    /// happens; failing the whole drain over one would strand every edit behind it.
+    /// An unparseable entry is null rather than a throw. This is a queue written by a hook that
+    /// swallows its own errors to protect the budget, so a truncated file is a thing that happens;
+    /// failing the whole drain over one would strand every edit behind it.
     /// </remarks>
-    private static SpooledEdit? Parse(string text)
+    public static SpooledEdit? Parse(string text)
     {
         var lines = text.Split('\n');
         if (lines.Length == 0

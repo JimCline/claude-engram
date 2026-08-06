@@ -577,11 +577,17 @@ public static class Diagnostics
     /// Counts what <c>file-touched</c> has spooled.
     /// </summary>
     /// <remarks>
-    /// Reported with a count and no threshold. <see cref="SpoolReader.Drain"/> exists and nothing
-    /// in production calls it yet, so this number only goes up — which is worth seeing, and is not
-    /// yet worth a warning at some figure chosen because it sounded large. When something does
-    /// drain it, the interesting question becomes whether the backlog is growing faster than the
-    /// reader clears it, and that is the point to pick a number with a measurement behind it.
+    /// <para>Still <see cref="DiagnosisState.Off"/> rather than a warning, and still without a
+    /// threshold chosen because it sounded large. The consumer is the code indexer, which is not
+    /// built; until it is, a backlog is the expected state and not a fault (D37). When something
+    /// does drain it the interesting question becomes whether the backlog grows faster than the
+    /// reader clears it, and that is the point to pick a number with a measurement behind it.</para>
+    ///
+    /// <para>It counts and does not read. Reading every entry would let it say how many distinct
+    /// files are behind the number, which is the more useful figure — and it is what
+    /// <c>engram queue status</c> prints, precisely so doctor does not have to open a thousand
+    /// files to draw one row. Past <see cref="SpoolCompactor.Threshold"/> the count means the
+    /// automatic compaction has not been running, so that is where the fix appears.</para>
     /// </remarks>
     private static Diagnosis CheckQueue(EngramHome home)
     {
@@ -592,12 +598,16 @@ public static class Diagnostics
 
         var spooled = Directory.EnumerateFiles(home.QueueDir, "*.spool").Count();
 
+        if (spooled == 0)
+        {
+            return new Diagnosis("edit queue", DiagnosisState.Off, "empty");
+        }
+
         return new Diagnosis(
             "edit queue",
             DiagnosisState.Off,
-            spooled == 0
-                ? "empty"
-                : $"{Plural(spooled, "edit")} spooled by file-touched, and nothing drains them yet");
+            $"{Plural(spooled, "edit")} spooled by file-touched, waiting for an indexer to drain them",
+            spooled > SpoolCompactor.Threshold ? "engram queue compact --apply" : null);
     }
 
     private static Diagnosis CheckRepo(string repoRoot, ConfigFile config)
