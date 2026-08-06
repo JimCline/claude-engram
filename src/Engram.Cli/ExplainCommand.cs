@@ -84,6 +84,13 @@ internal static class ExplainCommand
         }
 
         using var connection = EngramDatabase.OpenInitialized(home);
+
+        // explain is the one command that should pay to find out. Under provider = "local" this
+        // starts a model, embeds the query through it, and stops it again — seconds, and the
+        // whole point of the command is answering whether the vector lane really works rather
+        // than reporting that this process is not the server.
+        using var local = new LocalRuntime(home, Environment.GetEnvironmentVariable);
+
         var explanation = RetrievalExplainer.Explain(
             connection,
             home,
@@ -91,7 +98,8 @@ internal static class ExplainCommand
             budget ?? configured.BudgetTokens,
             session,
             DateTimeOffset.UtcNow,
-            Environment.GetEnvironmentVariable);
+            Environment.GetEnvironmentVariable,
+            local);
 
         Write(explanation, limit, stdout);
         return 0;

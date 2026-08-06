@@ -20,12 +20,14 @@ namespace Engram.Cli;
 /// </remarks>
 internal sealed class EmbeddingBacklogService(
     EngramHome home,
+    LocalRuntime local,
     ILogger<EmbeddingBacklogService> logger) : BackgroundService
 {
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         var settings = EmbeddingSettings.Read(ConfigFile.Load(home.ConfigPath));
-        var resolution = EmbedderFactory.Create(settings, Environment.GetEnvironmentVariable);
+        var resolution = EmbedderFactory.Create(
+            settings, Environment.GetEnvironmentVariable, client: null, local);
 
         if (resolution.Embedder is not { } embedder)
         {

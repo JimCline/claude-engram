@@ -101,6 +101,18 @@ from the model name, since an endpoint may serve a quantized variant under the s
 optional. `HttpEmbedder.ProbeWidthAsync` is the one caller allowed past the width assertion on the
 embedding path; that assertion is load-bearing and must stay where it is (D34).
 
+**Nothing starts a model process from `EmbedderFactory`.** `provider = "local"` runs llama.cpp's
+server as a child, so the factory's local case *attaches* to a `LocalRuntime` and never launches
+one. The reason is that creating an embedder is unowned everywhere it happens: `RetrievalExplainer`
+calls the factory purely to ask whether a vector lane exists and drops the result, and no caller
+disposes what it gets. A factory that launched would turn a readiness check into a model load and
+leak a server per recall. Launching belongs to whoever can also stop it — the MCP server holds one
+as a container singleton, `explain` builds and disposes its own. Measured, because the guard reads
+like boilerplate until it does not: with `Dispose` broken, one test run left seven servers alive on
+the machine. llama-server does not exit when its parent does. Engram locates that binary and never
+downloads it, and a `server_path` that is set but missing is an error rather than a reason to fall
+back to `PATH` (D35).
+
 **The store gets a snapshot before anything rewrites it.** `VACUUM INTO`, never `cp` — a WAL
 database copied with `cp` was measured here to yield not a stale file but an unusable one, with no
 `fact` table at all because everything was still in the log. Migrations snapshot unconditionally,

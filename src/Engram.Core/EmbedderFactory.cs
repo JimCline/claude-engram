@@ -28,10 +28,17 @@ public static class EmbedderFactory
     /// rather than stored there, and because a test must be able to supply one without setting
     /// a real variable for the whole process.
     /// </param>
+    /// <param name="client">An HTTP client to borrow rather than own.</param>
+    /// <param name="local">
+    /// The host for <c>provider = "local"</c>, supplied only by a caller long-lived enough to
+    /// own a model process. Without one the local provider resolves to a reason rather than an
+    /// embedder — see <see cref="LocalRuntime"/> for why launching cannot happen here.
+    /// </param>
     public static EmbedderResolution Create(
         EmbeddingSettings settings,
         Func<string, string?> environment,
-        HttpClient? client = null)
+        HttpClient? client = null,
+        LocalRuntime? local = null)
     {
         ArgumentNullException.ThrowIfNull(settings);
         ArgumentNullException.ThrowIfNull(environment);
@@ -82,9 +89,27 @@ public static class EmbedderFactory
                 return new EmbedderResolution(embedder, $"{settings.Provider} at {endpoint}");
 
             case EmbeddingProvider.Local:
-                return EmbedderResolution.Unavailable(
-                    "[embedding] provider = \"local\" is not wired up yet. Point at a local "
-                    + "runtime with provider = \"ollama\" or \"openai-compat\" in the meantime.");
+                if (local is null)
+                {
+                    return EmbedderResolution.Unavailable(
+                        "[embedding] provider = \"local\" runs the model inside the Engram server, "
+                        + "and this process is not it. Start the server with `engram serve`, or "
+                        + "point at a runtime you started yourself with provider = \"openai-compat\".");
+                }
+
+                var opened = local.Open(space.Model, settings.ServerPath, LlamaServer.DefaultStartupTimeout);
+                if (opened.Endpoint is not { } loopback)
+                {
+                    return EmbedderResolution.Unavailable(opened.Reason);
+                }
+
+                // A plain HTTP embedder, because that is genuinely all it is once the server is
+                // up: llama.cpp serves the same /v1/embeddings this client already speaks. The
+                // child's lifetime belongs to the runtime, never to the embedder, so this stays
+                // as free to create and drop as the remote providers above.
+                return new EmbedderResolution(
+                    new OpenAiCompatibleEmbedder(space, loopback, settings.Timeout, apiKey: null, client),
+                    $"local {space.Model} — {opened.Reason}");
 
             default:
                 return EmbedderResolution.Unavailable($"Unhandled provider {settings.Provider}.");

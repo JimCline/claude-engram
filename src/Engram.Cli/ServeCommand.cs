@@ -66,6 +66,12 @@ internal static class ServeCommand
         builder.Services.AddTransient(_ => new McpHomeState(File.Exists(home.ConfigPath)));
         builder.Services.AddTransient(services => ResolveSessionId(services, home, openedSessions));
 
+        // Registered even when no model will ever be asked for, because constructing it starts
+        // nothing — the first Open does. Held by the container so the child process it may spawn
+        // is disposed on shutdown by the same machinery that stops everything else, and so the
+        // backlog and the query side share one server instead of loading the model twice.
+        builder.Services.AddSingleton(_ => new LocalRuntime(home, Environment.GetEnvironmentVariable));
+
         // The singular embedding service. One server per home, so one embedder — no lock, no
         // second daemon. It self-disables when no provider is configured, which is the ordinary
         // case, so registering it unconditionally costs a started-and-returned task.

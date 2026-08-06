@@ -35,6 +35,7 @@ public sealed record EmbeddingSettings(
     int MaxBatch,
     string? Endpoint,
     string? ApiKeyEnvironmentVariable,
+    string? ServerPath,
     TimeSpan Timeout,
     IReadOnlyList<string> Problems)
 {
@@ -43,7 +44,7 @@ public sealed record EmbeddingSettings(
     public const int DefaultTimeoutSeconds = 60;
 
     public static EmbeddingSettings Disabled { get; } = new(
-        EmbeddingProvider.None, null, null, DefaultMaxBatch, null, null,
+        EmbeddingProvider.None, null, null, DefaultMaxBatch, null, null, null,
         TimeSpan.FromSeconds(DefaultTimeoutSeconds), []);
 
     /// <summary>True when a provider is configured and nothing is wrong with how.</summary>
@@ -160,6 +161,7 @@ public sealed record EmbeddingSettings(
             maxBatch,
             endpoint,
             config.String(Section, "api_key_env"),
+            config.String(Section, "server_path"),
             TimeSpan.FromSeconds(timeout),
             problems);
     }

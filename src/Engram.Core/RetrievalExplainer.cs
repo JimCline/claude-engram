@@ -81,7 +81,8 @@ public static class RetrievalExplainer
         int budgetTokens,
         string? sessionExternalId,
         DateTimeOffset now,
-        Func<string, string?> environment)
+        Func<string, string?> environment,
+        LocalRuntime? local = null)
     {
         ArgumentNullException.ThrowIfNull(connection);
         ArgumentNullException.ThrowIfNull(home);
@@ -108,7 +109,7 @@ public static class RetrievalExplainer
             LaneState.Contributing,
             $"{Count(recall.Candidates.Count(c => c.OverlapRank is not null))} over subject and body, matched literally"));
 
-        var (vector, vectorSpace) = ReadVector(connection, home, query, environment, settings.SeedK, lanes);
+        var (vector, vectorSpace) = ReadVector(connection, home, query, environment, settings.SeedK, lanes, local);
         var salience = ReadSalience(connection, lanes);
         var tiers = ReadTiers(connection, recall.Candidates);
 
@@ -174,13 +175,14 @@ public static class RetrievalExplainer
         string query,
         Func<string, string?> environment,
         int seedK,
-        List<LaneReport> lanes)
+        List<LaneReport> lanes,
+        LocalRuntime? local)
     {
         const string Name = "vector (sqlite-vec)";
         var empty = new Dictionary<long, VectorHit>();
 
         var settings = EmbeddingSettings.Read(ConfigFile.Load(home.ConfigPath));
-        var resolution = EmbedderFactory.Create(settings, environment);
+        var resolution = EmbedderFactory.Create(settings, environment, client: null, local);
         if (!resolution.Resolved)
         {
             lanes.Add(new LaneReport(

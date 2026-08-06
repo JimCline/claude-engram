@@ -1881,6 +1881,59 @@ the check is removed.
 
 ---
 
+### D35 — `local` runs llama.cpp's server as a child, and the question about bindings dissolves
+
+`provider = "local"` had been carrying an open question — whether a .NET binding to llama.cpp can
+run encoder-only BERT models at all — and the answer turned out not to be needed. D1 already keeps
+llama.cpp out of the AOT binary, so the only real choice was which out-of-process shape to use, and
+llama.cpp ships a server that speaks the same `POST /v1/embeddings` that `OpenAiCompatibleEmbedder`
+already speaks and `embed --probe` already tests. A binding in a sidecar would have needed its own
+project, its own IPC, its own native loading, and its own answer to the BERT question — to
+reimplement something already installed. So local costs a process launch and **no new embedding
+code**. The unconfirmed claim was not resolved; it was made irrelevant, which is the better outcome
+and the reason it is recorded here rather than left on the backlog.
+
+**Found, not fetched.** Three places in order — `[embedding] server_path`, `lib/` under the Engram
+home, then `PATH`. Engram downloads `sqlite-vec`, which is one small extension with one digest per
+platform; llama.cpp is a large native artifact whose build varies by accelerator, and pinning
+digests across every platform-times-accelerator combination is exactly the packaging burden D28
+declines. A package manager or a local build already does it better, and D28's two requirements —
+Metal on a Mac, CUDA elsewhere — are properties of llama.cpp's own builds rather than of anything
+Engram could ship. A `server_path` that is set but missing is an error, never a reason to fall
+through: running a *different* llama-server than the one someone named is worse than running none,
+because nothing in the result says which answered.
+
+**Launching cannot live in `EmbedderFactory`.** This is the load-bearing decision. Creating an
+embedder is cheap and unowned everywhere it happens — `RetrievalExplainer` calls the factory purely
+to ask whether a vector lane exists and drops the result, and no caller disposes what it gets. Had
+the local case started a server there, a readiness check would have loaded a model and every recall
+would have leaked one. So the launch lives behind `LocalRuntime`, an object somebody has to hold
+and can therefore dispose, and the factory only ever attaches to a runtime already running. Without
+one, local resolves to a sentence naming the process that does host it.
+
+Ownership follows from that. The MCP server registers `LocalRuntime` as a container singleton, so
+the backlog writer and the query side share one loaded model instead of two, and the container
+stops the child by the same machinery that stops everything else. `explain` builds and disposes its
+own, because it is a diagnostic whose entire job is answering whether the vector lane really works
+— paying seconds to load a model is the point of running it, not a cost to avoid.
+
+Two arguments are not defaults and are worth the words. `-ngl 99` offloads every layer: these
+models are 25–640 MB, there is no case where splitting one is right, and omitting it is the
+difference between Metal and a CPU fallback. `--batch-size` and `--ubatch-size` are pinned to the
+served window because llama.cpp will not pool an embedding across physical batches — an input
+longer than the micro-batch is refused outright, and the 512-token default sits well inside the
+range a long fact reaches. The served window is capped at 8192 rather than taken from the model,
+since those batch buffers are sized to it and qwen3's 32k allocation dwarfs anything Engram puts
+through it; facts and queries are sentences.
+
+Verified on the published binary against a stand-in server, which is enough to exercise everything
+Engram owns — locating, launching, health-waiting, embedding, killing — without llama.cpp installed
+to run the suite. What it cannot prove is that the real server accepts these arguments; only running
+one does. Eight guards were falsified. The one worth naming is disposal: with `Dispose` broken, a
+single test run left **seven** stand-in servers alive on the machine, which is what the guard is
+for. llama-server does not exit when its parent does, so a leaked handle keeps a model resident
+until somebody notices.
+
 ## PreCompact cannot inject context
 
 Spec §10.1 assumes `PreCompact` can "inject one instruction" the same way `SessionStart`

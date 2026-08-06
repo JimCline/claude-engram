@@ -24,6 +24,11 @@ public static class DefaultConfig
         #   qwen3-embedding-0.6b  1024d  ~610 MB  32k-token window, 100+ languages
         model = "nomic-embed-text-v1.5"
 
+        # "local" runs the model through llama.cpp's server, which Engram starts and stops but
+        # does not install — the build that gets Metal or CUDA right is your package manager's
+        # business, not Engram's. It is looked for here, then in lib/, then on PATH.
+        # server_path = "/opt/homebrew/bin/llama-server"
+
         # -- openai-compat / ollama --
         # endpoint = "http://localhost:1234/v1"   # LM Studio, vLLM, llama.cpp server
         # endpoint = "http://localhost:11434"     # Ollama

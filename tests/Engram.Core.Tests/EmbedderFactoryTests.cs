@@ -123,11 +123,12 @@ public class EmbedderFactoryTests
     }
 
     /// <summary>
-    /// Until there is a runtime to run them, saying so beats resolving to something that fails
-    /// on first use with a stack trace instead of a sentence.
+    /// A local model is hosted by a process that can also stop it. Resolving without one would
+    /// mean either launching a model here — where nothing disposes what this returns — or handing
+    /// back an embedder that fails on first use with a stack trace instead of a sentence.
     /// </summary>
     [Fact]
-    public void ProviderLocal_SaysItIsNotWiredUpYet()
+    public void ProviderLocal_WithoutARuntime_SaysWhichProcessHostsIt()
     {
         var resolution = Resolve(
             """
@@ -137,6 +138,6 @@ public class EmbedderFactoryTests
             """);
 
         Assert.False(resolution.Resolved);
-        Assert.Contains("ollama", resolution.Reason, StringComparison.Ordinal);
+        Assert.Contains("engram serve", resolution.Reason, StringComparison.Ordinal);
     }
 }
