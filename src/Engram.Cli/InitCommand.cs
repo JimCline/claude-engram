@@ -120,18 +120,6 @@ internal static class InitCommand
             }
 
             choice = choice with { Model = model.Id };
-
-            // A warning rather than a refusal: the config is still the one they asked for, and
-            // installing llama.cpp afterwards makes it work with nothing further to change. What
-            // would be wrong is finishing silently, leaving a downloaded model, a valid-looking
-            // config, and a vector lane that never turns on for a reason nothing states.
-            if (LlamaServer.Locate(home, null, Environment.GetEnvironmentVariable) is null)
-            {
-                stdout.WriteLine();
-                stdout.WriteLine("Note: local models are run by llama.cpp's server, which is not here yet.");
-                stdout.WriteLine("      " + LlamaServer.WhereItLooked(home));
-            }
-
             stdout.WriteLine();
         }
 

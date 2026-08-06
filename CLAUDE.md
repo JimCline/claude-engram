@@ -1,7 +1,7 @@
 # Engram — working rules
 
 Read `docs/engram-implementation-plan.md` before any non-trivial change. It holds
-forty-four decisions (D1–D44) that resolve questions the spec left open, and each one was
+forty-five decisions (D1–D45) that resolve questions the spec left open, and each one was
 reached by argument or measurement, not preference. `docs/engram-schema.sql` is the authority for
 database shape.
 
@@ -90,8 +90,11 @@ with a number behind it, never a default.
 
 The budget's remaining headroom is 22% and it is all process start, so **binary size is a
 latency decision**: 1.06 MB started in 3.44 ms, 21.2 MB starts in 7.80 ms. That is a
-second reason, independent of AOT-hostility, that D1 keeps `sqlite-vec` and llama.cpp
-side-loaded rather than linked.
+second reason, independent of AOT-hostility, that D1 keeps `sqlite-vec` side-loaded rather than
+linked. It is *not* a reason against linking llama.cpp, and the difference is the point: the natives
+publish beside the binary, so linking the binding grew it 21.84 MB → 22.25 MB and the hook went p50
+9.44 ms → 9.51 ms, which is noise. Size costs latency when it is *in* the executable; a 5.7 MB
+dylib nothing has loaded costs nothing (D45).
 
 **The queue is folded, never pruned.** `file-touched` writes and never reads, so nothing deleted
 spool files and the queue only grew — 1102 entries before `SpoolCompactor` existed. It removes only
@@ -143,17 +146,63 @@ reason and an empty ranking, so a dead provider costs vector hits and nothing el
 result on purpose, and the lane needs that state to tell "sqlite-vec is not installed" from "no
 index in this store", which are different problems with different fixes (D36).
 
-**Nothing starts a model process from `EmbedderFactory`.** `provider = "local"` runs llama.cpp's
-server as a child, so the factory's local case *attaches* to a `LocalRuntime` and never launches
-one. The reason is that creating an embedder is unowned everywhere it happens: `RetrievalExplainer`
-calls the factory purely to ask whether a vector lane exists and drops the result, and no caller
-disposes what it gets. A factory that launched would turn a readiness check into a model load and
-leak a server per recall. Launching belongs to whoever can also stop it — the MCP server holds one
-as a container singleton, `explain` builds and disposes its own. Measured, because the guard reads
-like boilerplate until it does not: with `Dispose` broken, one test run left seven servers alive on
-the machine. llama-server does not exit when its parent does. Engram locates that binary and never
-downloads it, and a `server_path` that is set but missing is an error rather than a reason to fall
-back to `PATH` (D35).
+**Nothing loads a model from `EmbedderFactory`.** `provider = "local"` loads a GGUF into this
+process through LLamaSharp, so the factory's local case *attaches* to a `LocalRuntime` and never
+loads. The reason is that creating an embedder is unowned everywhere it happens:
+`RetrievalExplainer` calls the factory purely to ask whether a vector lane exists and drops the
+result, and no caller disposes what it gets. A factory that loaded would turn a readiness check into
+several hundred resident megabytes, per recall. Loading belongs to whoever can also release it — the
+MCP server holds one as a container singleton, `explain` builds and disposes its own. `LocalRuntime`
+holds exactly one model at a time behind a lock, and the embedder it hands out owns nothing, so
+dropping one is free and disposing the runtime is what frees the weights (D35, D45).
+
+**llama.cpp is linked, not launched, and not fetched at runtime.** It arrives as
+`LLamaSharp.Backend.Cpu` — which is the *Metal* backend on osx-arm64, misleading name and all —
+resolved for the target RID at restore. `-p:EngramGpu=cuda12` swaps it; exactly one backend may be
+referenced, since two would publish two `libllama` for one RID. `Directory.Build.targets` trims
+foreign RIDs, because the package copies all seven platforms whenever it cannot see a
+`RuntimeIdentifier` and the SDK does not pass one to a RID-agnostic project reference: 210 MB of
+publish output before the fix, 121 MB after, of which 5.7 MB is llama.cpp.
+
+**`LlamaNative.Prepare` routes the log and touches nothing else.** Do not add library-path
+configuration to it. IL3000 says LLamaSharp resolves natives through `Assembly.Location`, which is
+empty under Native AOT, and the obvious response — compute `runtimes/<rid>/native/` from
+`AppContext.BaseDirectory` and pass it to `WithLibrary` — was written, shipped into a publish, and
+then measured against its own absence: the published binary embeds 45 facts with **no** path
+configuration at all. The warning is real; the failure it predicts is not. Worse, stating a path
+replaces LLamaSharp's selecting policy, which is choosing between builds that are not
+interchangeable — on linux-x64 the CPU package ships only `native/{noavx,avx,avx2,avx512}/` with
+nothing at the top and CUDA adds `native/cuda12/`, so any search short enough to write by hand picks
+by sort order and `avx` sorts first. The version that looked correct on a Mac would have silently
+run the weakest CPU build on a CUDA machine. The log callback is process-wide and one-shot, so
+`Prepare` must still run before the first load; it is captured rather than discarded because when a
+GGUF will not load the managed exception says little and llama.cpp's log says exactly what is wrong
+(D45).
+
+**`Prepare` holds its lock across the registration, not just the flag.** LLamaSharp refuses
+configuration once anything is loaded, and the flag is what every other caller waits on — release it
+early and a second thread sees `prepared`, goes straight to `LoadFromFile`, and loads the library
+out from under the first, which then throws. Two `LocalRuntime` instances have two locks of their
+own and order nothing. Measured, and it is not a rare interleaving: with the lock released early the
+integration tests fail **8 runs out of 8** and pass 8 of 8 with it held. A load that fails to parse
+still loads the native library, so this needs no weights and no GPU — it is the shape of bug that
+reaches CI first (D45).
+
+**`NoWarn` in `Engram.Cli.csproj` covers IL2026/IL3050, so `NoReflectionJsonTests` exists.** Three
+unreachable reflection-JSON warnings come from LLamaSharp's `ModelParams` converters, and `NoWarn`
+cannot name an assembly — silencing theirs silences ours, and the AOT publish was what enforced "no
+reflection-based serialization" for free. The test asserts every `JsonSerializer` call in `src/`
+names a source-generated context. Do not widen that `NoWarn` further without replacing what it
+removes (D45).
+
+**Pooling is the third knob that fails silently, and the tests bound what they prove.** `dim` is one
+(D34), the embedding space is another (D18), and `EmbeddingModel.Pooling` is the third: the wrong
+value returns a correctly-shaped vector from the correct model that encodes something else.
+Measured on MiniLM — cos(mean, last) = 0.76, cos(mean, cls) = 0.50. Do not read the paraphrase test
+as a pooling guard: flipping MiniLM to `Last` and re-running it leaves it **passing**, because a
+degraded embedding still sorts a paraphrase above an unrelated sentence. What the suite holds is
+that the setting reaches llama.cpp. Each row's value is an argument from the model's architecture,
+never measured against a retrieval benchmark (D45).
 
 **The store gets a snapshot before anything rewrites it.** `VACUUM INTO`, never `cp` — a WAL
 database copied with `cp` was measured here to yield not a stale file but an unusable one, with no
@@ -174,10 +223,10 @@ recovery tool that can retire live beliefs is worse than the loss it was called 
 `OpenInitialized` — the latter migrates on open and D31 makes that migration snapshot first, which
 would make the most useful thing it can say, *your store is a schema behind*, unsayable: asking
 would perform the answer. The same rule at the other end — `provider = "local"` is checked by
-looking for the weights and for `llama-server`, never by resolving an embedder, because resolving
-one launches llama.cpp (D35). Both are guarded: an end-to-end test snapshots every file in the home
-by size and mtime around a run and asserts nothing moved, and an integration test installs a
-stand-in `llama-server` that touches a marker when executed and asserts the marker never appears.
+looking for the weights on disk, never by resolving an embedder, because resolving one loads them
+(D35, D45). Both are guarded: an end-to-end test snapshots every file in the home by size and mtime
+around a run and asserts nothing moved, and an integration test chmods the GGUF to `UnixFileMode.None`
+and asserts the row still reports Ok — a check that opened the file could not.
 Only `Broken` sets exit 1 — `Off` is a supported configuration, not a fault, and a doctor that
 reported red for a choice the user made is one people stop reading. Every check runs inside a
 wrapper that turns a throwing check into one broken row, because the state most likely to make a
@@ -252,8 +301,9 @@ telemetry timestamp before reading any miss as a retrieval failure (D44).
   JSON. Watch for overload traps: `JsonArray.Add(x)` binds to the AOT-hostile generic
   overload, so cast through `IList<JsonNode?>`.
 - No ORM. Hand-written SQL, so query plans stay visible.
-- Roslyn and llama.cpp never link into the core binary — sidecar and side-loaded
-  respectively (D1).
+- Roslyn never links into the core binary — it runs as a sidecar (D1). llama.cpp does link, through
+  LLamaSharp, but its natives publish to `runtimes/<rid>/native/` rather than into the executable
+  (D45).
 
 ## Tests
 

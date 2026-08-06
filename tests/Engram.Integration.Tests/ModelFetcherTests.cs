@@ -70,6 +70,7 @@ public class ModelFetcherTests
             ApproximateBytes: Payload.Length,
             Languages: "English",
             Tradeoff: "None, it is fake.",
+            Pooling: LLama.Native.LLamaPoolingType.Mean,
             Source: new ModelSource("owner/repo", "0123456789abcdef", "test-model.gguf", sha ?? PayloadSha));
 
     private static string? NoEnvironment(string name) => null;

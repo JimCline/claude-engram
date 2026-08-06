@@ -322,50 +322,69 @@ public sealed class DiagnosticsTests : IDisposable
     }
 
     /// <summary>
-    /// D35's boundary, from the other side. Resolving a local embedder means launching llama.cpp,
-    /// so doctor checks the ingredients instead — a diagnostic that started a model process to
-    /// find out whether one would start has both answered the question and changed it, and leaves
-    /// several hundred megabytes resident behind a read-only command.
+    /// D35's boundary, from the other side. Resolving a local embedder now means reading a GGUF
+    /// into this process, so doctor checks the ingredients instead — a diagnostic that loaded a
+    /// model to find out whether one would load has both answered the question and changed it, and
+    /// leaves several hundred megabytes resident behind a read-only command.
     /// </summary>
+    /// <remarks>
+    /// The llama-server era could prove this directly: put an executable where the binary goes and
+    /// see whether it ran. There is no process to catch any more, so the evidence is that the
+    /// weights are unreadable. <c>File.Exists</c> answers true for a file with no permissions;
+    /// anything that opens it fails. A doctor that resolved an embedder would therefore report this
+    /// row Broken, and it reports Ok.
+    /// </remarks>
     [Fact]
-    public void ProviderLocal_NeverStartsTheServerItReportsOn()
+    public void ProviderLocal_NeverLoadsTheWeightsItReportsOn()
     {
-        Assert.SkipWhen(OperatingSystem.IsWindows(), "the stand-in is a shell-executable script.");
+        Assert.SkipWhen(OperatingSystem.IsWindows(), "file modes do not deny reads the same way.");
 
         using var sandbox = new SandboxHome();
         var model = EmbeddingModels.Default;
 
         Directory.CreateDirectory(sandbox.Home.ModelsDir);
-        File.WriteAllText(Path.Combine(sandbox.Home.ModelsDir, model.FileName), "not really weights");
+        var weights = Path.Combine(sandbox.Home.ModelsDir, model.FileName);
+        File.WriteAllText(weights, "not really weights");
 
-        var marker = Path.Combine(sandbox.Home.Root, "it-ran");
-        var standIn = InstallStandInThatRecordsBeingRun(sandbox.Home.LibDir, marker);
+        WriteConfig(sandbox, $"[embedding]\nprovider = \"local\"\nmodel = \"{model.Id}\"\n");
 
-        WriteConfig(
-            sandbox,
-            $"[embedding]\nprovider = \"local\"\nmodel = \"{model.Id}\"\nserver_path = \"{standIn}\"\n");
+        // Written as a guard rather than relying on the skip above, so the platform analyzer can
+        // see that these calls are unreachable on Windows.
+        if (!OperatingSystem.IsWindows())
+        {
+            File.SetUnixFileMode(weights, UnixFileMode.None);
+        }
 
-        var report = Run(sandbox);
+        try
+        {
+            var embedding = Check(report: Run(sandbox), name: "embedding");
 
-        Assert.Equal(DiagnosisState.Ok, Check(report, "llama-server").State);
-        Assert.False(File.Exists(marker), "doctor executed llama-server rather than just locating it");
+            Assert.Equal(DiagnosisState.Ok, embedding.State);
+            Assert.Contains(model.Id, embedding.Detail, StringComparison.Ordinal);
+        }
+        finally
+        {
+            if (!OperatingSystem.IsWindows())
+            {
+                // Restored so the sandbox can delete itself.
+                File.SetUnixFileMode(weights, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+            }
+        }
     }
 
     [Fact]
-    public void ALocalServerThatIsNowhereToBeFound_ListsWhereItLooked()
+    public void ProviderLocal_WithNoWeightsDownloaded_SaysHowToGetThem()
     {
         using var sandbox = new SandboxHome();
         var model = EmbeddingModels.Default;
 
-        Directory.CreateDirectory(sandbox.Home.ModelsDir);
-        File.WriteAllText(Path.Combine(sandbox.Home.ModelsDir, model.FileName), "not really weights");
         WriteConfig(sandbox, $"[embedding]\nprovider = \"local\"\nmodel = \"{model.Id}\"\n");
 
-        var report = Run(sandbox);
+        var embedding = Check(Run(sandbox), "embedding");
 
-        var server = Check(report, "llama-server");
-        Assert.Equal(DiagnosisState.Broken, server.State);
-        Assert.Contains(sandbox.Home.LibDir, server.Detail, StringComparison.Ordinal);
+        Assert.Equal(DiagnosisState.Broken, embedding.State);
+        Assert.Contains(sandbox.Home.ModelsDir, embedding.Detail, StringComparison.Ordinal);
+        Assert.Contains($"engram model install {model.Id}", embedding.Fix ?? "", StringComparison.Ordinal);
     }
 
     /// <summary>
@@ -563,23 +582,6 @@ public sealed class DiagnosticsTests : IDisposable
         Assert.True(report.Healthy);
         Assert.Equal(1, report.Warnings);
         Assert.Equal(0, report.Broken);
-    }
-
-    private static string InstallStandInThatRecordsBeingRun(string directory, string marker)
-    {
-        Directory.CreateDirectory(directory);
-        var path = Path.Combine(directory, LlamaServer.FileName);
-
-        File.WriteAllText(path, $"#!/bin/sh\ntouch '{marker}'\nsleep 30\n");
-
-        if (!OperatingSystem.IsWindows())
-        {
-            File.SetUnixFileMode(
-                path,
-                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
-        }
-
-        return path;
     }
 
     /// <summary>Accepts connections and never answers them, holding each socket open.</summary>

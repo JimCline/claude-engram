@@ -70,7 +70,7 @@ internal static class ServeCommand
         // nothing — the first Open does. Held by the container so the child process it may spawn
         // is disposed on shutdown by the same machinery that stops everything else, and so the
         // backlog and the query side share one server instead of loading the model twice.
-        builder.Services.AddSingleton(_ => new LocalRuntime(home, Environment.GetEnvironmentVariable));
+        builder.Services.AddSingleton(_ => new LocalRuntime(home));
 
         // The singular embedding service. One server per home, so one embedder — no lock, no
         // second daemon. It self-disables when no provider is configured, which is the ordinary

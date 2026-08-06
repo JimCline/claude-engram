@@ -6,6 +6,36 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.Data.Sqlite" />
+    <PackageReference Include="LLamaSharp" />
+  </ItemGroup>
+
+  <!--
+    Which llama.cpp build gets compiled in. Exactly one, because both packages publish a libllama
+    for the same RID and having two would make which one loads a matter of file ordering.
+
+    The default is named "Cpu" and that name is misleading on a Mac: this package is what carries
+    libggml-metal.dylib for osx-arm64, so it is the Metal backend there and the CPU backend
+    everywhere else. It is the right default on every platform that has no discrete GPU.
+
+    CUDA is opt-in at build time rather than detected, and that follows from D28: Engram is built
+    on the machine that will run it, so the person running the build is the one who knows whether
+    this box has an NVIDIA card and a driver to match. Detecting it would mean probing for a
+    driver at build time and guessing wrong on a build host that differs from the target.
+
+        dotnet publish src/Engram.Cli -c Release -r linux-x64 -p:EngramGpu=cuda12
+
+    What is verified here and what is not. A linux-x64 cuda12 build was run and its output
+    inspected, so the packaging is measured: LLamaSharp.Backend.Cuda12 is a metapackage over
+    .Cuda12.Linux and .Cuda12.Windows, and the natives land in runtimes/<rid>/native/cuda12/ beside
+    the CPU package's runtimes/<rid>/native/{noavx,avx,avx2,avx512}/. Which of those loads is
+    LLamaSharp's decision, not Engram's — see LlamaNative for why nothing here tries to make it.
+    What is not measured is a CUDA device executing, because this repo's Mac has none. If it does
+    not load, the vector lane degrades to lexical with llama.cpp's own reason attached, and
+    provider = "openai-compat" against a runtime you start yourself remains available.
+  -->
+  <ItemGroup>
+    <PackageReference Include="LLamaSharp.Backend.Cpu" Condition="'$(EngramGpu)' == ''" />
+    <PackageReference Include="LLamaSharp.Backend.Cuda12" Condition="'$(EngramGpu)' == 'cuda12'" />
   </ItemGroup>
 
   <ItemGroup>

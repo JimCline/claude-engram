@@ -168,7 +168,7 @@ public sealed class VectorRecallTests : IDisposable
         VectorIndex.Write(sandbox.Connection, null, factId, vector);
     }
 
-    private static LocalRuntime NoRuntime(EngramHome home) => new(home, _ => null);
+    private static LocalRuntime NoRuntime(EngramHome home) => new(home);
 
     [Fact]
     public void AFactNoLexicalLaneCanReach_ComesBackFromRecall()

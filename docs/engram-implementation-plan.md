@@ -21,7 +21,7 @@ stated as an erratum with a reason. Nothing here changes the spec's goals.
 
 ## 1. Decisions (locked)
 
-Forty-four architectural forks are locked below. Each is a decision, not an option.
+Forty-five architectural forks are locked below. Each is a decision, not an option.
 Six of them were adjudicated with Fable.
 
 ### D1 — Packaging: AOT core, Roslyn sidecar, native libs in the data directory
@@ -1883,6 +1883,11 @@ the check is removed.
 
 ### D35 — `local` runs llama.cpp's server as a child, and the question about bindings dissolves
 
+> **Superseded in part by D45.** The transport is now in-process LLamaSharp, and `server_path`,
+> found-not-fetched, and the llama-server doctor check are gone. What survives is the paragraph
+> below on `EmbedderFactory`: it was reasoned from ownership, not from process shape, and D45
+> inherits it unchanged. Read D45 before acting on anything else here.
+
 `provider = "local"` had been carrying an open question — whether a .NET binding to llama.cpp can
 run encoder-only BERT models at all — and the answer turned out not to be needed. D1 already keeps
 llama.cpp out of the AOT binary, so the only real choice was which out-of-process shape to use, and
@@ -2373,6 +2378,106 @@ be evidence for embeddings under D18. It is not. Both `none` recalls fired at 03
 written yet. That is cold start, not retrieval failure, and D18's gate is still unmet: **no recorded
 query has yet missed a fact that existed at the time it was asked.**
 
+### D45 — `local` loads llama.cpp, and stops asking the user to install it
+
+**Decision.** `provider = "local"` loads a GGUF into the Engram process through **LLamaSharp**.
+`LlamaServer.cs`, `LocalRuntime`'s child process, and the `[embedding] server_path` setting are
+deleted. `LLamaSharp.Backend.Cpu` is referenced by default and carries `libggml-metal.dylib` on
+osx-arm64; `-p:EngramGpu=cuda12` swaps it for the CUDA build.
+
+**This reverses a decision that shipped, and the reversal is the point.** The plan specified
+LLamaSharp from the start (D1, §1.5 spike E). The code that shipped instead ran llama.cpp's own
+server as a child, and argued for it in a doc comment: the server already speaks the
+`/v1/embeddings` that `OpenAiCompatibleEmbedder` speaks, so "local" cost a process launch and no new
+embedding code. That argument is true and it was not the whole ledger. What it left out is that
+llama.cpp's server is *found, not fetched* — three places, then a message — so `engram init` could
+download 610 MB of weights, write a valid config, and produce an instance whose vector lane never
+turns on. Spec §5 offers three rungs and the middle one did not work on a clean machine. The
+reversal costs 478 lines of process management and one `LLamaSharpEmbedder`, and buys back the rung.
+
+**The escape hatch that justified planning for a swap never fired.** D25 demoted spike E from
+gating to informative in case LLamaSharp proved AOT-hostile. It did not — but neither is it AOT-free,
+and the difference matters because the first publish here *passed*: nothing referenced LLamaSharp
+yet, so the trimmer dropped the assembly whole. Once `LocalRuntime` used it, ILC reported IL3000 on
+`NativeLibraryUtils.TryFindPath` reading `Assembly.Location`, which is empty under AOT. That is
+plan §1.5's unresolved note about spike E's loading order, arriving as a build error rather than a
+runtime mystery.
+
+**And the answer to it is to do nothing, which took writing the wrong answer first.** `LlamaNative`
+originally computed `runtimes/<rid>/native/` from `AppContext.BaseDirectory`, opened the ggml chain
+by absolute path, and handed the result to `WithLibrary`. It worked. It was also never tested
+against its own absence, and when it finally was — same published binary, path configuration
+removed, nothing else changed — `embed --rebuild --apply` still loaded MiniLM and wrote 45 vectors.
+IL3000 is a warning about a branch with a working fallback behind it, and reading a warning as a
+failure produced 90 lines of code to prevent something that does not happen.
+
+Removing it is not merely a simplification, because the code was wrong in a way the Mac could not
+show. `WithLibrary` does not assist LLamaSharp's selecting policy, it replaces it — and that policy
+chooses between builds that are not interchangeable. The backends do not agree on a shape: the CPU
+package puts `libllama.dylib` directly in `native/` on macOS, but on linux-x64 ships only
+`native/{noavx,avx,avx2,avx512}/` with nothing at the top, and `LLamaSharp.Backend.Cuda12` — itself
+a metapackage over `.Cuda12.Linux` and `.Cuda12.Windows` — adds `native/cuda12/` beside them, with
+no `libggml-cpu` and no `libmtmd`. A resolver short enough to write by hand picks by sort order, and
+`avx` sorts before `cuda12`: the code that looked correct here would have run the weakest available
+CPU build on every CUDA machine, silently and at full speed-looking. Detecting the host's AVX level
+is what LLamaSharp already does. This is the general form of the mistake worth remembering — a
+platform-specific correctness bug written *by* a workaround, on a machine where the workaround and
+the bug are both invisible.
+
+**One-shot process-wide configuration needs the lock held across the work, not the flag.** Removing
+the path code left `LlamaNative.Prepare` doing one thing — register the log callback — and it was
+still wrong: it set `prepared` inside the lock, released, then registered. A second thread reading
+`prepared` therefore skipped ahead to `LoadFromFile` and loaded the library while the first was
+still configuring, and LLamaSharp refuses configuration once anything is loaded. Two `LocalRuntime`
+instances have two locks of their own and order nothing between them. Measured: 8 failures in 8 runs
+with the flag released early, 0 in 8 with the lock held across the registration — deterministic on
+this machine rather than a rare interleaving. It needs neither weights nor a GPU, because a
+`LoadFromFile` that fails to parse a junk file has already loaded the native library by the time it
+fails, so the tests that reach it are the ones that run everywhere. `Prepare` additionally treats
+"already loaded" as non-fatal: nothing here can un-load a library, and failing an embedding that
+would otherwise work in order to report on embeddings is the wrong way round.
+
+**Suppressing IL2026/IL3050 costs a guard, so the guard is replaced.** Three warnings come from
+JSON converters on `ModelParams` that Engram never invokes; `NoWarn` is per-project and cannot name
+an assembly, so silencing theirs silences ours — and "no reflection-based serialization" was
+enforced for free by the AOT publish. `NoReflectionJsonTests` now asserts every `JsonSerializer`
+call in `src/` names a source-generated context. Implementing `IModelParams`/`IContextParams` to
+dodge the warnings was considered and rejected: 38 members means restating 38 llama.cpp defaults as
+Engram constants, trading three warnings about dead code for 38 chances to silently pick a different
+number than the engine would.
+
+**Measured.**
+
+| | before | after |
+|---|---|---|
+| AOT binary | 21.84 MB | 22.25 MB |
+| `file-touched` p50 | 9.44 ms | 9.51 ms |
+| publish output | — | 121 MB, of which 5.7 MB is llama.cpp |
+| load + embed 45 facts (MiniLM, Metal) | — | 0.46 s |
+
+The +0.07 ms is noise, which settles the question CLAUDE.md's binary-size rule raises: 0.41 MB of
+growth does not move the hook budget. Publish output needed a fix to get there —
+`LLamaSharp.Backend.Cpu.props` copies per-RID only when it can see a `RuntimeIdentifier`, the SDK
+does not pass one to RID-agnostic project references, and its fallback copied all seven platforms
+(356 files, 210 MB). `Directory.Build.targets` trims to the target RID.
+
+**`Pooling` joins the model registry, and it is the third silent knob.** `dim` fails silently (D34);
+so does pooling. Measured on MiniLM: cos(mean, last) = 0.76, cos(mean, cls) = 0.50 — the wrong value
+returns a correctly-shaped vector from the correct model that encodes something else. Worth stating
+plainly because it bounds what the tests claim: flipping MiniLM to `Last` and re-running the
+paraphrase test leaves it **passing**, since a degraded embedding still sorts a paraphrase above an
+unrelated sentence. So the suite proves the setting reaches llama.cpp, not that the value is right.
+Each row is an argument from the model's architecture, unmeasured against any retrieval benchmark.
+
+**CUDA: packaging measured, execution not.** A `linux-x64 -p:EngramGpu=cuda12` build was run here
+and its output inspected, which is what turned up the nested `native/cuda12/` layout above — so the
+claim that the packaging works is measured rather than assumed, and `Directory.Build.targets` was
+confirmed to trim the win-x64 half the metapackage drags in. What this machine cannot do is execute
+on an NVIDIA device, so nothing is known about whether the CUDA build then *runs*. A failure
+degrades to lexical recall with llama.cpp's own log attached, and `openai-compat` against a runtime
+you start yourself is the standing fallback. Anyone with the hardware should treat
+`-p:EngramGpu=cuda12` as unexercised past the point where the library loads.
+
 ## PreCompact cannot inject context
 
 Spec §10.1 assumes `PreCompact` can "inject one instruction" the same way `SessionStart`
@@ -2740,8 +2845,8 @@ dependency by path before handing the main library to LLamaSharp — was derived
 install-name behaviour and has no verified Windows or Linux equivalent.
 
 **Fetching a native library is a supply-chain decision, not a download.** `init
---with-embeddings` has to pull `sqlite-vec` and llama.cpp for the host platform, pin an exact
-version — the extension version and the schema it writes are coupled — and cache them in
+--with-embeddings` has to pull `sqlite-vec` for the host platform, pin an exact
+version — the extension version and the schema it writes are coupled — and cache it in
 `lib/`. The obvious implementation fetches a release archive over HTTPS and extracts it, and
 the obvious implementation is not sufficient here: Engram would be downloading a native library
 and loading it into its own process, so the archive's **checksum must be pinned and verified
@@ -2749,6 +2854,12 @@ before the file is written**, and a mismatch must abort rather than warn. An una
 download degrades to embeddings-off with a message naming the manual path, per the three states
 `VectorExtensionState` already distinguishes. The uninstaller removes `lib/` with everything
 else it created.
+
+This paragraph named llama.cpp alongside `sqlite-vec` until D45, and the code never did either
+thing with it — first finding a `llama-server` on PATH, then linking the library at build time. Both
+are now true statements about one artifact: `sqlite-vec` is fetched and pinned; llama.cpp arrives as
+a NuGet backend package resolved for the target RID, which is the same supply-chain question
+answered by the restore rather than by Engram.
 
 ---
 

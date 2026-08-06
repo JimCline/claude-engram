@@ -147,7 +147,7 @@ public static class EmbedCommand
         // Owned here and disposed here (D35). The factory attaches to this runtime and never
         // launches one, so whoever creates it is the only thing that can stop it — and under
         // provider = "local" a rebuild is exactly the caller that should pay to start a model.
-        using var local = new LocalRuntime(home, Environment.GetEnvironmentVariable);
+        using var local = new LocalRuntime(home);
         var resolution = EmbedderFactory.Create(settings, Environment.GetEnvironmentVariable, client: null, local);
         using var owned = resolution.Embedder as IDisposable;
 

@@ -1,0 +1,32 @@
+<Project>
+
+  <!--
+    Keeps only the llama.cpp natives this build can actually load.
+
+    LLamaSharp.Backend.Cpu.props copies per-RID when it can see a RuntimeIdentifier and copies
+    *everything* when it cannot. Engram.Core is RID-agnostic and the SDK does not pass a RID down
+    to project references, so the fallback always fires there: 356 files across seven platforms,
+    210 MB of publish output for a binary that can run one of them. The copy happens in Core, so
+    the filter has to as well — by the time Engram.Cli sees them they are plain output files.
+
+    The RID to keep is the one being published if there is one, and otherwise the host's, which is
+    what a plain `dotnet build` and the test projects want. A cross-RID publish is out of scope on
+    purpose: D28 builds on the machine that will run it.
+  -->
+  <Target Name="EngramTrimLlamaRuntimes" BeforeTargets="AssignTargetPaths">
+
+    <PropertyGroup>
+      <EngramNativeRid Condition="'$(RuntimeIdentifier)' != ''">$(RuntimeIdentifier)</EngramNativeRid>
+      <EngramNativeRid Condition="'$(EngramNativeRid)' == ''">$(NETCoreSdkPortableRuntimeIdentifier)</EngramNativeRid>
+    </PropertyGroup>
+
+    <ItemGroup>
+      <EngramForeignNative Include="@(Content)"
+                           Condition="$([System.String]::new('%(Identity)').Contains('LLamaSharpRuntimes/'))
+                                      AND !$([System.String]::new('%(Identity)').Contains('LLamaSharpRuntimes/$(EngramNativeRid)/'))" />
+      <Content Remove="@(EngramForeignNative)" />
+    </ItemGroup>
+
+  </Target>
+
+</Project>

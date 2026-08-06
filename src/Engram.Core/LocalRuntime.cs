@@ -1,98 +1,183 @@
+using LLama;
+using LLama.Common;
+using LLama.Native;
+
 namespace Engram.Core;
 
 /// <summary>
-/// Owns the <c>llama-server</c> child that backs <c>provider = "local"</c>, for as long as the
-/// process that created it lives.
+/// Owns the llama.cpp weights that back <c>provider = "local"</c>, for as long as the process that
+/// created it lives.
 /// </summary>
 /// <remarks>
-/// <para><b>Why this is not inside <see cref="EmbedderFactory"/>.</b> Creating an embedder is
-/// cheap and unowned everywhere it happens: <c>RetrievalExplainer</c> calls the factory purely to
-/// ask whether a vector lane exists and drops the result, and nothing disposes what it gets. Had
-/// the local case launched a server there, a readiness check would have started a model and every
-/// recall would have leaked one. So launching lives here, behind an object somebody has to hold
-/// and can therefore dispose, and the factory only ever attaches to a runtime already going.</para>
+/// <para><b>Why this is not inside <see cref="EmbedderFactory"/>.</b> Creating an embedder is cheap
+/// and unowned everywhere it happens: <c>RetrievalExplainer</c> calls the factory purely to ask
+/// whether a vector lane exists and drops the result, and nothing disposes what it gets. Were the
+/// local case to load weights there, a readiness check would pull hundreds of megabytes into memory
+/// and every recall would leak a copy. So loading lives here, behind an object somebody has to hold
+/// and can therefore dispose, and the factory only ever attaches to a runtime already loaded.</para>
 ///
-/// <para>One model at a time. Asking for a different one stops the current server and starts
-/// another, because two loaded models is a memory decision nobody made.</para>
+/// <para>One model at a time. Asking for a different one unloads the current weights and loads the
+/// other, because two resident models is a memory decision nobody made.</para>
 ///
 /// <para>Not thread-safe by accident: a lock guards the transition, since the whole point is that
-/// several recalls arriving at once must wait for one server rather than start several.</para>
+/// several recalls arriving at once must wait for one load rather than start several.</para>
 /// </remarks>
 public sealed class LocalRuntime : IDisposable
 {
     private readonly EngramHome home;
-    private readonly Func<string, string?> environment;
     private readonly Lock gate = new();
-    private LlamaServerHandle? server;
+    private LLamaWeights? weights;
+    private LLamaEmbedder? context;
+    private LLamaSharpEmbedder? embedder;
     private string? loaded;
     private bool disposed;
 
-    public LocalRuntime(EngramHome home, Func<string, string?> environment)
+    public LocalRuntime(EngramHome home)
     {
         ArgumentNullException.ThrowIfNull(home);
-        ArgumentNullException.ThrowIfNull(environment);
         this.home = home;
-        this.environment = environment;
     }
 
-    /// <summary>The model currently loaded, or null if no server is running.</summary>
+    /// <summary>The model currently loaded, or null if none is.</summary>
     public string? Loaded
     {
         get
         {
             lock (gate)
             {
-                return server is { Running: true } ? loaded : null;
+                return loaded;
             }
         }
     }
 
-    /// <summary>The endpoint serving <paramref name="modelId"/>, starting a server if needed.</summary>
+    /// <summary>An embedder for <paramref name="modelId"/>, loading the weights if needed.</summary>
     /// <remarks>
-    /// Blocks for as long as the model takes to load — seconds, cold. That cost is why callers
-    /// that merely want to know whether local embedding is possible must not come through here.
+    /// Blocks for as long as the model takes to load — seconds, cold. That cost is why callers that
+    /// merely want to know whether local embedding is possible must not come through here.
     /// </remarks>
-    public LocalRuntimeEndpoint Open(string modelId, string? configuredServerPath, TimeSpan startupTimeout)
+    public LocalRuntimeEmbedder Open(string modelId)
     {
         ObjectDisposedException.ThrowIf(disposed, this);
 
         if (EmbeddingModels.Find(modelId) is not { } model)
         {
-            return LocalRuntimeEndpoint.Failed(
+            return LocalRuntimeEmbedder.Failed(
                 $"\"{modelId}\" is not a model Engram knows. Available: "
                 + string.Join(", ", EmbeddingModels.All.Select(m => m.Id)) + ".");
         }
 
+        var path = Path.Combine(home.ModelsDir, model.FileName);
+        if (!File.Exists(path))
+        {
+            return LocalRuntimeEmbedder.Failed(
+                $"{model.Id} is not downloaded yet. Run 'engram model install {model.Id}'.");
+        }
+
         lock (gate)
         {
-            if (server is { Running: true } && loaded == model.Id)
+            if (embedder is not null && loaded == model.Id)
             {
-                return new LocalRuntimeEndpoint(server.Endpoint, $"already running on port {server.Port}");
+                return new LocalRuntimeEmbedder(embedder, $"{model.Id} already loaded");
             }
 
-            // Either it died or it is holding the wrong model. Both mean this one is finished.
-            server?.Dispose();
-            server = null;
-            loaded = null;
+            Unload();
 
-            if (LlamaServer.Locate(home, configuredServerPath, environment) is not { } location)
+            LlamaNative.Prepare();
+
+            try
             {
-                return LocalRuntimeEndpoint.Failed(
-                    configuredServerPath is { Length: > 0 }
-                        ? $"[embedding] server_path points at {configuredServerPath}, which is not there."
-                        : "No llama-server found. " + LlamaServer.WhereItLooked(home));
-            }
+                var parameters = ParametersFor(model, path);
 
-            var start = LlamaServer.Start(home, model, location, startupTimeout);
-            if (start.Handle is not { } handle)
+                weights = LLamaWeights.LoadFromFile(parameters);
+                context = new LLamaEmbedder(weights, parameters);
+
+                if (context.EmbeddingSize != model.Dimensions)
+                {
+                    // The registry is what built the vec0 table, so a model file disagreeing with
+                    // it is not something to route around: every vector written from here would be
+                    // the wrong shape, and the insert error would name the table rather than this.
+                    var actual = context.EmbeddingSize;
+                    Unload();
+                    return LocalRuntimeEmbedder.Failed(
+                        $"{model.Id} produces {actual} dimensions, but Engram's registry says "
+                        + $"{model.Dimensions}. The model file does not match the row that "
+                        + "describes it.");
+                }
+
+                embedder = new LLamaSharpEmbedder(new EmbeddingSpace(model.Id, model.Dimensions), context);
+                loaded = model.Id;
+                return new LocalRuntimeEmbedder(embedder, $"loaded {model.Id} from {path}");
+            }
+#pragma warning disable CA1031 // A model that will not load is a reason, never an exception.
+            catch (Exception ex)
+#pragma warning restore CA1031
             {
-                return LocalRuntimeEndpoint.Failed(start.Reason);
+                // The vector lane is optional, so failing to load weights has to degrade to
+                // lexical recall with a sentence explaining why — not take the process down. The
+                // likely causes are all environmental: a truncated download, a GGUF a newer
+                // llama.cpp wrote, or a native library that will not load on this host.
+                //
+                // llama.cpp's own last words are appended because the managed exception rarely
+                // names the cause and the log almost always does.
+                Unload();
+                var log = LlamaNative.RecentProblems();
+                var detail = log.Count > 0 ? " — " + string.Join(" ", log) : string.Empty;
+                return LocalRuntimeEmbedder.Failed(
+                    $"Could not load {model.Id} from {path}: {ex.Message}{detail}");
             }
-
-            server = handle;
-            loaded = model.Id;
-            return new LocalRuntimeEndpoint(handle.Endpoint, start.Reason);
         }
+    }
+
+    /// <summary>The context window actually used, which is not always the model's.</summary>
+    /// <remarks>
+    /// Capped because a pooled embedding has to fit in one physical batch, so the batch buffers are
+    /// sized to this number — and at qwen3's 32k that allocation is far larger than anything Engram
+    /// would put through it. Facts and queries are sentences. 8k is already generous for both, and
+    /// the two models under the cap are unaffected.
+    /// </remarks>
+    public const int MaxContext = 8192;
+
+    /// <summary>
+    /// How <paramref name="model"/> is loaded. Separate from loading it so the settings can be
+    /// asserted without paying seconds to read a GGUF — and because three of them are silent when
+    /// wrong, which is exactly the kind that needs a test rather than a reading.
+    /// </summary>
+    public static ModelParams ParametersFor(EmbeddingModel model, string path)
+    {
+        ArgumentNullException.ThrowIfNull(model);
+
+        var context = (uint)Math.Min(model.ContextTokens, MaxContext);
+
+        return new ModelParams(path)
+        {
+            Embeddings = true,
+            PoolingType = model.Pooling,
+            ContextSize = context,
+
+            // An encoder scores every token against every other in one pass, so llama.cpp requires
+            // the micro-batch to hold the whole sequence — unlike a generative model, which
+            // streams. Left at the 512 default, any text longer than that fails to embed at all,
+            // which would silently cap what the vector lane can see to a fraction of the context
+            // the model advertises.
+            BatchSize = context,
+            UBatchSize = context,
+
+            // Offload everything the accelerator will take. llama.cpp clamps this to the layer
+            // count, and a build with no GPU backend ignores it, so one number is correct on
+            // Metal, on CUDA and on a machine with neither.
+            GpuLayerCount = 99,
+        };
+    }
+
+    /// <summary>Releases the weights. Callers must already hold <see cref="gate"/>.</summary>
+    private void Unload()
+    {
+        embedder = null;
+        loaded = null;
+        context?.Dispose();
+        context = null;
+        weights?.Dispose();
+        weights = null;
     }
 
     public void Dispose()
@@ -106,17 +191,15 @@ public sealed class LocalRuntime : IDisposable
 
         lock (gate)
         {
-            server?.Dispose();
-            server = null;
-            loaded = null;
+            Unload();
         }
     }
 }
 
-/// <summary>A loopback endpoint serving a local model, or the reason there is not one.</summary>
-public sealed record LocalRuntimeEndpoint(Uri? Endpoint, string Reason)
+/// <summary>An embedder backed by locally loaded weights, or the reason there is not one.</summary>
+public sealed record LocalRuntimeEmbedder(IEmbedder? Embedder, string Reason)
 {
-    public bool Open => Endpoint is not null;
+    public bool Open => Embedder is not null;
 
-    public static LocalRuntimeEndpoint Failed(string reason) => new(null, reason);
+    public static LocalRuntimeEmbedder Failed(string reason) => new(null, reason);
 }

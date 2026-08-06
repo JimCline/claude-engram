@@ -446,26 +446,23 @@ public static class Diagnostics
             return;
         }
 
+        // The weights are the whole prerequisite. There is deliberately no second check for a
+        // runtime: llama.cpp ships with the binary now, so "is the engine here" cannot be false
+        // in a way a user could fix, and a row that is always green is a row people stop reading
+        // (D45). Pooling is printed because it is the one remaining setting on this path that
+        // fails silently — a wrong one embeds successfully and ranks like noise.
         var weights = Path.Combine(home.ModelsDir, model.FileName);
         checks.Add(File.Exists(weights)
             ? new Diagnosis(
                 "embedding",
                 DiagnosisState.Ok,
-                $"local {model.Id}/{model.Dimensions}, weights in {home.ModelsDir}")
+                $"local {model.Id}/{model.Dimensions}, {model.Pooling.ToString().ToLowerInvariant()} "
+                    + $"pooling, weights in {home.ModelsDir}")
             : new Diagnosis(
                 "embedding",
                 DiagnosisState.Broken,
                 $"local {model.Id}, and {weights} is not there",
                 $"engram model install {model.Id}"));
-
-        var located = LlamaServer.Locate(home, settings.ServerPath, Environment.GetEnvironmentVariable);
-        checks.Add(located is not null
-            ? new Diagnosis("llama-server", DiagnosisState.Ok, $"{located.Path} (found on {located.Source})")
-            : new Diagnosis(
-                "llama-server",
-                DiagnosisState.Broken,
-                LlamaServer.WhereItLooked(home),
-                "install llama.cpp, or set server_path under [embedding]"));
     }
 
     private static Diagnosis CheckIndex(EngramHome home, SqliteConnection? connection, EmbeddingSettings settings)

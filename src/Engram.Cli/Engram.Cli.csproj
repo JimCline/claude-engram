@@ -8,6 +8,27 @@
     <TrimmerSingleWarn>false</TrimmerSingleWarn>
     <StripSymbols>true</StripSymbols>
     <StaticWebAssetsEnabled>false</StaticWebAssetsEnabled>
+
+    <!--
+      Three warnings, all from LLamaSharp, none reachable from Engram.
+
+      IL2026/IL3050 come from the JSON converters attached to ModelParams: reflection-based
+      Serialize/Deserialize, rooted by their [JsonConverter] attributes and never called, because
+      Engram builds a ModelParams and reads it — it never round-trips one through JSON. IL3000 is
+      that library's own native-path probe reading Assembly.Location, which is empty under AOT. It
+      is suppressed rather than worked around: measured on the published binary, the load succeeds
+      with no path configuration at all, because the probe has a working fallback behind it. See
+      LlamaNative for what stating the paths instead cost when it was tried.
+
+      Implementing IModelParams and IContextParams ourselves would avoid all three and was rejected:
+      it means restating 38 llama.cpp defaults as our own constants, which trades three warnings
+      about dead code for 38 chances to silently pick a different number than the engine would.
+
+      NoWarn is per-project and cannot name an assembly, so this necessarily also covers Engram's
+      own code — and that is the rule the AOT publish used to enforce for free. NoReflectionJson
+      Tests replaces it: every JsonSerializer call in src/ must pass a source-generated JsonTypeInfo.
+    -->
+    <NoWarn>$(NoWarn);IL2026;IL3050;IL3000</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>

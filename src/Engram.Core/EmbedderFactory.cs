@@ -30,9 +30,9 @@ public static class EmbedderFactory
     /// </param>
     /// <param name="client">An HTTP client to borrow rather than own.</param>
     /// <param name="local">
-    /// The host for <c>provider = "local"</c>, supplied only by a caller long-lived enough to
-    /// own a model process. Without one the local provider resolves to a reason rather than an
-    /// embedder — see <see cref="LocalRuntime"/> for why launching cannot happen here.
+    /// The host for <c>provider = "local"</c>, supplied only by a caller long-lived enough to own
+    /// loaded model weights. Without one the local provider resolves to a reason rather than an
+    /// embedder — see <see cref="LocalRuntime"/> for why loading cannot happen here.
     /// </param>
     public static EmbedderResolution Create(
         EmbeddingSettings settings,
@@ -97,19 +97,16 @@ public static class EmbedderFactory
                         + "point at a runtime you started yourself with provider = \"openai-compat\".");
                 }
 
-                var opened = local.Open(space.Model, settings.ServerPath, LlamaServer.DefaultStartupTimeout);
-                if (opened.Endpoint is not { } loopback)
+                var opened = local.Open(space.Model);
+                if (opened.Embedder is not { } loaded)
                 {
                     return EmbedderResolution.Unavailable(opened.Reason);
                 }
 
-                // A plain HTTP embedder, because that is genuinely all it is once the server is
-                // up: llama.cpp serves the same /v1/embeddings this client already speaks. The
-                // child's lifetime belongs to the runtime, never to the embedder, so this stays
-                // as free to create and drop as the remote providers above.
-                return new EmbedderResolution(
-                    new OpenAiCompatibleEmbedder(space, loopback, settings.Timeout, apiKey: null, client),
-                    $"local {space.Model} — {opened.Reason}");
+                // The runtime's own instance, handed out rather than wrapped again: the weights
+                // behind it are the expensive thing and exactly one process-wide copy exists. It
+                // owns nothing, so this stays as free to drop as the remote providers above.
+                return new EmbedderResolution(loaded, $"local {space.Model} — {opened.Reason}");
 
             default:
                 return EmbedderResolution.Unavailable($"Unhandled provider {settings.Provider}.");

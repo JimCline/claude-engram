@@ -13,7 +13,7 @@ public class DigestTests
     private static readonly McpHomeState Initialized = new(true);
 
     /// <summary>Never asked to start anything — these homes configure no embedding provider.</summary>
-    private static LocalRuntime NoRuntime(EngramHome home) => new(home, _ => null);
+    private static LocalRuntime NoRuntime(EngramHome home) => new(home);
 
     [Fact]
     public void Digest_StoresEachLearningAsASessionNote_AndRecallFindsThem()

@@ -21,6 +21,14 @@
          GHSA-2m69-gcr7-jv3q (high, affects <= 2.1.11). Warnings are errors, so this is a
          build break rather than an advisory. Pinned forward to the first clean release. -->
     <PackageVersion Include="SQLitePCLRaw.bundle_e_sqlite3" Version="2.1.12" />
+    <!-- The managed binding and the native llama.cpp build it loads. Their versions move
+         together: the binding P/Invokes an unversioned C API, so a backend from a different
+         release is an undefined-symbol crash at first load rather than a restore failure. -->
+    <PackageVersion Include="LLamaSharp" Version="0.27.0" />
+    <PackageVersion Include="LLamaSharp.Backend.Cpu" Version="0.27.0" />
+    <!-- Only referenced under -p:EngramGpu=cuda12; pinned here so the version cannot drift from
+         the binding's when someone does. -->
+    <PackageVersion Include="LLamaSharp.Backend.Cuda12" Version="0.27.0" />
   </ItemGroup>
 
 </Project>

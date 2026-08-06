@@ -89,7 +89,7 @@ internal static class ExplainCommand
         // starts a model, embeds the query through it, and stops it again — seconds, and the
         // whole point of the command is answering whether the vector lane really works rather
         // than reporting that this process is not the server.
-        using var local = new LocalRuntime(home, Environment.GetEnvironmentVariable);
+        using var local = new LocalRuntime(home);
 
         var explanation = RetrievalExplainer.Explain(
             connection,

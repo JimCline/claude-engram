@@ -1,3 +1,5 @@
+using LLama.Native;
+
 namespace Engram.Core;
 
 /// <summary>
@@ -23,6 +25,21 @@ public sealed record ModelSource(string Repository, string Revision, string File
 }
 
 /// <summary>One local embedding model Engram knows how to run.</summary>
+/// <param name="Pooling">
+/// How the token vectors collapse into one sentence vector. Encoder models average their tokens; a
+/// decoder-based embedder like Qwen3 carries the meaning on the last one.
+///
+/// <para>Stated per model rather than left to whatever the GGUF's metadata happens to say, because
+/// this setting fails quietly: the wrong value produces a vector of the right width, from the right
+/// model, that encodes something other than the sentence, and nothing errors. Measured on MiniLM,
+/// the damage is real but partial — cos(mean, last) = 0.76, cos(mean, cls) = 0.50 — which is worse
+/// than it sounds, since a lane that is 76% right is one whose failures look like ordinary misses
+/// rather than like a bug.</para>
+///
+/// <para>Worth knowing before trusting this column: the tests establish that the value reaches
+/// llama.cpp, not that it is the right value. Nothing here is measured against a retrieval
+/// benchmark, so each row is an argument from the model's architecture.</para>
+/// </param>
 public sealed record EmbeddingModel(
     string Id,
     string DisplayName,
@@ -31,6 +48,7 @@ public sealed record EmbeddingModel(
     long ApproximateBytes,
     string Languages,
     string Tradeoff,
+    LLamaPoolingType Pooling,
     ModelSource? Source)
 {
     /// <summary>The file this model occupies inside <see cref="EngramHome.ModelsDir"/>.</summary>
@@ -81,6 +99,7 @@ public static class EmbeddingModels
                 "Runs on anything, including machines with no GPU and little spare RAM. "
                 + "The 256-token window is the real limit: a long fact gets truncated rather "
                 + "than embedded, so this rung suits short stated facts better than prose.",
+            Pooling: LLamaPoolingType.Mean,
             Source: new ModelSource(
                 "second-state/All-MiniLM-L6-v2-Embedding-GGUF",
                 "544f204f2eaa2d71361ffc74d6df7170285b286a",
@@ -98,6 +117,7 @@ public static class EmbeddingModels
                 "The middle rung, and the first with a context window long enough that nothing "
                 + "Engram stores gets truncated. Costs about six times the disk of the small "
                 + "rung and twice the index width, for markedly better recall on paraphrase.",
+            Pooling: LLamaPoolingType.Mean,
             Source: new ModelSource(
                 "nomic-ai/nomic-embed-text-v1.5-GGUF",
                 "0188c9bf409793f810680a5a431e7b899c46104c",
@@ -115,6 +135,9 @@ public static class EmbeddingModels
                 "Best recall, and the only rung that is multilingual. Wants roughly a gigabyte "
                 + "of RAM resident and takes seconds to load, so it earns its keep on a machine "
                 + "with headroom and is the wrong choice on one without.",
+            // The odd one out: a decoder, so there is no [CLS] and averaging would dilute the
+            // token that actually carries the summary.
+            Pooling: LLamaPoolingType.Last,
             Source: new ModelSource(
                 "Qwen/Qwen3-Embedding-0.6B-GGUF",
                 "370f27d7550e0def9b39c1f16d3fbaa13aa67728",

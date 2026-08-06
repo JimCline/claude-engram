@@ -12,7 +12,7 @@ public class EngramMcpToolsTests
     /// so the vector lane refuses before a model is ever considered. Constructing one launches
     /// nothing, which is the property that makes it safe to hand over and drop.
     /// </summary>
-    private static LocalRuntime NoRuntime(EngramHome home) => new(home, _ => null);
+    private static LocalRuntime NoRuntime(EngramHome home) => new(home);
 
     // Recall's long-term tier now comes from SQLite rather than a hardcoded list. Every other
     // test here exercises session facts, so without this one the whole store could return
