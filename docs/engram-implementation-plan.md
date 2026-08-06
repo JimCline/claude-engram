@@ -21,7 +21,7 @@ stated as an erratum with a reason. Nothing here changes the spec's goals.
 
 ## 1. Decisions (locked)
 
-Twenty-six architectural forks are locked below. Each is a decision, not an option.
+Forty architectural forks are locked below. Each is a decision, not an option.
 Six of them were adjudicated with Fable.
 
 ### D1 — Packaging: AOT core, Roslyn sidecar, native libs in the data directory
@@ -2117,6 +2117,53 @@ budget — a truncated file is a thing that happens, and failing the whole drain
 strand every edit behind it. It deletes what it read *before* the caller has acted, which is a
 durability hole that is tolerable only because a rescan is always available; a consumer that
 cannot rescan must not be built on it as it stands. That is written on the method.
+
+### D40 — the old `user-facts/` JSON is converted, not read
+
+Before the fact store existed, user statements were kept one JSON file per statement under
+`~/.engram/user-facts/`, each carrying its own `supersedes` and `retracts` pointers — a second,
+weaker implementation of the validity window `fact` already has. Nothing in the current code reads
+that directory or writes to it, which was verified rather than assumed: the newest file on the real
+instance is timestamped an hour before the binary that replaced it was installed, and the shipped
+binary contains no `user-facts` string at all. So an instance upgraded across that change keeps its
+files and silently loses the memory in them. On this machine that was 38 files.
+
+The import is a converter, not a reader. It produces `JournalFact` records and hands them to
+`FactJournal.Replay`, the same path `backup replay` uses, because replay is already additive,
+idempotent, and refuses to close a fact the target store already holds. That last property matters
+more here than it does for a restore: this runs against a live instance with facts captured after
+the cutover, and a migration that could retire them would be worse than the loss it was called to
+fix. Writing a second writer would have meant re-earning all three.
+
+**Addresses are computed by `UserFacts`, not invented here.** A migrated statement has to land where
+a native capture of the same sentence would, or saying it again tomorrow files a duplicate beside
+its own history. That means the path leaf is `FactStore.Fingerprint` of the text, and it is why this
+is C# in the repo rather than a throwaway script — a reimplementation of that hash would agree until
+it did not. A test asserts the payoff directly: import a statement, then call `UserFacts.Capture`
+with the same sentence and watch it return null.
+
+**A chain shares one address.** This is the case a naive converter gets wrong. The old model linked
+a restatement to its predecessor *by id*, so the two texts differ and fingerprint to different
+entities; written at their own addresses both would be live — two current beliefs where the user
+expressed one that changed. Every member of a chain therefore takes the **root's** path and
+predicate, which is exactly what `UserFacts.Restate` does for a live one, and the supersession is
+expressed as `valid_to` + `superseded_by` rather than as a pointer only this file understands.
+`RootOf` walks back through `supersedes` with a seen-set, because these pointers were written by a
+store with no foreign keys and a cycle would otherwise hang the migration rather than fail it.
+
+Retractions are operations, not statements: they close their target and are not themselves facts.
+Where a statement is closed by both a restatement and a retraction, the **earlier** event is the one
+that ended the belief. A pointer at an id that does not exist leaves its statement open and is
+counted as a dangling link rather than dropped silently, and an unparseable file is counted rather
+than failing the whole import — the reason to run this at all is that the data is already old.
+
+It ships as `backup import [dir] [--apply]`, dry-run first like everything else destructive, and it
+does not touch or delete the source directory: re-running it writes nothing, so the files stay as
+their own backup. Measured on the real instance, in a copy of the home rather than the home:
+38 files → 36 statements and 2 retractions, 11 chains, 0 dangling; the store went from 45 live facts
+to 81 live and 13 closed, and a second `--apply` wrote 0. Four attempted breaks of the converter —
+chain member keeping its own address, retraction treated as a statement, directive mapped to
+`about-you`, address invented instead of fingerprinted — each failed a test.
 
 ## PreCompact cannot inject context
 

@@ -39,6 +39,7 @@ public static class BackupCommand
             "prune" => Prune(home, settings, rest, stdout),
             "restore" => Restore(home, rest, stdout, stderr),
             "replay" => Replay(home, rest, stdout, stderr),
+            "import" => Import(home, rest, stdout, stderr),
             _ => Unknown(subcommand, stderr),
         };
     }
@@ -310,10 +311,91 @@ public static class BackupCommand
         return 0;
     }
 
+    /// <summary>
+    /// <c>engram backup import</c> — brings the JSON directory user facts used to live in into
+    /// the store. Dry run unless <c>--apply</c> is given.
+    /// </summary>
+    /// <remarks>
+    /// A conversion followed by a replay rather than a writer of its own, because replay is
+    /// already additive and idempotent and refuses to close anything the store already had. That
+    /// matters more here than for a restore: this runs against a live instance that has been
+    /// accumulating facts since the migration it missed, so the failure to avoid is not a lost
+    /// import but a recovery tool retiring beliefs the user still holds.
+    /// </remarks>
+    private static int Import(EngramHome home, string[] args, TextWriter stdout, TextWriter stderr)
+    {
+        var apply = args.Contains("--apply");
+        var named = args.FirstOrDefault(argument => !argument.StartsWith('-'));
+        var directory = named ?? LegacyUserFacts.DirectoryIn(home);
+
+        if (!Directory.Exists(directory))
+        {
+            stderr.WriteLine($"error: no legacy user-facts directory at {directory}.");
+            return 1;
+        }
+
+        var import = LegacyUserFacts.Convert(LegacyUserFacts.ReadDocuments(directory));
+
+        if (import.Skipped > 0)
+        {
+            stderr.WriteLine(
+                $"warning: {import.Skipped} {(import.Skipped == 1 ? "file was" : "files were")} unreadable and skipped.");
+        }
+
+        if (import.Facts.Count == 0)
+        {
+            stdout.WriteLine($"Nothing to import — {directory} holds no readable statements.");
+            return 0;
+        }
+
+        stdout.WriteLine(
+            $"{directory}: {import.Statements} statement(s), {import.Retractions} retraction(s).");
+        stdout.WriteLine(
+            $"  {import.Superseded} restatement(s) will chain onto what they replaced.");
+
+        if (import.DanglingLinks > 0)
+        {
+            stdout.WriteLine(
+                $"  {import.DanglingLinks} link(s) pointed at an entry that is not here; those statements stay open.");
+        }
+
+        stdout.WriteLine();
+
+        using var connection = EngramDatabase.OpenInitialized(home);
+
+        ReplayResult result;
+        try
+        {
+            result = FactJournal.Replay(connection, import.Facts, apply);
+        }
+        catch (Microsoft.Data.Sqlite.SqliteException exception)
+        {
+            stderr.WriteLine("error: import failed and nothing was written — " + exception.Message);
+            return 1;
+        }
+
+        stdout.WriteLine(
+            $"{(apply ? "Wrote" : "Would write")} {result.Written} {(result.Written == 1 ? "fact" : "facts")}"
+                + $", leaving {result.AlreadyPresent} already in the store.");
+
+        if (!apply)
+        {
+            stdout.WriteLine();
+            stdout.WriteLine("Dry run only — nothing was changed. Re-run with --apply to write them.");
+            return 0;
+        }
+
+        stdout.WriteLine();
+        stdout.WriteLine(
+            $"{directory} was not touched. Importing again is a no-op, so it is safe to keep or delete.");
+
+        return 0;
+    }
+
     private static int Unknown(string subcommand, TextWriter stderr)
     {
         stderr.WriteLine(
-            $"error: unknown backup subcommand '{subcommand}'. Expected take, list, prune, restore, or replay.");
+            $"error: unknown backup subcommand '{subcommand}'. Expected take, list, prune, restore, replay, or import.");
         return 2;
     }
 

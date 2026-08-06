@@ -1,7 +1,7 @@
 # Engram — working rules
 
 Read `docs/engram-implementation-plan.md` before any non-trivial change. It holds
-twenty-eight decisions (D1–D28) that resolve questions the spec left open, and each one was
+forty decisions (D1–D40) that resolve questions the spec left open, and each one was
 reached by argument or measurement, not preference. `docs/engram-schema.sql` is the authority for
 database shape.
 
