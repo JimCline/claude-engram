@@ -4,11 +4,23 @@ namespace Engram.Core;
 /// Where a model file comes from, and what it must hash to.
 /// </summary>
 /// <remarks>
-/// Pinned by digest for the reason <c>fetch-vec0.sh</c> is: this file is loaded into Engram's
-/// own process. Null until the digest has been checked against a real download — a registry row
-/// with an invented hash is worse than one with no hash, because the first looks verified.
+/// <para>Pinned by digest for the reason <c>fetch-vec0.sh</c> is: this file is loaded into
+/// Engram's own process. Null until the digest has been checked against a real download — a
+/// registry row with an invented hash is worse than one with no hash, because the first looks
+/// verified.</para>
+///
+/// <para><b><see cref="Revision"/> is a commit hash, never a branch.</b> The obvious value is
+/// <c>main</c>, and it is wrong: a branch moves, so the same URL fetches different bytes over
+/// time and the digest below starts failing for a reason that looks like corruption. Two
+/// independent pins — an immutable URL and a content hash — mean a mismatch can only be a
+/// damaged download, which is what makes deleting the file and retrying the correct
+/// response.</para>
 /// </remarks>
-public sealed record ModelSource(string Repository, string File, string? Sha256);
+public sealed record ModelSource(string Repository, string Revision, string File, string? Sha256)
+{
+    /// <summary>The direct download URL. No hub client, no Python.</summary>
+    public string Url => $"https://huggingface.co/{Repository}/resolve/{Revision}/{File}";
+}
 
 /// <summary>One local embedding model Engram knows how to run.</summary>
 public sealed record EmbeddingModel(
@@ -63,39 +75,51 @@ public static class EmbeddingModels
             DisplayName: "MiniLM L6 v2",
             Dimensions: 384,
             ContextTokens: 256,
-            ApproximateBytes: 25_000_000,
+            ApproximateBytes: 25_008_064,
             Languages: "English",
             Tradeoff:
                 "Runs on anything, including machines with no GPU and little spare RAM. "
                 + "The 256-token window is the real limit: a long fact gets truncated rather "
                 + "than embedded, so this rung suits short stated facts better than prose.",
-            Source: null),
+            Source: new ModelSource(
+                "second-state/All-MiniLM-L6-v2-Embedding-GGUF",
+                "544f204f2eaa2d71361ffc74d6df7170285b286a",
+                "all-MiniLM-L6-v2-Q8_0.gguf",
+                "263215c3cadd6e16740741a7624ab4cbb6c8e777688bd5331ecfbf5681c2f8ed")),
 
         new EmbeddingModel(
             Id: "nomic-embed-text-v1.5",
             DisplayName: "Nomic Embed Text v1.5",
             Dimensions: 768,
             ContextTokens: 8192,
-            ApproximateBytes: 140_000_000,
+            ApproximateBytes: 146_146_432,
             Languages: "English",
             Tradeoff:
                 "The middle rung, and the first with a context window long enough that nothing "
                 + "Engram stores gets truncated. Costs about six times the disk of the small "
                 + "rung and twice the index width, for markedly better recall on paraphrase.",
-            Source: null),
+            Source: new ModelSource(
+                "nomic-ai/nomic-embed-text-v1.5-GGUF",
+                "0188c9bf409793f810680a5a431e7b899c46104c",
+                "nomic-embed-text-v1.5.Q8_0.gguf",
+                "3e24342164b3d94991ba9692fdc0dd08e3fd7362e0aacc396a9a5c54a544c3b7")),
 
         new EmbeddingModel(
             Id: "qwen3-embedding-0.6b",
             DisplayName: "Qwen3 Embedding 0.6B",
             Dimensions: 1024,
             ContextTokens: 32768,
-            ApproximateBytes: 610_000_000,
+            ApproximateBytes: 639_150_592,
             Languages: "100+ languages",
             Tradeoff:
                 "Best recall, and the only rung that is multilingual. Wants roughly a gigabyte "
                 + "of RAM resident and takes seconds to load, so it earns its keep on a machine "
                 + "with headroom and is the wrong choice on one without.",
-            Source: null),
+            Source: new ModelSource(
+                "Qwen/Qwen3-Embedding-0.6B-GGUF",
+                "370f27d7550e0def9b39c1f16d3fbaa13aa67728",
+                "Qwen3-Embedding-0.6B-Q8_0.gguf",
+                "06507c7b42688469c4e7298b0a1e16deff06caf291cf0a5b278c308249c3e439")),
     ];
 
     /// <summary>The rung chosen when nobody chooses — the middle one.</summary>

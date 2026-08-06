@@ -45,6 +45,7 @@ public static class CliApp
             "hook" => HookCommand.Run(homePath, rest, stdout, stderr),
             "probe" => ProbeCommand.Run(homePath, rest, stdout, stderr),
             "permissions" => PermissionsCommand.Run(homePath, rest, stdout, stderr),
+            "model" => ModelCommand.Run(homePath, rest, stdout, stderr),
             _ => Usage(stderr),
         };
     }
@@ -69,6 +70,12 @@ public static class CliApp
         writer.WriteLine("  hook <event>                       hook entrypoint: session-start|subagent-start|pre-compact|user-prompt|file-touched");
         writer.WriteLine("  probe [options]                    summarize telemetry and store density for the M0 adoption probe");
         writer.WriteLine("  permissions [options]              allow Claude Code to call Engram's memory tools unprompted");
+        writer.WriteLine("  model <list|install|path>          list the local embedding models, or download one");
+        writer.WriteLine();
+        writer.WriteLine("model subcommands:");
+        writer.WriteLine("  list                               show every model, its size and tradeoff, and whether it is installed");
+        writer.WriteLine("  install <id|default>               download and verify one model");
+        writer.WriteLine("  path <id>                          print where that model lives");
         writer.WriteLine();
         writer.WriteLine("serve/start options:");
         writer.WriteLine("  --port <n>                         port to bind (default 7433, or $ENGRAM_PORT)");
