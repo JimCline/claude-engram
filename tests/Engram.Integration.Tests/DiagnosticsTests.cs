@@ -16,6 +16,7 @@ namespace Engram.Integration.Tests;
 /// <see cref="ProviderLocal_NeverStartsTheServerItReportsOn"/>. Both say the same thing about a
 /// diagnostic: it may not perform the state it was asked to describe.
 /// </remarks>
+[Collection(SqlitePoolCollection.Name)]
 public sealed class DiagnosticsTests : IDisposable
 {
     private const string Python = "/usr/bin/env python3";
