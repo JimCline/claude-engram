@@ -101,6 +101,16 @@ from the model name, since an endpoint may serve a quantized variant under the s
 optional. `HttpEmbedder.ProbeWidthAsync` is the one caller allowed past the width assertion on the
 embedding path; that assertion is load-bearing and must stay where it is (D34).
 
+**There is one vector lane, and recall and `explain` both call it.** `VectorLane` is that lane;
+neither caller may grow a private copy, because D30 makes `explain` a promise that it describes the
+ranker which actually runs, and two implementations diverge the first time one is tuned. The
+explainer must also run it *before* the fusion, not after — a lane reported too late to affect the
+result is the same defect. Recall can never fail because this lane failed: every stop returns a
+reason and an empty ranking, so a dead provider costs vector hits and nothing else. The lane's own
+`VectorExtension.Load` is not redundant with `EngramDatabase.Open` — Open loads and discards the
+result on purpose, and the lane needs that state to tell "sqlite-vec is not installed" from "no
+index in this store", which are different problems with different fixes (D36).
+
 **Nothing starts a model process from `EmbedderFactory`.** `provider = "local"` runs llama.cpp's
 server as a child, so the factory's local case *attaches* to a `LocalRuntime` and never launches
 one. The reason is that creating an embedder is unowned everywhere it happens: `RetrievalExplainer`

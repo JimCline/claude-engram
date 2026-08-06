@@ -96,12 +96,19 @@ public static class RetrievalExplainer
         var lanes = new List<LaneReport>();
         var lexical = ReadLexical(connection, query, settings.SeedK, lanes);
 
+        // Ahead of the fusion, not after it: these ranks are an input to the ranking this method
+        // exists to describe. Reporting a lane that ran too late to affect the result would be
+        // exactly the drift D30 forbids. The lane order printed below is unchanged — the overlap
+        // report is still inserted at the front once its count is known.
+        var (vector, vectorSpace) = ReadVector(connection, home, query, environment, settings.SeedK, lanes, local);
+
         var recall = RecallEngine.Explain(
             query,
             longTerm,
             currentSession,
             priorSession,
             lexical.ToDictionary(pair => pair.Key, pair => pair.Value.Rank),
+            vector.ToDictionary(pair => pair.Key, pair => pair.Value.Rank),
             budgetTokens);
 
         lanes.Insert(0, new LaneReport(
@@ -109,7 +116,6 @@ public static class RetrievalExplainer
             LaneState.Contributing,
             $"{Count(recall.Candidates.Count(c => c.OverlapRank is not null))} over subject and body, matched literally"));
 
-        var (vector, vectorSpace) = ReadVector(connection, home, query, environment, settings.SeedK, lanes, local);
         var salience = ReadSalience(connection, lanes);
         var tiers = ReadTiers(connection, recall.Candidates);
 
@@ -159,15 +165,12 @@ public static class RetrievalExplainer
     }
 
     /// <summary>
-    /// Runs the vector lane if every one of its four preconditions holds, and names the first
-    /// one that does not.
+    /// Reports the vector lane, which <see cref="VectorLane"/> runs.
     /// </summary>
     /// <remarks>
-    /// The extension is loaded explicitly rather than assumed, even though
-    /// <see cref="EngramDatabase.Open(EngramHome)"/> already tried: loadable extensions are
-    /// connection-scoped and pooling recycles handles, so a successful query proves some
-    /// connection loaded it, not this one. The state has to come from a load on the connection
-    /// in hand.
+    /// The query itself lives there rather than here because recall runs it too, and D30 makes
+    /// this method's whole purpose describing the ranker that actually runs. A private copy would
+    /// have gone stale the first time one side was tuned and the other was not.
     /// </remarks>
     private static (Dictionary<long, VectorHit> Hits, EmbeddingSpace? Space) ReadVector(
         SqliteConnection connection,
@@ -179,81 +182,30 @@ public static class RetrievalExplainer
         LocalRuntime? local)
     {
         const string Name = "vector (sqlite-vec)";
-        var empty = new Dictionary<long, VectorHit>();
+        var embedding = EmbeddingSettings.Read(ConfigFile.Load(home.ConfigPath));
+        var result = VectorLane.Run(connection, home, embedding, query, environment, seedK, local);
 
-        var settings = EmbeddingSettings.Read(ConfigFile.Load(home.ConfigPath));
-        var resolution = EmbedderFactory.Create(settings, environment, client: null, local);
-        if (!resolution.Resolved)
+        if (result.State is not VectorLaneState.Queried)
         {
             lanes.Add(new LaneReport(
                 Name,
-                settings.Provider == EmbeddingProvider.None ? LaneState.Off : LaneState.Unavailable,
-                resolution.Reason));
-            return (empty, null);
+                result.State == VectorLaneState.Off ? LaneState.Off : LaneState.Unavailable,
+                result.Reason));
+            return (new Dictionary<long, VectorHit>(), null);
         }
 
-        if (VectorExtension.Load(connection, home.LibDir) is not VectorExtensionState.Loaded and var state)
-        {
-            lanes.Add(new LaneReport(
-                Name,
-                LaneState.Unavailable,
-                state == VectorExtensionState.NotInstalled
-                    ? $"sqlite-vec is not in {home.LibDir}, so the index cannot be queried"
-                    : $"sqlite-vec is in {home.LibDir} and would not load — wrong architecture, or truncated"));
-            return (empty, null);
-        }
-
-        if (!VectorIndex.Exists(connection) || VectorIndex.ReadSpace(connection) is not { } indexed)
-        {
-            lanes.Add(new LaneReport(Name, LaneState.Unavailable, "no vector index in this store yet"));
-            return (empty, null);
-        }
-
-        if (indexed != resolution.Embedder!.Space)
-        {
-            // D18's quiet failure: distances between spaces are real numbers and mean nothing.
-            lanes.Add(new LaneReport(
-                Name,
-                LaneState.Unavailable,
-                $"the index holds {indexed} but the configured provider produces {resolution.Embedder.Space} — "
-                + "vectors from different spaces are not comparable, so this lane is not queried"));
-            return (empty, null);
-        }
-
-        float[]? embedded;
-        try
-        {
-            embedded = resolution.Embedder
-                .EmbedAsync([VectorIndex.InputFor(query)])
-                .GetAwaiter()
-                .GetResult()
-                .FirstOrDefault();
-        }
-        catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or InvalidOperationException)
-        {
-            lanes.Add(new LaneReport(Name, LaneState.Unavailable, $"the provider did not answer: {exception.Message}"));
-            return (empty, null);
-        }
-
-        if (embedded is null)
-        {
-            lanes.Add(new LaneReport(Name, LaneState.Unavailable, "the provider returned no vector for this query"));
-            return (empty, null);
-        }
-
-        var matches = VectorIndex.Search(connection, embedded, seedK);
         lanes.Add(new LaneReport(
             Name,
-            matches.Count > 0 ? LaneState.Idle : LaneState.Unavailable,
-            matches.Count > 0
-                ? $"{matches.Count} hits in {indexed}, nearest {matches[0].Distance.ToString("0.000", CultureInfo.InvariantCulture)} — answerable, read by nothing on the recall path"
-                : $"{indexed} is queryable and empty for this query"));
+            result.Matches.Count > 0 ? LaneState.Contributing : LaneState.Unavailable,
+            result.Matches.Count > 0
+                ? $"{result.Matches.Count} hits in {result.Space}, nearest {result.Matches[0].Distance.ToString("0.000", CultureInfo.InvariantCulture)}, fused into the ranking"
+                : $"{result.Space} is queryable and empty for this query"));
 
         return (
-            matches
+            result.Matches
                 .Select((m, i) => new VectorHit(m.FactId, m.Distance, i + 1))
                 .ToDictionary(h => h.FactId),
-            indexed);
+            result.Space);
     }
 
     private static Dictionary<long, double> ReadSalience(SqliteConnection connection, List<LaneReport> lanes)

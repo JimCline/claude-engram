@@ -12,6 +12,9 @@ public class DigestTests
 {
     private static readonly McpHomeState Initialized = new(true);
 
+    /// <summary>Never asked to start anything — these homes configure no embedding provider.</summary>
+    private static LocalRuntime NoRuntime(EngramHome home) => new(home, _ => null);
+
     [Fact]
     public void Digest_StoresEachLearningAsASessionNote_AndRecallFindsThem()
     {
@@ -30,7 +33,7 @@ public class DigestTests
         var handles = HandlesOf(response);
         Assert.Equal(2, handles.Count);
 
-        var recall = EngramMcpTools.Recall(sandbox.Home, session, Initialized, "webhook retry rate limiter");
+        var recall = EngramMcpTools.Recall(sandbox.Home, session, Initialized, NoRuntime(sandbox.Home), "webhook retry rate limiter");
 
         // Body words absent from the query: recall echoes the query in its header and its gap
         // message, so asserting on a query term passes even against an empty store.
@@ -92,7 +95,7 @@ public class DigestTests
             "Import audit complete: the asymmetry between importer and exporter was the bug.",
             DigestOf(sandbox, session.Value));
 
-        var recall = EngramMcpTools.Recall(sandbox.Home, session, Initialized, "importer exporter null tenant");
+        var recall = EngramMcpTools.Recall(sandbox.Home, session, Initialized, NoRuntime(sandbox.Home), "importer exporter null tenant");
         Assert.Contains("skips rows with a null tenant", recall, StringComparison.Ordinal);
         Assert.Contains("which is the bug", recall, StringComparison.Ordinal);
     }
@@ -181,7 +184,7 @@ public class DigestTests
 
         EngramMcpTools.Forget(sandbox.Home, session, Initialized, handles[0]);
 
-        var recall = EngramMcpTools.Recall(sandbox.Home, session, Initialized, "audit log vacuum backup");
+        var recall = EngramMcpTools.Recall(sandbox.Home, session, Initialized, NoRuntime(sandbox.Home), "audit log vacuum backup");
 
         Assert.DoesNotContain($"[{handles[0]}]", recall, StringComparison.Ordinal);
         Assert.DoesNotContain("ninety days", recall, StringComparison.Ordinal);

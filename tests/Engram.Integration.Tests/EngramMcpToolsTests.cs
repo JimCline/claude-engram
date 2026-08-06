@@ -1,10 +1,18 @@
 using Engram.Cli;
+using Engram.Core;
 
 namespace Engram.Integration.Tests;
 
 public class EngramMcpToolsTests
 {
     private static readonly McpHomeState Initialized = new(true);
+
+    /// <summary>
+    /// A runtime that will never be asked to start anything: these homes configure no provider,
+    /// so the vector lane refuses before a model is ever considered. Constructing one launches
+    /// nothing, which is the property that makes it safe to hand over and drop.
+    /// </summary>
+    private static LocalRuntime NoRuntime(EngramHome home) => new(home, _ => null);
 
     // Recall's long-term tier now comes from SQLite rather than a hardcoded list. Every other
     // test here exercises session facts, so without this one the whole store could return
@@ -15,7 +23,7 @@ public class EngramMcpToolsTests
         using var sandbox = new SandboxHome();
         var session = new McpSessionId("session-longterm");
 
-        var result = EngramMcpTools.Recall(sandbox.Home, session, Initialized, "BEGIN IMMEDIATE transaction");
+        var result = EngramMcpTools.Recall(sandbox.Home, session, Initialized, NoRuntime(sandbox.Home), "BEGIN IMMEDIATE transaction");
 
         // Assert on words from the fact's BODY that do not appear in the query. Recall echoes
         // the query in its header line and again in its gap message, so asserting on a query
@@ -33,7 +41,7 @@ public class EngramMcpToolsTests
         var handle = HandleOf(EngramMcpTools.Remember(
             sandbox.Home, session, Initialized, "The build pipeline retries flaky uploads three times before failing."));
 
-        var result = EngramMcpTools.Recall(sandbox.Home, session, Initialized, "flaky uploads retries");
+        var result = EngramMcpTools.Recall(sandbox.Home, session, Initialized, NoRuntime(sandbox.Home), "flaky uploads retries");
 
         Assert.Contains($"[{handle}]", result);
         Assert.Contains("three times before failing", result);
@@ -50,7 +58,7 @@ public class EngramMcpToolsTests
         var handle = HandleOf(EngramMcpTools.Remember(
             sandbox.Home, writer, Initialized, "The build pipeline retries flaky uploads three times before failing."));
 
-        var result = EngramMcpTools.Recall(sandbox.Home, reader, Initialized, "flaky uploads retries");
+        var result = EngramMcpTools.Recall(sandbox.Home, reader, Initialized, NoRuntime(sandbox.Home), "flaky uploads retries");
 
         Assert.Contains($"[{handle}]", result);
         Assert.Contains("session · p1 ·", result);
@@ -70,7 +78,7 @@ public class EngramMcpToolsTests
         var currentHandle = HandleOf(EngramMcpTools.Remember(
             sandbox.Home, currentSession, Initialized, "The nightly backup job now also verifies checksums."));
 
-        var result = EngramMcpTools.Recall(sandbox.Home, currentSession, Initialized, "nightly backup job");
+        var result = EngramMcpTools.Recall(sandbox.Home, currentSession, Initialized, NoRuntime(sandbox.Home), "nightly backup job");
 
         var currentHandleIndex = result.IndexOf($"[{currentHandle}]", StringComparison.Ordinal);
         var priorHandleIndex = result.IndexOf($"[{priorHandle}]", StringComparison.Ordinal);
@@ -98,7 +106,7 @@ public class EngramMcpToolsTests
         // On the body, not the query: recall echoes the query in its header and again in the
         // gap message, so asserting the query terms are gone passes even when nothing was
         // retracted at all.
-        var result = EngramMcpTools.Recall(sandbox.Home, session, Initialized, "flaky uploads retries");
+        var result = EngramMcpTools.Recall(sandbox.Home, session, Initialized, NoRuntime(sandbox.Home), "flaky uploads retries");
         Assert.DoesNotContain("three times before failing", result);
         Assert.DoesNotContain($"[{handle}]", result);
     }
@@ -122,7 +130,7 @@ public class EngramMcpToolsTests
 
         EngramMcpTools.Remember(sandbox.Home, session, Initialized, "Ran the migration dry-run against staging.", agent: "migration-worker");
 
-        var result = EngramMcpTools.Recall(sandbox.Home, session, Initialized, "migration dry-run staging");
+        var result = EngramMcpTools.Recall(sandbox.Home, session, Initialized, NoRuntime(sandbox.Home), "migration dry-run staging");
 
         Assert.Contains("session · migration-worker", result);
     }

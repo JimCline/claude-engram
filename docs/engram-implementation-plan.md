@@ -1934,6 +1934,56 @@ single test run left **seven** stand-in servers alive on the machine, which is w
 for. llama-server does not exit when its parent does, so a leaked handle keeps a model resident
 until somebody notices.
 
+### D36 — One vector lane, fused into recall, so the explainer keeps describing what runs
+
+The vector track was complete and disconnected. `sqlite-vec`, the index, the backfill, the width
+probe, the provider picker and the local runtime all existed and all worked, and
+`RecallEngine.Pack` had no vector parameter at all — `engram_recall`, the tool agents actually
+call, was lexical-only. The code said so itself: the one vector query in the system reported
+`LaneState.Idle` and the words "answerable, read by nothing on the recall path". Accurate, and the
+entire embedding investment was sitting behind it.
+
+**One implementation, because D30 is a promise about drift.** The query lived inside
+`RetrievalExplainer`, where it was correct to put it when nothing else queried vectors. Giving
+recall a lane of its own would have made two, and the moment either was tuned the explainer would
+have been describing a ranker that no longer ran. So the lane moved to `VectorLane`, which both
+call, and the explainer's job shrank to reporting what it returned. The explainer also had to start
+running it *before* the fusion rather than after: reporting a lane that ran too late to affect the
+result is the same defect wearing a different hat.
+
+**RRF absorbed a third lane with no retuning**, which is the payoff for the choice D30 made
+originally. Ranks are comparable by construction, so the fusion is one more `Reciprocal` term; had
+the lanes been combined by score, a vector distance would have needed a weight against bm25 that
+nobody could justify. A regression test pins the no-vector case to byte-identical output, because a
+third term that shifts scores when the lane contributed nothing would retune the other two by
+accident.
+
+Two properties matter more than the ranking. **Recall can never fail because the lane failed** —
+every stop returns a reason and an empty ranking, so a provider that is down costs vector hits and
+nothing else. Configuring embeddings must not be more dangerous than leaving them off. And **the
+lane costs nothing when embeddings are off**: the factory refuses before any request, and the
+parsed settings are passed in rather than re-read, because recall is a hot path and re-parsing a
+TOML file per query to answer a question already answered buys nothing.
+
+**A correction worth recording.** The lane loads `sqlite-vec` on the connection in hand, and the
+first explanation written for that — belt and braces against connection pooling — was wrong.
+`EngramDatabase.Open` already loads it on every connection and deliberately discards the result,
+because an instance without embeddings is the ordinary case there. The lane's load is how it
+obtains a state it must report: "sqlite-vec is not installed" sends someone to fetch it, while "no
+vector index in this store yet" sends them to build an index they cannot build. Different advice,
+and only the load call tells them apart. This surfaced during falsification — removing the call
+broke no test, because every vector test had the extension installed. The test that catches it is
+the one that deliberately installs nothing, and it does not skip when `sqlite-vec` is absent, since
+absence is its subject.
+
+Nine breaks attempted, each verified applied. Eight failed a test. The ninth could not be broken:
+removing the null-vector short circuit does not compile, because `VectorIndex.Search` takes a
+non-nullable `float[]` and the nullable analysis refuses it — a stronger guarantee than a test, and
+recorded here so nobody adds a test that pretends to guard it. Measured end to end against real
+`sqlite-vec` and a stand-in endpoint that maps text to concepts: a fact sharing no term with the
+query comes back from `engram_recall`, and the same query with the lane off returns nothing, which
+is the control that makes the first result mean anything.
+
 ## PreCompact cannot inject context
 
 Spec §10.1 assumes `PreCompact` can "inject one instruction" the same way `SessionStart`

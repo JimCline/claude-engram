@@ -23,10 +23,12 @@ public sealed class EngramMcpTools
         EngramHome home,
         McpSessionId session,
         McpHomeState homeState,
+        LocalRuntime local,
         [Description("What you want to know, as a few keywords or a short question.")] string query,
         [Description("Maximum tokens to spend on the response. Defaults to 500.")] int? budget_tokens = null)
     {
-        var settings = RetrievalSettings.Read(ConfigFile.Load(home.ConfigPath));
+        var config = ConfigFile.Load(home.ConfigPath);
+        var settings = RetrievalSettings.Read(config);
         var budget = budget_tokens is > 0 ? budget_tokens.Value : settings.BudgetTokens;
 
         // One connection, one temporal model. Recall used to assemble its idea of memory at
@@ -45,8 +47,21 @@ public sealed class EngramMcpTools
         var lexicalRanks = FactStore.SearchRanked(connection, query, settings.SeedK)
             .ToDictionary(hit => hit.FactId, hit => hit.Rank);
 
+        // The same lane `explain` reports, so what it describes is what ran here. It costs nothing
+        // when embeddings are off — the factory refuses before any request — and it can never fail
+        // this call: every way it can stop comes back as a reason and an empty ranking, leaving
+        // recall exactly as lexical as it was before.
+        var vectorRanks = VectorLane.Run(
+            connection,
+            home,
+            EmbeddingSettings.Read(config),
+            query,
+            Environment.GetEnvironmentVariable,
+            settings.SeedK,
+            local).Ranks;
+
         var result = RecallEngine.Pack(
-            query, longTermFacts, currentSessionFacts, priorSessionFacts, lexicalRanks, budget);
+            query, longTermFacts, currentSessionFacts, priorSessionFacts, lexicalRanks, vectorRanks, budget);
 
         if (homeState.Initialized)
         {

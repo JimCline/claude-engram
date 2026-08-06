@@ -47,6 +47,7 @@ public sealed record RecallCandidate(
     double Fused,
     int? OverlapRank,
     int? LexicalRank,
+    int? VectorRank,
     FactOrigin Origin,
     int Tokens,
     bool Packed);
@@ -196,9 +197,20 @@ public static class RecallEngine
         IReadOnlyList<SessionFact> currentSessionFacts,
         IReadOnlyList<SessionFact> priorSessionFacts,
         IReadOnlyDictionary<long, int> lexicalRanks,
+        int budgetTokens) =>
+        Pack(query, facts, currentSessionFacts, priorSessionFacts, lexicalRanks, EmptyRanks, budgetTokens);
+
+    public static RecallPackResult Pack(
+        string query,
+        IReadOnlyList<CannedFact> facts,
+        IReadOnlyList<SessionFact> currentSessionFacts,
+        IReadOnlyList<SessionFact> priorSessionFacts,
+        IReadOnlyDictionary<long, int> lexicalRanks,
+        IReadOnlyDictionary<long, int> vectorRanks,
         int budgetTokens)
     {
-        var candidates = BuildCandidates(query, facts, currentSessionFacts, priorSessionFacts, lexicalRanks);
+        var candidates = BuildCandidates(
+            query, facts, currentSessionFacts, priorSessionFacts, lexicalRanks, vectorRanks);
         var coverage = ClassifyCoverage(candidates.Count);
         var tokensUsed = ApplyBudget(candidates, budgetTokens);
 
@@ -269,9 +281,20 @@ public static class RecallEngine
         IReadOnlyList<SessionFact> currentSessionFacts,
         IReadOnlyList<SessionFact> priorSessionFacts,
         IReadOnlyDictionary<long, int> lexicalRanks,
+        int budgetTokens) =>
+        Explain(query, facts, currentSessionFacts, priorSessionFacts, lexicalRanks, EmptyRanks, budgetTokens);
+
+    public static RecallExplanation Explain(
+        string query,
+        IReadOnlyList<CannedFact> facts,
+        IReadOnlyList<SessionFact> currentSessionFacts,
+        IReadOnlyList<SessionFact> priorSessionFacts,
+        IReadOnlyDictionary<long, int> lexicalRanks,
+        IReadOnlyDictionary<long, int> vectorRanks,
         int budgetTokens)
     {
-        var candidates = BuildCandidates(query, facts, currentSessionFacts, priorSessionFacts, lexicalRanks);
+        var candidates = BuildCandidates(
+            query, facts, currentSessionFacts, priorSessionFacts, lexicalRanks, vectorRanks);
         var tokensUsed = ApplyBudget(candidates, budgetTokens);
 
         var used = TokenizeQuery(query);
@@ -298,18 +321,21 @@ public static class RecallEngine
     /// external-content table can only index columns on the content table. Replacing one with the
     /// other trades one class of miss for another; fusing them has neither.</para>
     ///
-    /// <para>Reciprocal rank fusion rather than a combined score, because the two lanes are not
-    /// on a common scale and cannot be put on one: bm25 is an unbounded negative number whose
-    /// magnitude depends on corpus statistics, and the overlap score is a small count of terms.
-    /// Any weighting between them would be a constant nobody could justify. Ranks are comparable
-    /// by construction, which is the entire argument for RRF.</para>
+    /// <para>Reciprocal rank fusion rather than a combined score, because the lanes are not on a
+    /// common scale and cannot be put on one: bm25 is an unbounded negative number whose magnitude
+    /// depends on corpus statistics, the overlap score is a small count of terms, and a vector
+    /// distance is a geometry in a space the other two know nothing about. Any weighting between
+    /// them would be a constant nobody could justify. Ranks are comparable by construction, which
+    /// is the entire argument for RRF — and it is why adding a third lane needed no retuning of
+    /// the first two.</para>
     /// </remarks>
     private static List<RecallCandidate> BuildCandidates(
         string query,
         IReadOnlyList<CannedFact> facts,
         IReadOnlyList<SessionFact> currentSessionFacts,
         IReadOnlyList<SessionFact> priorSessionFacts,
-        IReadOnlyDictionary<long, int> lexicalRanks)
+        IReadOnlyDictionary<long, int> lexicalRanks,
+        IReadOnlyDictionary<long, int> vectorRanks)
     {
         var queryTerms = TokenizeQuery(query);
         var discriminators = BuildPriorSessionDiscriminators(priorSessionFacts);
@@ -366,7 +392,8 @@ public static class RecallEngine
         {
             var overlap = overlapRanks.TryGetValue(entry.Handle, out var o) ? o : (int?)null;
             var lexical = entry.FactId is { } id && lexicalRanks.TryGetValue(id, out var l) ? l : (int?)null;
-            if (overlap is null && lexical is null)
+            var vector = entry.FactId is { } vid && vectorRanks.TryGetValue(vid, out var v) ? v : (int?)null;
+            if (overlap is null && lexical is null && vector is null)
             {
                 continue;
             }
@@ -375,9 +402,10 @@ public static class RecallEngine
                 entry.FactId,
                 entry.Handle,
                 entry.Line,
-                Reciprocal(overlap) + Reciprocal(lexical),
+                Reciprocal(overlap) + Reciprocal(lexical) + Reciprocal(vector),
                 overlap,
                 lexical,
+                vector,
                 entry.Origin,
                 TokenEstimator.Estimate(entry.Line),
                 Packed: false));
