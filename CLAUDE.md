@@ -1,7 +1,7 @@
 # Engram — working rules
 
 Read `docs/engram-implementation-plan.md` before any non-trivial change. It holds
-forty-two decisions (D1–D42) that resolve questions the spec left open, and each one was
+forty-three decisions (D1–D43) that resolve questions the spec left open, and each one was
 reached by argument or measurement, not preference. `docs/engram-schema.sql` is the authority for
 database shape.
 
@@ -210,6 +210,20 @@ processes holding whatever they loaded at startup, so any caller deciding whethe
 ends up racing a server it decided was absent. A version gap is also not a hang: it gets its own
 state and doctor warns rather than reporting `Broken`, because nothing is wrong with a server that
 answers correctly from the build before this one (D37, D42).
+
+**The probe's two session counts do not subtract.** `session-start` carries Claude Code's session
+id; `session-open` carries the transport's `Mcp-Session-Id`. Measured on a real instance: 23 of the
+first, 9 of the second, no value in both. Disjoint id spaces, so the difference counts nothing —
+subtracting them once produced "N session(s) ran without Engram's MCP server reachable; memory was
+unavailable", printed for every session in which the model simply never asked. `McpSessionId` is
+`AddTransient` and injected only into the four tool methods, so `session-open` is written on the
+first *tool call*, never on connection: these counts move with use and never with uptime, and
+nothing Engram records observes reachability at all. The one comparison that survives is zero MCP
+sessions against a non-zero hook count, which needs no correspondence between the spaces. The
+consequence to know before trusting an adoption number: a tool call cannot be attributed to the
+Claude Code session that caused it, so "what fraction of sessions used memory" — what D18 gates M4
+on — is not computable today, and the percentages are over MCP sessions, a population that by
+construction called a tool (D43).
 
 ## Build constraints
 

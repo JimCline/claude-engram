@@ -21,7 +21,7 @@ stated as an erratum with a reason. Nothing here changes the spec's goals.
 
 ## 1. Decisions (locked)
 
-Forty-two architectural forks are locked below. Each is a decision, not an option.
+Forty-three architectural forks are locked below. Each is a decision, not an option.
 Six of them were adjudicated with Fable.
 
 ### D1 — Packaging: AOT core, Roslyn sidecar, native libs in the data directory
@@ -2264,6 +2264,54 @@ be answered by enumerating states again and getting a different answer in each c
 Seven attempted breaks each failed a test: restoring the path to identity (three tests), collapsing
 `VersionMismatch` back into `Wedged`, narrowing `ServerIsAlive` to `Running`, dropping
 `LaunchedFrom`, and inverting the doctor row's "only when it differs" condition.
+
+### D43 — two session counts that do not subtract
+
+`engram probe` warned: "N session(s) ran without Engram's MCP server reachable; memory was
+unavailable in those sessions", with N computed as `hookSessions - mcpSessions`. Both halves of
+that are wrong, and the second cannot be repaired by moving a threshold.
+
+`session-start` is written by the hook and carries Claude Code's session id. `session-open` is
+written by the MCP server on the first request of a session and carries the `Mcp-Session-Id` header
+the transport minted. Measured on a real instance: 23 distinct hook ids
+(`c2392759ab81425ab1874f717f5c30d6`, `ad5589fb-18fd-4767-…`) against 9 distinct MCP ids
+(`WE-XuAF0PAlGRAYV7uyBWg`, `-JYLbJEIjzV6JVkA64mMpw`) — with **no value present in both sets**. They
+are disjoint id spaces, so their difference is not a count of sessions, or of anything.
+
+The first half fails independently of that. `McpSessionId` is registered `AddTransient` and injected
+only as a parameter of the four tool methods, so nothing resolves it — and nothing writes
+`session-open` — until a memory tool is actually called. A session in which the model never asked
+for memory leaves a `session-start` and no `session-open` with the server up the whole time. That is
+the ordinary case, so the warning fired constantly and asserted the reverse of the truth: an outage
+report for sessions working exactly as designed. On the author's instance it claimed 14, and there
+were none.
+
+Nothing Engram records observes reachability. The `session-start` hook could probe `/health`, but
+the server starts on demand and D37 already holds that "not running" is a supported state rather
+than a fault, so "down at session start" would not be an outage either. The concept is not
+measurable from this data and is barely meaningful against an on-demand server.
+
+So the probe reports what it counted. Both counts print with a standing note that they are
+disjoint, because the obvious thing to do with two session counts is subtract them. One comparison
+survives: **zero MCP sessions against a non-zero hook count**, which needs no correspondence
+between the spaces, since zero tool calls is zero however the ids are issued. It is warned and
+worded as a question, not a conclusion — nobody having asked is as good an explanation as nothing
+working — and it hands off to `doctor`, which can actually look.
+
+`hook_gap_warning` is removed from the JSON rather than left null: a consumer reading `.difference`
+was reading a number with no referent, and a null-valued key keeps that reading available.
+`memory_never_reached` is a bool, because there is no quantity here worth reporting.
+
+Four attempted breaks each failed a test: restoring `hook > mcp` as the condition, dropping the
+`hook > 0` clause so an empty instance reports a finding, deleting the disjointness note, and
+renaming the JSON key. The first failed four tests at once, which is the measure of how far the
+wrong model had spread — those tests previously asserted it.
+
+**The limitation underneath, left open.** The MCP server cannot attribute a tool call to the Claude
+Code session that caused it: the client does not forward its session id, and the transport's is its
+own. So "what fraction of sessions used memory" — the number D18 gates M4 on — is not computable
+today. The adoption percentages are over MCP sessions, a population that by construction called a
+tool at least once, and they are labelled that way rather than rounded up to "sessions".
 
 ## PreCompact cannot inject context
 

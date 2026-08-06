@@ -83,11 +83,30 @@ public class ProbeCommandTests
         Assert.Equal(expectedMcpSessions, root.GetProperty("mcp_sessions").GetInt32());
         Assert.Equal(expectedSessionsWithRecall, root.GetProperty("sessions_with_recall").GetProperty("count").GetInt32());
 
+        // The false-outage case, end to end, against a real server: two hook sessions, one MCP
+        // session, and the server was up for the whole run — it answered the tool calls above.
+        // The assertion that stood here required the report to call that spare hook session one in
+        // which "memory was unavailable", while this very test was using memory through it.
         Assert.Equal(1, expectedMcpSessions);
         Assert.True(expectedHookSessions > expectedMcpSessions);
-        var warning = root.GetProperty("hook_gap_warning");
-        Assert.NotEqual(JsonValueKind.Null, warning.ValueKind);
-        Assert.Equal(expectedHookSessions - expectedMcpSessions, warning.GetProperty("difference").GetInt32());
+        Assert.False(root.GetProperty("memory_never_reached").GetBoolean());
+        Assert.False(root.TryGetProperty("hook_gap_warning", out _));
+
+        // Disjoint id spaces, asserted where both real issuers are present rather than argued from
+        // one instance's data: the hook writes the id Claude Code handed it, the server writes the
+        // one its transport minted, and nothing relates them.
+        var hookIds = rawRecords
+            .Where(r => r.GetProperty("kind").GetString() == "session-start")
+            .Select(r => r.GetProperty("session_id").GetString()!)
+            .ToHashSet(StringComparer.Ordinal);
+        var mcpIds = rawRecords
+            .Where(r => r.GetProperty("kind").GetString() == "session-open")
+            .Select(r => r.GetProperty("session_id").GetString()!)
+            .ToHashSet(StringComparer.Ordinal);
+
+        Assert.NotEmpty(hookIds);
+        Assert.NotEmpty(mcpIds);
+        Assert.Empty(hookIds.Intersect(mcpIds, StringComparer.Ordinal));
 
         var coverage = root.GetProperty("coverage");
         Assert.Equal(expectedCoverageCounts.GetValueOrDefault("high", 0), coverage.GetProperty("high_count").GetInt32());

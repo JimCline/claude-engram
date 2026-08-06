@@ -53,10 +53,7 @@ public class TelemetrySummarizerTests
 
         Assert.Equal(5, report.McpSessions);
         Assert.Equal(6, report.HookSessions);
-        Assert.NotNull(report.HookGapWarning);
-        Assert.Equal(6, report.HookGapWarning!.HookSessions);
-        Assert.Equal(5, report.HookGapWarning.McpSessions);
-        Assert.Equal(1, report.HookGapWarning.Difference);
+        Assert.False(report.MemoryNeverReached);
 
         Assert.Equal(4, report.SessionsWithRecall.Count);
         Assert.Equal(80.0, report.SessionsWithRecall.Percent);
@@ -119,8 +116,18 @@ public class TelemetrySummarizerTests
         Assert.Equal(75.0, report.SessionsWithRecall.Percent);
     }
 
+    /// <summary>
+    /// More hook sessions than MCP sessions is the ordinary case, not an outage.
+    /// </summary>
+    /// <remarks>
+    /// This used to assert the opposite — that the difference was a count of sessions in which
+    /// "memory was unavailable". It is a count of nothing. The ids come from different issuers,
+    /// and an MCP session is only recorded when a memory tool is called, so a session where the
+    /// model never asked leaves a session-start and no session-open with the server up the whole
+    /// time. Measured on a real instance: 23 hook ids, 9 MCP ids, no value in both sets.
+    /// </remarks>
     [Fact]
-    public void Summarize_MoreHookSessionsThanMcpSessions_EmitsGapWarningWithCorrectDifference()
+    public void Summarize_MoreHookSessionsThanMcpSessions_IsNotAnOutage()
     {
         var records = new List<TelemetryRecord>
         {
@@ -135,14 +142,11 @@ public class TelemetrySummarizerTests
         Assert.NotNull(report);
         Assert.Equal(1, report!.McpSessions);
         Assert.Equal(3, report.HookSessions);
-        Assert.NotNull(report.HookGapWarning);
-        Assert.Equal(3, report.HookGapWarning!.HookSessions);
-        Assert.Equal(1, report.HookGapWarning.McpSessions);
-        Assert.Equal(2, report.HookGapWarning.Difference);
+        Assert.False(report.MemoryNeverReached);
     }
 
     [Fact]
-    public void Summarize_EqualHookAndMcpSessionCounts_NoGapWarning()
+    public void Summarize_EqualHookAndMcpSessionCounts_IsNotAnOutage()
     {
         var records = new List<TelemetryRecord>
         {
@@ -157,7 +161,48 @@ public class TelemetrySummarizerTests
         Assert.NotNull(report);
         Assert.Equal(2, report!.McpSessions);
         Assert.Equal(2, report.HookSessions);
-        Assert.Null(report.HookGapWarning);
+        Assert.False(report.MemoryNeverReached);
+    }
+
+    /// <summary>
+    /// Sessions ran and not one reached the server — the only comparison the two counts support.
+    /// </summary>
+    /// <remarks>
+    /// It needs no correspondence between the id spaces: zero MCP sessions means zero memory-tool
+    /// calls however the ids are issued. It is still not proof of an outage — nobody may have
+    /// asked — so the wording says so and sends the reader to doctor rather than concluding.
+    /// </remarks>
+    [Fact]
+    public void Summarize_NotOneSessionReachedTheServer_IsTheOneThingWorthFlagging()
+    {
+        var records = new List<TelemetryRecord>
+        {
+            new("2026-07-20T08:00:00Z", "h1", TelemetryEventKind.SessionStart),
+            new("2026-07-20T08:01:00Z", "h2", TelemetryEventKind.SessionStart),
+        };
+
+        var report = TelemetrySummarizer.Summarize(records, skippedLines: 0);
+
+        Assert.NotNull(report);
+        Assert.True(report!.MemoryNeverReached);
+    }
+
+    /// <summary>
+    /// No hook sessions either means nothing ran, which is not a finding about memory.
+    /// </summary>
+    [Fact]
+    public void Summarize_NoSessionsAtAll_FlagsNothing()
+    {
+        var records = new List<TelemetryRecord>
+        {
+            new("2026-07-20T08:00:00Z", "m1", TelemetryEventKind.Recall, Query: "x", FactCount: 0, Coverage: "none"),
+        };
+
+        var report = TelemetrySummarizer.Summarize(records, skippedLines: 0);
+
+        Assert.NotNull(report);
+        Assert.Equal(0, report!.HookSessions);
+        Assert.False(report.MemoryNeverReached);
     }
 
     [Fact]
@@ -235,7 +280,6 @@ public class TelemetrySummarizerTests
         Assert.Equal(1, report.HookSessions);
         Assert.Equal(0, report.SessionsWithRecall.Count);
         Assert.Equal(0.0, report.SessionsWithRecall.Percent);
-        Assert.NotNull(report.HookGapWarning);
-        Assert.Equal(1, report.HookGapWarning!.Difference);
+        Assert.True(report.MemoryNeverReached);
     }
 }

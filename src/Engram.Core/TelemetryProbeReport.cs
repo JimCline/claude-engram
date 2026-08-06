@@ -23,24 +23,35 @@ public sealed record TelemetryQueryCount(
     [property: JsonPropertyName("query")] string Query,
     [property: JsonPropertyName("count")] int Count);
 
-public sealed record TelemetryHookGapWarning(
-    [property: JsonPropertyName("hook_sessions")] int HookSessions,
-    [property: JsonPropertyName("mcp_sessions")] int McpSessions,
-    [property: JsonPropertyName("difference")] int Difference,
-    [property: JsonPropertyName("message")] string Message);
-
 public sealed record TelemetryCompactionSurvivalStat(
     [property: JsonPropertyName("events")] int Events,
     [property: JsonPropertyName("sessions")] int Sessions,
     [property: JsonPropertyName("note")] string Note);
 
+/// <param name="McpSessions">
+/// Distinct <c>Mcp-Session-Id</c> values seen. That header is minted by the transport and the
+/// record is written when a session first calls a memory tool, so this counts sessions that used
+/// memory — not sessions that could have.
+/// </param>
+/// <param name="HookSessions">
+/// Distinct Claude Code session ids seen by the <c>session-start</c> hook.
+/// </param>
+/// <param name="MemoryNeverReached">
+/// Every session started and not one reached the MCP server. The only conclusion these two counts
+/// support: they are disjoint id spaces — verified on a real instance, 23 hook ids and 9 MCP ids
+/// with no value in both — so their difference is not a number of anything. Subtracting them once
+/// produced "N session(s) ran without Engram's MCP server reachable; memory was unavailable",
+/// which was reported for every session where the model simply never asked for memory. A zero
+/// against a non-zero is the one comparison that survives, because it needs no correspondence
+/// between the spaces.
+/// </param>
 public sealed record TelemetryProbeReport(
     [property: JsonPropertyName("date_range")] TelemetryDateRange DateRange,
     [property: JsonPropertyName("total_records")] int TotalRecords,
     [property: JsonPropertyName("skipped_lines")] int SkippedLines,
     [property: JsonPropertyName("mcp_sessions")] int McpSessions,
     [property: JsonPropertyName("hook_sessions")] int HookSessions,
-    [property: JsonPropertyName("hook_gap_warning")] TelemetryHookGapWarning? HookGapWarning,
+    [property: JsonPropertyName("memory_never_reached")] bool MemoryNeverReached,
     [property: JsonPropertyName("sessions_with_recall")] TelemetryAdoptionStat SessionsWithRecall,
     [property: JsonPropertyName("sessions_with_remember")] TelemetryAdoptionStat SessionsWithRemember,
     [property: JsonPropertyName("sessions_with_digest")] TelemetryAdoptionStat SessionsWithDigest,
@@ -147,13 +158,11 @@ public static class TelemetrySummarizer
             .Take(10)
             .ToList();
 
-        var hookGapWarning = hookSessionCount > mcpSessionCount
-            ? new TelemetryHookGapWarning(
-                HookSessions: hookSessionCount,
-                McpSessions: mcpSessionCount,
-                Difference: hookSessionCount - mcpSessionCount,
-                Message: $"{hookSessionCount - mcpSessionCount} session(s) ran without Engram's MCP server reachable; memory was unavailable in those sessions.")
-            : null;
+        // Not hookSessionCount > mcpSessionCount, which was the old test and is satisfied by the
+        // ordinary case: a session where the model never asked for memory writes a session-start
+        // and no session-open. Nothing about reachability is observable here — the tools are the
+        // only thing that records an MCP session, so the counts move with use, not with uptime.
+        var memoryNeverReached = mcpSessionCount == 0 && hookSessionCount > 0;
 
         var sessionFactRecalls = recalls.Where(r => (r.SessionFactCount ?? 0) > 0).ToList();
         var priorSessionFactRecalls = recalls.Where(r => (r.PriorSessionFactCount ?? 0) > 0).ToList();
@@ -165,7 +174,7 @@ public static class TelemetrySummarizer
             SkippedLines: skippedLines,
             McpSessions: mcpSessionCount,
             HookSessions: hookSessionCount,
-            HookGapWarning: hookGapWarning,
+            MemoryNeverReached: memoryNeverReached,
             SessionsWithRecall: AdoptionStat(recalls, mcpSessionSet, mcpSessionCount),
             SessionsWithRemember: AdoptionStat(remembers, mcpSessionSet, mcpSessionCount),
             SessionsWithDigest: AdoptionStat(digests, mcpSessionSet, mcpSessionCount),

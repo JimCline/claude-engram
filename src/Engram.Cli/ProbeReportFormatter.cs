@@ -12,11 +12,11 @@ internal static class ProbeReportFormatter
         stdout.WriteLine();
         if (report.McpSessions == 0)
         {
-            stdout.WriteLine("  ADOPTION: no MCP sessions recorded (0 session-open records — the server may not have run)");
+            stdout.WriteLine("  ADOPTION: no MCP sessions recorded (0 session-open records — no memory tool was ever called)");
         }
         else
         {
-            stdout.WriteLine($"  ADOPTION: {FormatPercent(report.SessionsWithRecall.Percent)} of sessions called recall ({report.SessionsWithRecall.Count}/{report.McpSessions} MCP sessions)");
+            stdout.WriteLine($"  ADOPTION: {FormatPercent(report.SessionsWithRecall.Percent)} of MCP sessions called recall ({report.SessionsWithRecall.Count}/{report.McpSessions})");
         }
 
         stdout.WriteLine();
@@ -38,18 +38,23 @@ internal static class ProbeReportFormatter
         stdout.WriteLine();
         stdout.WriteLine($"Records:  {report.TotalRecords} total · {report.DateRange.From:O} .. {report.DateRange.To:O}");
         stdout.WriteLine($"Sessions: {report.McpSessions} MCP · {report.HookSessions} hook");
+
+        // Said every run, because the obvious reading of two session counts is to subtract them,
+        // and this pair does not admit it — the ids come from different issuers and never match.
+        stdout.WriteLine("          (disjoint id spaces: an MCP session is recorded only when a memory tool is called)");
         stdout.WriteLine($"  recall    {report.SessionsWithRecall.Count}/{report.McpSessions}  ({FormatPercent(report.SessionsWithRecall.Percent)})");
         stdout.WriteLine($"  remember  {report.SessionsWithRemember.Count}/{report.McpSessions}  ({FormatPercent(report.SessionsWithRemember.Percent)})");
         stdout.WriteLine($"  digest    {report.SessionsWithDigest.Count}/{report.McpSessions}  ({FormatPercent(report.SessionsWithDigest.Percent)})");
 
-        if (report.HookGapWarning is { } warning)
+        if (report.MemoryNeverReached)
         {
             stdout.WriteLine();
-            stdout.WriteLine($"  WARNING: {warning.Difference} session(s) ran without Engram's MCP server reachable ({warning.HookSessions} hook vs {warning.McpSessions} MCP) — memory was unavailable in those sessions.");
+            stdout.WriteLine($"  WARNING: {report.HookSessions} session(s) started and not one called a memory tool.");
+            stdout.WriteLine("           If that is not simply how they went, memory may not be wired up: engram doctor");
         }
 
         stdout.WriteLine();
-        stdout.WriteLine($"Recalls per session:  median {report.MedianRecallsPerSession:0.0}  ·  max {report.MaxRecallsPerSession}");
+        stdout.WriteLine($"Recalls per MCP session:  median {report.MedianRecallsPerSession:0.0}  ·  max {report.MaxRecallsPerSession}");
         stdout.WriteLine($"Tokens per recall:    mean {report.MeanTokensPerRecall:0.0}  ·  median {report.MedianTokensPerRecall:0.0}");
         stdout.WriteLine();
         stdout.WriteLine("Coverage across all recalls:");

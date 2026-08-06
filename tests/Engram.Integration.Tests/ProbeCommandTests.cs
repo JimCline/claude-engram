@@ -50,9 +50,13 @@ public class ProbeCommandTests
         Assert.Equal(string.Empty, stderr.ToString());
 
         var text = stdout.ToString();
-        Assert.Contains("80.0% of sessions called recall (4/5 MCP sessions)", text);
+        Assert.Contains("80.0% of MCP sessions called recall (4/5)", text);
         Assert.Contains("Sessions: 5 MCP · 6 hook", text);
-        Assert.Contains("WARNING: 1 session(s) ran without Engram's MCP server reachable (6 hook vs 5 MCP)", text);
+        Assert.Contains("disjoint id spaces", text);
+
+        // Six hook sessions against five MCP ones is the ordinary case: one session did not call a
+        // memory tool. This fixture used to assert the opposite in so many words.
+        Assert.DoesNotContain("WARNING", text);
         Assert.Contains("median 1.0", text);
         Assert.Contains("max 2", text);
         Assert.Contains("mean 100.0", text);
@@ -84,11 +88,12 @@ public class ProbeCommandTests
         Assert.Equal(5, root.GetProperty("mcp_sessions").GetInt32());
         Assert.Equal(6, root.GetProperty("hook_sessions").GetInt32());
 
-        var warning = root.GetProperty("hook_gap_warning");
-        Assert.NotEqual(JsonValueKind.Null, warning.ValueKind);
-        Assert.Equal(6, warning.GetProperty("hook_sessions").GetInt32());
-        Assert.Equal(5, warning.GetProperty("mcp_sessions").GetInt32());
-        Assert.Equal(1, warning.GetProperty("difference").GetInt32());
+        Assert.False(root.GetProperty("memory_never_reached").GetBoolean());
+
+        // The key that carried the subtraction is gone, not merely unset. A consumer reading
+        // hook_gap_warning.difference was reading a number with no referent, and leaving the
+        // property in place as null would keep that reading available.
+        Assert.False(root.TryGetProperty("hook_gap_warning", out _));
 
         var sessionsWithRecall = root.GetProperty("sessions_with_recall");
         Assert.Equal(4, sessionsWithRecall.GetProperty("count").GetInt32());
@@ -190,6 +195,35 @@ public class ProbeCommandTests
         Assert.Equal(0, exitCode);
         Assert.Equal(string.Empty, stderr.ToString());
         Assert.DoesNotContain("WARNING", stdout.ToString());
+    }
+
+    /// <summary>
+    /// Sessions ran and none reached the server — flagged, and worded as a question.
+    /// </summary>
+    /// <remarks>
+    /// The line it replaced claimed memory "was unavailable", which the telemetry cannot know: no
+    /// record here observes the server at all, only whether a tool was called. This one names what
+    /// was counted and hands off to doctor, which can actually look.
+    /// </remarks>
+    [Fact]
+    public void Probe_NoSessionEverCalledAMemoryTool_WarnsAndSendsYouToDoctor()
+    {
+        using var sandbox = new SandboxHome();
+        WriteFixture(sandbox, new[]
+        {
+            """{"timestamp":"2026-07-20T08:00:00Z","session_id":"h1","kind":"session-start"}""",
+            """{"timestamp":"2026-07-20T08:02:00Z","session_id":"h2","kind":"session-start"}""",
+        });
+
+        var stdout = new StringWriter();
+        var stderr = new StringWriter();
+        var exitCode = CliApp.Run(["--home", sandbox.Home.Root, "probe"], stdout, stderr);
+
+        Assert.Equal(0, exitCode);
+        var text = stdout.ToString();
+        Assert.Contains("WARNING: 2 session(s) started and not one called a memory tool.", text);
+        Assert.Contains("engram doctor", text);
+        Assert.DoesNotContain("unavailable", text);
     }
 
     [Fact]
