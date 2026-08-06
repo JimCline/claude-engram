@@ -94,6 +94,13 @@ the file — the prose in there explains the choices, and a TOML round-trip woul
 Engram wrote carries `# written by engram` on its own line, because comparing against the shipped
 default alone makes the second run refuse the first run's edit (D33).
 
+**`dim` is measured, not typed.** It is the only embedding setting that fails silently when wrong —
+a mismatched width stores vectors that rank like noise and error nowhere — and it is not derivable
+from the model name, since an endpoint may serve a quantized variant under the same label. So
+`engram embed --probe` asks the endpoint, the picker asks before it asks the user, and `--dim` is
+optional. `HttpEmbedder.ProbeWidthAsync` is the one caller allowed past the width assertion on the
+embedding path; that assertion is load-bearing and must stay where it is (D34).
+
 **The store gets a snapshot before anything rewrites it.** `VACUUM INTO`, never `cp` — a WAL
 database copied with `cp` was measured here to yield not a stale file but an unusable one, with no
 `fact` table at all because everything was still in the log. Migrations snapshot unconditionally,

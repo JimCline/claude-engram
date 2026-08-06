@@ -28,7 +28,7 @@ public static class DefaultConfig
         # endpoint = "http://localhost:1234/v1"   # LM Studio, vLLM, llama.cpp server
         # endpoint = "http://localhost:11434"     # Ollama
         # model = "nomic-embed-text-v1.5"         # whatever the endpoint calls it
-        # dim = 768                               # required: the width it returns
+        # dim = 768                               # the width it returns; `engram embed --probe` asks
         # api_key_env = "OPENAI_API_KEY"          # the NAME of the variable, never the key
         # timeout_seconds = 60
 

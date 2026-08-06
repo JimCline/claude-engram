@@ -50,6 +50,22 @@ internal static class InitCommand
                 width = parsed;
             }
 
+            // No --dim on an endpoint provider is not an omission to complain about — it is the
+            // question the endpoint can answer itself.
+            if (width is null && endpoint is { Length: > 0 } && model is { Length: > 0 }
+                && provider is "openai-compat" or "openai" or "ollama")
+            {
+                if (EmbedCommand.ProbeWidth(provider, endpoint, model) is not { } measured)
+                {
+                    stderr.WriteLine($"error: could not ask {endpoint} how wide its vectors are. Check that it "
+                        + $"is running and knows a model called \"{model}\", or pass --dim yourself.");
+                    return 1;
+                }
+
+                stdout.WriteLine($"{endpoint} returns {measured} dimensions.");
+                width = measured;
+            }
+
             return Land(home, new EmbeddingChoice(provider, model, endpoint, width, apiKeyVariable), force, stdout, stderr);
         }
 
@@ -68,7 +84,7 @@ internal static class InitCommand
             return 0;
         }
 
-        if (EmbeddingSetup.Ask(Console.In, stdout) is not { } choice)
+        if (EmbeddingSetup.Ask(Console.In, stdout, EmbedCommand.ProbeWidth) is not { } choice)
         {
             stdout.WriteLine();
             stdout.WriteLine("Left the config alone.");

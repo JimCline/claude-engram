@@ -56,7 +56,15 @@ public static class EmbeddingSetup
     }
 
     /// <summary>Reads the choice from an interactive terminal, or null if the user backed out.</summary>
-    public static EmbeddingChoice? Ask(TextReader stdin, TextWriter stdout)
+    /// <param name="probe">
+    /// Asks an endpoint its own vector width, given provider, endpoint and model. Injected rather
+    /// than called directly so this stays a function of its input — and so a test does not have to
+    /// stand up a server to prove the questions are asked in the right order.
+    /// </param>
+    public static EmbeddingChoice? Ask(
+        TextReader stdin,
+        TextWriter stdout,
+        Func<string, string, string, int?>? probe = null)
     {
         ArgumentNullException.ThrowIfNull(stdin);
         ArgumentNullException.ThrowIfNull(stdout);
@@ -89,8 +97,23 @@ public static class EmbeddingSetup
                     .StartsWith('y') ? "ollama" : "openai-compat";
                 var model = Prompt(stdin, stdout, "What does the endpoint call the model? ");
 
-                // Asked rather than defaulted: a wrong width does not fail, it silently produces
-                // vectors that never match, which is the worst way for this to be wrong.
+                // The endpoint is asked before the user is. A width is not knowable from a model
+                // name — an endpoint may serve a quantized or truncated variant under the same
+                // label — and getting it wrong does not fail loudly, it stores vectors that never
+                // match. An observation beats both a lookup and a guess.
+                if (model is { Length: > 0 } && probe?.Invoke(provider, endpoint, model) is { } measured)
+                {
+                    stdout.WriteLine($"  {endpoint} returns {measured} dimensions.");
+                    var keyForMeasured = Prompt(stdin, stdout, "Environment variable holding the API key, if any? ");
+                    return new EmbeddingChoice(
+                        provider,
+                        model,
+                        endpoint,
+                        measured,
+                        string.IsNullOrEmpty(keyForMeasured) ? null : keyForMeasured);
+                }
+
+                stdout.WriteLine("  Could not ask the endpoint, so this one has to be typed.");
                 var width = Prompt(stdin, stdout, "How many dimensions does it return? ");
                 if (!int.TryParse(width, CultureInfo.InvariantCulture, out var dimensions) || dimensions < 1)
                 {

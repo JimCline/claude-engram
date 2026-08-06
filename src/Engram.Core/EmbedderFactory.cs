@@ -30,7 +30,8 @@ public static class EmbedderFactory
     /// </param>
     public static EmbedderResolution Create(
         EmbeddingSettings settings,
-        Func<string, string?> environment)
+        Func<string, string?> environment,
+        HttpClient? client = null)
     {
         ArgumentNullException.ThrowIfNull(settings);
         ArgumentNullException.ThrowIfNull(environment);
@@ -75,8 +76,8 @@ public static class EmbedderFactory
                 }
 
                 IEmbedder embedder = settings.Provider == EmbeddingProvider.Ollama
-                    ? new OllamaEmbedder(space, endpoint, settings.Timeout)
-                    : new OpenAiCompatibleEmbedder(space, endpoint, settings.Timeout, key);
+                    ? new OllamaEmbedder(space, endpoint, settings.Timeout, client)
+                    : new OpenAiCompatibleEmbedder(space, endpoint, settings.Timeout, key, client);
 
                 return new EmbedderResolution(embedder, $"{settings.Provider} at {endpoint}");
 

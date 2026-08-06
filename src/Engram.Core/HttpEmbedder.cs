@@ -103,6 +103,57 @@ public abstract class HttpEmbedder : IEmbedder, IDisposable
         IReadOnlyList<string> texts,
         CancellationToken cancellationToken)
     {
+        var vectors = await SendAsync(texts, cancellationToken).ConfigureAwait(false);
+        if (vectors is null)
+        {
+            return null;
+        }
+
+        foreach (var vector in vectors)
+        {
+            if (vector is not null && vector.Length != Space.Dimensions)
+            {
+                throw new InvalidOperationException(
+                    $"{GetType().Name} is configured for {Space.Dimensions} dimensions but "
+                    + $"{Endpoint} returned {vector.Length}. Fix [embedding] dim, or point "
+                    + "at a different model — a mismatched width corrupts every query it "
+                    + "reaches without erroring anywhere.");
+            }
+        }
+
+        return vectors;
+    }
+
+    /// <summary>Asks the endpoint how wide its vectors are, by embedding one short string.</summary>
+    /// <returns>The width, or null if the endpoint could not be reached or did not answer usefully.</returns>
+    /// <remarks>
+    /// This is the one caller allowed past the width check above, and it has to be: the check
+    /// compares against a width that, at probe time, nobody knows yet. That is the entire reason
+    /// the probe exists — a hand-typed <c>dim</c> does not fail loudly when it is wrong, it
+    /// produces vectors that never match anything. Asking the endpoint replaces a lookup with an
+    /// observation. The <see cref="EmbeddingSpace"/> this embedder was built with is a placeholder
+    /// here and its width means nothing; only the model name on it is used, because that is what
+    /// the request body has to name.
+    /// </remarks>
+    public async Task<int?> ProbeWidthAsync(CancellationToken cancellationToken = default)
+    {
+        await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            var vectors = await SendAsync(["engram probe"], cancellationToken).ConfigureAwait(false);
+            return vectors is [{ } vector] ? vector.Length : null;
+        }
+        finally
+        {
+            gate.Release();
+        }
+    }
+
+    /// <summary>One round trip, with the vectors exactly as the endpoint sent them.</summary>
+    private async Task<IReadOnlyList<float[]?>?> SendAsync(
+        IReadOnlyList<string> texts,
+        CancellationToken cancellationToken)
+    {
         HttpResponseMessage response;
         try
         {
@@ -144,25 +195,7 @@ public abstract class HttpEmbedder : IEmbedder, IDisposable
                 return null;
             }
 
-            var vectors = ReadResponse(body, texts.Count);
-            if (vectors is null)
-            {
-                return null;
-            }
-
-            foreach (var vector in vectors)
-            {
-                if (vector is not null && vector.Length != Space.Dimensions)
-                {
-                    throw new InvalidOperationException(
-                        $"{GetType().Name} is configured for {Space.Dimensions} dimensions but "
-                        + $"{Endpoint} returned {vector.Length}. Fix [embedding] dim, or point "
-                        + "at a different model — a mismatched width corrupts every query it "
-                        + "reaches without erroring anywhere.");
-                }
-            }
-
-            return vectors;
+            return ReadResponse(body, texts.Count);
         }
     }
 

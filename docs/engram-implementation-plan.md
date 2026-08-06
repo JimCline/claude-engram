@@ -1832,6 +1832,55 @@ someone ran to avoid getting this wrong by hand.
 
 ---
 
+### D34 — The endpoint is asked its vector width, never told it
+
+D33 shipped the picker still asking a human for `dim`, and flagged that as the weak point. It is
+the one embedding setting that does not fail loudly when it is wrong. A wrong endpoint refuses to
+connect; a wrong model name comes back an error; a wrong width produces vectors that are stored,
+compared and ranked, and that match nothing — retrieval degrades into confident noise and no
+component anywhere reports a fault. It is also not derivable from the model name, because an
+endpoint may serve a quantized or truncated variant under the same label. So the number is
+obtained by observation: `engram embed --probe` embeds one short string and reports the length of
+what comes back.
+
+**The probe is the one caller allowed past the width check.** `HttpEmbedder` throws when a returned
+vector disagrees with its configured width, which is right on the write path and impossible at
+probe time, when the configured width is the question. Rather than duplicate the request and
+response plumbing, the send and parse were extracted and the assertion left in the embedding path
+alone. Falsified: deleting the assertion still fails `OpenAi_WithTheWrongWidth_Throws`, so the
+extraction did not carry the guard away with it.
+
+**A provisional width of 1.** `EmbeddingSpace` refuses a non-positive width — correctly, since a
+zero-width space is meaningless everywhere else — so the probe has to construct one before it knows
+the answer. One is the smallest lie that constructs, and the probe path is the only code that ever
+sees it, where it is never compared against anything.
+
+**The probe runs against a configuration that is incomplete by definition**, so the settings' own
+problem list is set aside for it: that list is complaining the width is missing, which is what the
+probe was called to find out. Everything else the factory checks still applies — provider,
+endpoint, and the API-key rule for a non-local host. The caller still sees the problems; they are
+just not grounds for refusing to ask.
+
+Consequences, each of which removes a question someone previously had to answer from memory:
+`init --with-embeddings` asks the endpoint before asking the user, and falls back to asking only
+when the endpoint will not say; `init --provider openai-compat --endpoint … --model …` no longer
+needs `--dim` at all; and `embed --probe` against an already-configured instance reports a
+disagreement between the config and reality, which is a fault that had no other way of surfacing.
+A `local` provider is answered without a request, since the width is a property of a file Engram
+already has the specification for.
+
+The probe reads and does not write unless `--use-it` is given. It is what you run when you are not
+sure what is out there, and a diagnostic that edits your config as a side effect is not one.
+
+One guard here is unreachable and is kept anyway, following the `foreign_keys` precedent: the
+explicit "no model named" check cannot change whether a request is sent, because the factory
+already refuses to build an embedder without one. What it changes is the sentence the user reads —
+the factory's mentions the missing `dim`, which during a probe is the question rather than the
+fault. So the test asserts the message rather than the silence, and that assertion does fail when
+the check is removed.
+
+---
+
 ## PreCompact cannot inject context
 
 Spec §10.1 assumes `PreCompact` can "inject one instruction" the same way `SessionStart`

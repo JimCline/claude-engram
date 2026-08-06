@@ -272,6 +272,79 @@ public sealed class EmbeddingSetupTests
     }
 
     [Fact]
+    public void Ask_WhenTheEndpointCanSayItsOwnWidth_DoesNotAskForIt()
+    {
+        // Note the answers: endpoint, not-ollama, model, then straight to the API key question.
+        // If the width were still being asked for, the key answer would be eaten by it.
+        var stdout = new StringWriter();
+        var choice = EmbeddingSetup.Ask(
+            new StringReader("3\nhttp://localhost:1234/v1\nn\nbge-m3\nMY_KEY\n"),
+            stdout,
+            (_, _, _) => 1024);
+
+        Assert.Equal(1024, choice!.Dimensions);
+        Assert.Equal("MY_KEY", choice.ApiKeyEnvironmentVariable);
+        Assert.Contains("returns 1024 dimensions", stdout.ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Ask_TellsTheProbeWhichProviderAndModelToAskAbout()
+    {
+        (string Provider, string Endpoint, string Model)? asked = null;
+
+        EmbeddingSetup.Ask(
+            new StringReader("3\nhttp://localhost:11434\ny\nnomic-embed-text\n\n"),
+            new StringWriter(),
+            (provider, endpoint, model) => { asked = (provider, endpoint, model); return 768; });
+
+        Assert.Equal(("ollama", "http://localhost:11434", "nomic-embed-text"), asked);
+    }
+
+    [Fact]
+    public void Ask_WhenTheEndpointWillNotAnswer_FallsBackToAskingTheUser()
+    {
+        var stdout = new StringWriter();
+        var choice = EmbeddingSetup.Ask(
+            new StringReader("3\nhttp://localhost:1234/v1\nn\nbge-m3\n384\n\n"),
+            stdout,
+            (_, _, _) => null);
+
+        Assert.Equal(384, choice!.Dimensions);
+        Assert.Contains("has to be typed", stdout.ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Ask_WithNoModelNamed_DoesNotBotherTheEndpoint()
+    {
+        var asked = false;
+
+        EmbeddingSetup.Ask(
+            new StringReader("3\nhttp://localhost:1234/v1\nn\n\n768\n\n"),
+            new StringWriter(),
+            (_, _, _) => { asked = true; return 1024; });
+
+        Assert.False(asked);
+    }
+
+    [Fact]
+    public void Init_WithAnEndpointButNoDim_AndNothingListening_SaysWhichThingToFix()
+    {
+        using var sandbox = new SandboxHome(initialize: false);
+
+        var result = Run(
+            sandbox.Home,
+            "init",
+            "--provider", "openai-compat",
+            "--endpoint", "http://127.0.0.1:1/v1",
+            "--model", "some-embed");
+
+        Assert.Equal(1, result.Code);
+        Assert.Contains("could not ask", result.Error, StringComparison.Ordinal);
+        Assert.Contains("--dim", result.Error, StringComparison.Ordinal);
+        Assert.Equal("\"none\"", Setting(sandbox.Home, "provider"));
+    }
+
+    [Fact]
     public void Ask_WithABlankAnswer_LeavesTheConfigAlone()
     {
         Assert.Null(EmbeddingSetup.Ask(new StringReader("\n"), new StringWriter()));
