@@ -1467,6 +1467,55 @@ migration.
 
 ---
 
+### D28 — Built from source on the machine that runs it, so packaging is not a problem we have
+
+Engram is not a commercial product and there is no shipped binary. It is built from the
+repository on the end user's machine — `install.sh` already does exactly this, via
+`dotnet publish` against a detected RID. Anyone who wants to distribute it differently owns
+the consequences of that.
+
+This is worth writing down because a whole class of work disappears with it, and that class
+is seductive: Developer ID signing, notarization, reproducible builds, a prebuilt platform
+matrix, checksummed release artifacts, and every decision that begins "what if the build
+machine differs from the user's machine." They do not differ. Time spent making them agree is
+time spent on a problem this project does not have, and the honest response to the residual
+risk is a README callout about building rather than machinery to eliminate it.
+
+**Two things survive as real requirements**, and both are about what the built binary can do
+rather than how it got there:
+
+**Performance on Apple Silicon must not be silently lost.** §1.5 records the mechanism:
+`ggml-metal` compiles its shaders at runtime, and the shader language version defaults to the
+SDK recorded in the *main executable*, so an executable linked against an old SDK quietly runs
+the pre-tensor path at roughly half speed on an M5. Under D28 this mostly solves itself — the
+binary is linked by Apple's linker on the user's own machine, `out/engram` measured
+`sdk 26.5`, and an M5 implies macOS 26 anyway, so the machines that would benefit are the
+machines that already have a current SDK. **What does not follow is a build-time assertion.**
+Failing a build because its SDK field is below 26 would punish someone on an M2 and macOS 14
+who has no tensor cores to lose. The check belongs at runtime, in `doctor`, where the hardware
+and the actual `has_tensor` result are both known — report the Metal tensor path as on or off
+and, when it is off on hardware that supports it, name updating the toolchain and rebuilding
+as the fix. Rewriting the SDK field with `vtool` is rejected: it makes the binary claim an SDK
+it was not built against, and on an older macOS that could push the main shader compile past
+what the OS supports, turning a performance problem into a broken one.
+
+**It must build and run on Windows and Linux, with CUDA where drivers are present.** This is
+the constraint that decides the provider question. An HTTP-only embedder would not need CUDA
+at all — the inference server would own the GPU — so wanting CUDA is wanting llama.cpp
+in-process, and D25's ladder therefore lands on rung 2 as its ordinary case rather than its
+optional one. D28 makes that far cheaper than it looked: building on the target machine means
+there is no five-platform binary matrix to pre-produce, because each machine resolves its own
+platform at build time. What it does not make cheaper is *backend selection* — Metal on macOS,
+CUDA on Linux and Windows when the driver is there, CPU otherwise — which is now a real
+requirement rather than a nicety, and the loading quirks spike E measured are macOS-specific
+and have no Windows or Linux equivalent yet.
+
+CI builds all three platforms as of this decision, because under D28 "does it build here" is
+the entire portability question — there is no artifact to test instead — and Linux and Windows
+were previously unproven.
+
+---
+
 ## PreCompact cannot inject context
 
 Spec §10.1 assumes `PreCompact` can "inject one instruction" the same way `SessionStart`
@@ -1804,6 +1853,15 @@ one that answers on FTS5 and says so. `doctor` names it; `embed --rebuild` fixes
 index is external-content, so its delete reads the content table to find what to unindex.
 Deleting the content row first leaves the index holding a phantom. This orders every deletion
 path — `forget`, compaction, and any re-embed that replaces a row.
+
+**The compute backend is chosen per host, and the wrong one fails as slowness rather than as
+an error.** Metal on macOS, CUDA on Linux and Windows where a driver is present, CPU
+otherwise (D28). A CPU fallback on a machine with a usable GPU is not a crash and not a
+warning — it is the same silent half-speed failure the Apple SDK field produces, arriving by a
+different route. So whatever selects the backend must also *report* what it selected, and
+`doctor` must show it. Note that spike E's loading order — `NativeLibrary.Load` each
+dependency by path before handing the main library to LLamaSharp — was derived from macOS
+install-name behaviour and has no verified Windows or Linux equivalent.
 
 **Fetching a native library is a supply-chain decision, not a download.** `init
 --with-embeddings` has to pull `sqlite-vec` and llama.cpp for the host platform, pin an exact

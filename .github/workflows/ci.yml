@@ -6,7 +6,33 @@ on:
 
 jobs:
   build:
-    runs-on: macos-latest
+    # Engram is built from source on the machine that runs it, so "does it build here"
+    # is the only portability question there is — there is no release artifact to test
+    # instead. macOS is the development platform; Linux and Windows are supported
+    # targets and stay unproven unless CI actually builds them.
+    strategy:
+      # Every platform reports. A Windows failure must not hide whether Linux passed,
+      # because the two fail for unrelated reasons and both need fixing on their own.
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            rid: osx-arm64
+            exe: engram
+          - os: ubuntu-latest
+            rid: linux-x64
+            exe: engram
+          - os: windows-latest
+            rid: win-x64
+            exe: engram.exe
+
+    runs-on: ${{ matrix.os }}
+
+    defaults:
+      run:
+        # One shell everywhere, so the steps below are not three dialects of the same
+        # script. Windows runners provide bash via Git for Windows.
+        shell: bash
 
     steps:
       - uses: actions/checkout@v4
@@ -14,6 +40,13 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 10.0.x
+
+      # Native AOT shells out to a C toolchain and a linker. They are present on the
+      # macOS and Windows images already; on Linux the ILCompiler needs these two by
+      # name and fails at link time without them.
+      - name: Install AOT prerequisites (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo apt-get update && sudo apt-get install -y clang zlib1g-dev
 
       - name: Build
         run: dotnet build -c Release
@@ -27,10 +60,10 @@ jobs:
       # has to do the thing that loads it.
       - name: AOT publish smoke test
         run: |
-          dotnet publish src/Engram.Cli -c Release -r osx-arm64 -o ci-out
-          ENGRAM_HOME="$(mktemp -d)" ./ci-out/engram init
+          dotnet publish src/Engram.Cli -c Release -r ${{ matrix.rid }} -o ci-out
+          ENGRAM_HOME="$PWD/ci-home" ./ci-out/${{ matrix.exe }} init
 
       - name: End-to-end tests
         run: dotnet test tests/Engram.EndToEnd.Tests -c Release
         env:
-          ENGRAM_TEST_BINARY: ${{ github.workspace }}/ci-out/engram
+          ENGRAM_TEST_BINARY: ${{ github.workspace }}/ci-out/${{ matrix.exe }}

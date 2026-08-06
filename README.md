@@ -34,19 +34,44 @@ memory tool writes to it — `engram_digest` was the last that did not.
 | [`docs/engram-schema.sql`](docs/engram-schema.sql) | Canonical M1 database schema |
 | [`docs/engram-design.html`](docs/engram-design.html) | Visual design sheet |
 
-Start with the implementation plan — it records twenty-seven decisions (D1–D27) resolving
+Start with the implementation plan — it records twenty-eight decisions (D1–D28) resolving
 questions the spec left open, the places where the spec contradicts itself, and for each
 one the argument or measurement that settled it.
 
 ## Building
 
-Requires the .NET 10 SDK. On macOS, Native AOT also needs Xcode command line tools.
+Engram is built from this repository on the machine that runs it (D28). There are no
+release binaries, and none of what follows assumes one.
+
+Requires the .NET 10 SDK. Native AOT also needs a platform toolchain: Xcode command line
+tools on macOS, `clang` and `zlib1g-dev` on Linux, the MSVC C++ build tools on Windows.
 
 ```
 dotnet build -c Release
 dotnet test  -c Release
-dotnet publish src/Engram.Cli -c Release -r osx-arm64 -o out
+dotnet publish src/Engram.Cli -c Release -r osx-arm64 -o out   # or linux-x64, win-x64
 ```
+
+### Build risks worth knowing about
+
+Because the binary is produced on your machine, a few properties of *your* machine end up
+baked into it. None of these are checked at build time on purpose — a build that fails on a
+machine with nothing to lose is worse than the thing it is guarding against — so `engram
+doctor` reports them at runtime instead, where the hardware is known.
+
+- **Apple Silicon, embedding speed.** llama.cpp compiles its Metal shaders at runtime, and
+  the shader language version follows the SDK recorded in the executable, not the OS running
+  it. Build with an old Xcode command line tools and the M5 tensor path stays off — embedding
+  runs at roughly half speed with no error anywhere. Keep the command line tools current. If
+  `doctor` reports the tensor path off on hardware that supports it, update them and rebuild.
+- **CUDA on Linux and Windows.** GPU acceleration needs the driver present at build and run
+  time. Without it Engram falls back to CPU, which is correct but much slower, and again
+  silent — `doctor` names the backend actually in use.
+- **Cross-building.** Publishing for a RID other than your own machine's is untested and
+  unsupported here. If you do it, the two points above are yours to manage.
+
+If you would rather distribute a built binary — signed, notarised, or otherwise — that
+works, but it is outside what this repository tests or reasons about.
 
 ## Installing
 
