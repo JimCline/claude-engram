@@ -4,16 +4,35 @@ public static class DefaultConfig
 {
     public static string Content => $"""
         [embedding]
-        provider = "none"            # none | llamasharp | openai-compat
-        # -- llamasharp --
-        model_path = "~/{EngramHome.DirectoryName}/models/qwen3-embedding-0.6b-q8_0.gguf"
-        threads = 4
-        idle_unload_minutes = 5
-        # -- openai-compat --
-        endpoint = "http://localhost:1234/v1"
-        model = "text-embedding-qwen3-embedding-0.6b"
+        # The vector lane is optional. "none" is a supported configuration, not a degraded
+        # one — recall works lexically without it. Turning it on is a tradeoff in disk,
+        # memory and startup time, so it is a choice rather than a default.
+        #
+        #   none           lexical recall only
+        #   local          a model Engram runs itself, from the list below
+        #   openai-compat  anything serving POST /v1/embeddings — LM Studio, llama.cpp's
+        #                  server, vLLM, OpenAI, Voyage, most hosted providers
+        #   ollama         Ollama's native batch endpoint
+        #
+        # Note: Anthropic publishes no embeddings API. Claude cannot be a provider here.
+        provider = "none"
+
+        # -- local --
+        # Smallest to largest. Width comes from the model, so `dim` is not needed:
+        #   all-minilm-l6-v2       384d   ~25 MB   256-token window, English
+        #   nomic-embed-text-v1.5  768d  ~140 MB  8k-token window, English
+        #   qwen3-embedding-0.6b  1024d  ~610 MB  32k-token window, 100+ languages
+        model = "nomic-embed-text-v1.5"
+
+        # -- openai-compat / ollama --
+        # endpoint = "http://localhost:1234/v1"   # LM Studio, vLLM, llama.cpp server
+        # endpoint = "http://localhost:11434"     # Ollama
+        # model = "nomic-embed-text-v1.5"         # whatever the endpoint calls it
+        # dim = 768                               # required: the width it returns
+        # api_key_env = "OPENAI_API_KEY"          # the NAME of the variable, never the key
+        # timeout_seconds = 60
+
         # -- shared --
-        dim = 1024
         max_batch = 16
 
         [retrieval]

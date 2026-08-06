@@ -66,6 +66,11 @@ internal static class ServeCommand
         builder.Services.AddTransient(_ => new McpHomeState(File.Exists(home.ConfigPath)));
         builder.Services.AddTransient(services => ResolveSessionId(services, home, openedSessions));
 
+        // The singular embedding service. One server per home, so one embedder — no lock, no
+        // second daemon. It self-disables when no provider is configured, which is the ordinary
+        // case, so registering it unconditionally costs a started-and-returned task.
+        builder.Services.AddHostedService<EmbeddingBacklogService>();
+
         builder.Services.AddMcpServer()
             // The SDK defaults HttpServerTransportOptions.Stateless to true as of the
             // 2026-07-28 protocol revision (SEP-2567), which mints no Mcp-Session-Id at

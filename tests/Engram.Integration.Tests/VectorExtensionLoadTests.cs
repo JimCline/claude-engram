@@ -3,6 +3,7 @@ using Microsoft.Data.Sqlite;
 
 namespace Engram.Integration.Tests;
 
+[Collection(SqlitePoolCollection.Name)]
 public class VectorExtensionLoadTests
 {
     private static string? VectorVersion(SqliteConnection connection)
@@ -110,10 +111,53 @@ public class VectorExtensionLoadTests
     /// passes its tests on borrowed state, and the process that draws a cold handle — a hook,
     /// or the next run of the binary — is the one that fails.
     ///
-    /// <para>No <c>ClearAllPools</c> anywhere here: each sandbox has its own database path and
-    /// therefore its own pool, so both halves are deterministic and neither can be contaminated
-    /// by a test running beside it.</para>
+    /// <para>Each sandbox has its own database path and therefore its own pool, which is not by
+    /// itself enough to make this deterministic: <c>ClearAllPools</c> in a class running beside
+    /// this one empties every pool in the process, including this one, between the dispose and
+    /// the reopen. That is why this class is in <see cref="SqlitePoolCollection"/>.</para>
     /// </remarks>
+    /// <summary>
+    /// Why <see cref="SqlitePoolCollection"/> exists, stated as an assertion rather than a
+    /// comment: a pool is per connection string, but clearing is not.
+    /// </summary>
+    /// <remarks>
+    /// The intuition that a private database path gives a private pool is correct and useless
+    /// here — <c>ClearAllPools</c> reaches every one of them. A class that clears pools to show
+    /// what a cold process sees therefore deletes the recycled handle any other class is
+    /// observing, wherever its database lives. This suite hit exactly that, intermittently,
+    /// before the two classes were serialised.
+    /// </remarks>
+    [Fact]
+    public void ClearAllPools_EmptiesThePoolOfADatabaseItWasNeverPointedAt()
+    {
+        Assert.SkipUnless(VectorExtensionFile.Path is not null, VectorExtensionFile.SkipReason);
+
+        using var mine = new SandboxHome();
+        using var elsewhere = new SandboxHome();
+        VectorExtensionFile.InstallInto(mine.Home);
+
+        using (var loader = EngramDatabase.Open(mine.Home))
+        {
+            Assert.True(AnswersVectorQueries(loader));
+        }
+
+        // Stands in for the unrelated test class that clears pools to prove a point about a
+        // completely different database.
+        using (var unrelated = EngramDatabase.Open(elsewhere.Home))
+        {
+            Assert.False(AnswersVectorQueries(unrelated));
+        }
+
+        SqliteConnection.ClearAllPools();
+
+        using var borrower = EngramDatabase.Open(mine.Home.DatabasePath);
+
+        Assert.False(
+            AnswersVectorQueries(borrower),
+            "The pooled handle survived ClearAllPools, so pools are not process-wide after all "
+            + "and SqlitePoolCollection has nothing to protect.");
+    }
+
     [Fact]
     public void AConnectionThatLoadedNothing_StillInheritsTheExtensionFromThePool()
     {

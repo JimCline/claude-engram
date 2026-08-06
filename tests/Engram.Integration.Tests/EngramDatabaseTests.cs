@@ -8,6 +8,7 @@ namespace Engram.Integration.Tests;
 /// here — a connection-scoped pragma silently defaulting off, a CHECK constraint that was
 /// never actually applied — cannot fail in a unit test.
 /// </summary>
+[Collection(SqlitePoolCollection.Name)]
 public class EngramDatabaseTests
 {
     // Guards the observable contract, not the pragma statement: Microsoft.Data.Sqlite turns
