@@ -171,4 +171,94 @@ public class ConfigFileTests
         Assert.Equal("extractive", config.String("impressions", "mode"));
         Assert.Contains("/knowledge", config.Strings("taxonomy", "roots"));
     }
+
+    /// <summary>
+    /// A list a person is expected to edit cannot live on one line — twenty ignore patterns on
+    /// one line is a line nobody reads, let alone changes.
+    /// </summary>
+    [Fact]
+    public void Strings_ReadsAnArrayThatSpansSeveralLines()
+    {
+        var config = ConfigFile.Parse(
+            """
+            [indexing]
+            ignore = [
+              "**/bin/**",
+              "**/obj/**",
+              "**/node_modules/**",
+            ]
+            max_file_bytes = 4096
+            """);
+
+        Assert.Equal(["**/bin/**", "**/obj/**", "**/node_modules/**"], config.Strings("indexing", "ignore"));
+    }
+
+    // The key after a multi-line array has to still be found, or joining the array would swallow
+    // the rest of the section.
+    [Fact]
+    public void AKeyAfterAMultiLineArray_IsStillRead()
+    {
+        var config = ConfigFile.Parse(
+            """
+            [indexing]
+            ignore = [
+              "a",
+              "b",
+            ]
+            max_file_bytes = 4096
+            """);
+
+        Assert.Equal(4096, config.Int("indexing", "max_file_bytes"));
+    }
+
+    [Fact]
+    public void ASectionAfterAMultiLineArray_IsStillRead()
+    {
+        var config = ConfigFile.Parse(
+            """
+            [indexing]
+            ignore = [
+              "a",
+            ]
+
+            [embedding]
+            provider = "ollama"
+            """);
+
+        Assert.Equal("ollama", config.String("embedding", "provider"));
+    }
+
+    [Fact]
+    public void CommentsInsideAMultiLineArray_AreDropped()
+    {
+        var config = ConfigFile.Parse(
+            """
+            [indexing]
+            ignore = [
+              "a",   # the first one
+              # a whole line of commentary
+              "b",
+            ]
+            """);
+
+        Assert.Equal(["a", "b"], config.Strings("indexing", "ignore"));
+    }
+
+    [Fact]
+    public void ASingleLineArray_StillReads()
+    {
+        var config = ConfigFile.Parse("[indexing]\nignore = [\"a\", \"b\"]\n");
+
+        Assert.Equal(["a", "b"], config.Strings("indexing", "ignore"));
+    }
+
+    // Better to say so than to silently swallow the rest of the file into an array that never
+    // ends.
+    [Fact]
+    public void AnUnclosedArray_IsAnError()
+    {
+        var config = ConfigFile.Parse("[indexing]\nignore = [\n  \"a\",\n");
+
+        Assert.Contains(config.Errors, e => e.Problem.Contains("never closed", StringComparison.Ordinal));
+    }
 }

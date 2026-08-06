@@ -44,7 +44,41 @@ public static class DefaultConfig
         [indexing]
         auto_index_on_session_start = true
         max_sync_index_ms = 1500      # beyond this, indexing continues async
-        ignore = ["**/bin/**", "**/obj/**", "**/node_modules/**", "**/.git/**"]
+
+        # Where there is a git checkout, git decides what belongs to the repo:
+        # tracked files plus untracked ones that are not ignored. That already
+        # excludes build output, node_modules, caches and temp files, per every
+        # nested .gitignore and your global ignore file — decisions you already
+        # made, rather than a staler copy of them kept here.
+        use_git = true
+
+        # Applied on top of that, and used alone when there is no checkout —
+        # which is where they earn their keep, since a committed file can still
+        # be junk to index but git will not say so. Covers several ecosystems on
+        # purpose: a list that only knows its author's languages walks a Python
+        # .venv or a Swift .build and finds tens of thousands of files.
+        ignore = [
+          "**/.git/**",
+          "**/bin/**", "**/obj/**",
+          "**/node_modules/**", "**/.next/**",
+          "**/.venv/**", "**/venv/**", "**/__pycache__/**",
+          "**/*.egg-info/**", "**/.mypy_cache/**", "**/.pytest_cache/**",
+          "**/.build/**", "**/DerivedData/**", "**/Pods/**",
+          "**/target/**", "**/vendor/**",
+          "**/dist/**", "**/build/**", "**/.cache/**", "**/coverage/**",
+        ]
+
+        # Binary files are detected by content — a NUL byte in the first 8 KB,
+        # which is git's own test — never by extension. These two catch what
+        # survives that: checked-in datasets and generated parsers are large,
+        # and minified bundles are made of enormous lines.
+        #
+        # The mean line, not the longest: one long line among many short ones is
+        # a formatting choice, while a file made of long lines is generated.
+        # Real source here averages 38 bytes a line, 68 at p99; a bundle runs to
+        # thousands, so 400 sits in the gap rather than near either edge.
+        max_file_bytes = 1000000
+        max_mean_line_bytes = 400
 
         [impressions]
         mode = "extractive"           # extractive (default, zero-dep) | llm

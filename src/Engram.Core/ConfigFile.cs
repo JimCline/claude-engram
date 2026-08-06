@@ -52,13 +52,32 @@ public sealed class ConfigFile
         var current = "";
         var lineNumber = 0;
 
-        foreach (var raw in text.Split('\n'))
+        var lines = text.Split('\n');
+        for (var index = 0; index < lines.Length; index++)
         {
-            lineNumber++;
-            var line = StripComment(raw).Trim();
+            lineNumber = index + 1;
+            var line = StripComment(lines[index]).Trim();
             if (line.Length == 0)
             {
                 continue;
+            }
+
+            // An array may run over several lines, and it has to: the ignore list is twenty
+            // patterns, and a config file a person is expected to edit cannot put those on one
+            // line. Joined here so everything below still sees one logical setting.
+            if (OpensAnArray(line))
+            {
+                while (index + 1 < lines.Length && !line.EndsWith(']'))
+                {
+                    index++;
+                    line += " " + StripComment(lines[index]).Trim();
+                }
+
+                if (!line.EndsWith(']'))
+                {
+                    errors.Add(new ConfigError(lineNumber, line, "array is never closed"));
+                    continue;
+                }
             }
 
             if (line[0] == '[')
@@ -151,6 +170,14 @@ public sealed class ConfigFile
         }
 
         return items;
+    }
+
+    /// <summary>Whether this line starts an array value that may not close on it.</summary>
+    private static bool OpensAnArray(string line)
+    {
+        var split = line.IndexOf('=', StringComparison.Ordinal);
+
+        return split > 0 && line[(split + 1)..].TrimStart().StartsWith('[');
     }
 
     /// <summary>

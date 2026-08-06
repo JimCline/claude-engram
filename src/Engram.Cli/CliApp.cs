@@ -46,6 +46,7 @@ public static class CliApp
             "probe" => ProbeCommand.Run(homePath, rest, stdout, stderr),
             "permissions" => PermissionsCommand.Run(homePath, rest, stdout, stderr),
             "model" => ModelCommand.Run(homePath, rest, stdout, stderr),
+            "scan" => ScanCommand.Run(homePath, rest, stdout, stderr),
             _ => Usage(stderr),
         };
     }
@@ -71,6 +72,11 @@ public static class CliApp
         writer.WriteLine("  probe [options]                    summarize telemetry and store density for the M0 adoption probe");
         writer.WriteLine("  permissions [options]              allow Claude Code to call Engram's memory tools unprompted");
         writer.WriteLine("  model <list|install|path>          list the local embedding models, or download one");
+        writer.WriteLine("  scan [path] [options]              report what indexing would read there, and what it would skip");
+        writer.WriteLine();
+        writer.WriteLine("scan options:");
+        writer.WriteLine("  --skipped                          name every skipped file and why");
+        writer.WriteLine("  --files                            name every file that would be indexed");
         writer.WriteLine();
         writer.WriteLine("model subcommands:");
         writer.WriteLine("  list                               show every model, its size and tradeoff, and whether it is installed");

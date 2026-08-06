@@ -1516,6 +1516,58 @@ were previously unproven.
 
 ---
 
+### D29 — git decides what a repository contains; content decides what is worth reading
+
+The question is which files an indexer should read, and it has two halves that want different
+answers.
+
+**What belongs to the repository is git's call, not ours.** `git ls-files --cached --others
+--exclude-standard` returns tracked files plus untracked ones that are not ignored, which
+already excludes build output, dependency directories, caches and temporary files — per every
+nested `.gitignore`, per `.git/info/exclude`, and per the user's global ignore file. Each of
+those is a decision the developer already made about their own tree. A pattern list maintained
+inside Engram would be a worse, staler copy of a file the repository already ships, and it would
+disagree with the developer on their own project. Untracked-but-not-ignored counts as theirs
+because a file written five minutes ago is exactly the file an agent is about to be asked about.
+
+The list still exists, for the directory that is not a checkout — and there it does all the
+work, which is why it is not the four .NET-and-JavaScript patterns it started as. Measured
+across a workspace of 38 repositories: the non-checkout directories walked 25,092 and 23,828
+files, almost entirely `stable-audio-tools/.venv` (33,000 files), `venv/lib` (26,074) and
+Swift's `.build` (11,780). None of the original patterns matched any of them. With Python,
+Swift, Rust and Go patterns added, the same two directories walk 150 files in 60 ms and 2 files
+in 27 ms — from 4,485 ms and 3,257 ms. The failure mode being written against is a list that
+only knows the languages its author happened to be using.
+
+**What is worth reading is decided by content, never by extension.** An extension list is
+infinite, always out of date, and wrong in both directions: generated blobs ship as `.h`, and
+real scripts ship with no extension at all. A NUL byte in the first 8 KB is what git itself uses,
+and it costs a read the indexer must do anyway. Two shape rules catch what survives that — a
+size cap, and a mean-line-length cap for minified and bundled files.
+
+The mean, not the longest line, and that distinction was paid for. A longest-line rule at 2048
+bytes rejected this repository's own `plugin/hooks/hooks.json`: 61 hand-written lines, 4,018
+bytes, one 2,662-byte line among them. One long line is a formatting choice; being *made of*
+long lines is what generated means. Across this repository's 175 tracked text files the mean
+line is 38 bytes at p50, 49 at p90, 68 at p99 and 170 at worst, while a minified bundle runs to
+thousands — the populations are separated by more than an order of magnitude, so 400 sits in a
+gap rather than on a knife edge.
+
+**Excluding is the safe error, and that sets every default.** A file wrongly indexed becomes
+facts, and facts are append-only: `compact` and `repair` may not delete a fact body (D8), and
+nothing downstream can distinguish a fact derived from a bundle from one derived from real
+source. The only cure is `forget`, by hand, after the noise has already been served to a model.
+A file wrongly excluded costs one line of config and a re-index. So the filter excludes when
+unsure — and every skip is counted and reported (`engram scan`), because an over-eager rule
+must show up as a number rather than as a repository that mysteriously has no code facts.
+
+One consequence worth stating: pattern matching is hand-written rather than translated to a
+regular expression. The regex version worked and passed the same tests; it cost 630,240 bytes of
+published binary by linking `System.Text.RegularExpressions`, and binary size is a latency
+decision here because the `file-touched` budget's remaining headroom is all process start.
+
+---
+
 ## PreCompact cannot inject context
 
 Spec §10.1 assumes `PreCompact` can "inject one instruction" the same way `SessionStart`
