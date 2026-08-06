@@ -2045,6 +2045,41 @@ covered end-to-end against the published binary rather than the JIT build, becau
 source-generated `JsonSerializerContext` is exactly the shape that works under reflection and
 fails once trimmed.
 
+### D38 — `embed --rebuild` refuses while the server is running
+
+Five places already told the user to run this command — two rows in `doctor`, the `SpaceMismatch`
+comment in `VectorBackfill`, and two doc comments in `VectorIndex` — before any of them could.
+`VectorIndex` had both halves waiting: `Clear`, which empties the table and keeps its shape, and
+`Drop`, which removes the table and the space it pinned. What was missing was the thing that
+chooses between them and then refills.
+
+Which half runs is not the user's choice, because only one of the three ways an index goes stale
+announces itself. A width change is caught by `vec0` at the row level. A change to what text gets
+embedded is caught because `InputVersion` is pinned next to the model. But a *same-width model
+swap* is caught by nothing: those vectors store cleanly, rank against each other, and produce
+distances that look like ordinary numbers — the silent failure D18 names. So the plan reads the
+pinned model and picks `Recreate`, and `--apply` only decides whether to proceed. Clearing where a
+recreate was needed leaves the old pin in place, and every backfill pass afterwards then refuses
+the very embedder the rebuild installed; that is a test, and it fails when the branch is swapped.
+
+**The refusal is the design.** `EmbeddingBacklog` is the single owner of vector production — one
+resident model per home, guarded by the pid file — and a running server holds an embedder built at
+*its* startup. A rebuild prompted by a config change would therefore race a process still using
+the old model, and lose: the server's own `EnsureCreated` would re-pin the recreated table to the
+space the user had just moved away from. So the command refuses and says `engram stop` first. That
+is not politeness about a lock; it is the only ordering in which the new space wins. It is tested
+end-to-end against a real second process, because the check reads a real pid file through the real
+`ProcessInspector`, and a test with fakes injected would be asserting on the fakes.
+
+No snapshot, unlike a migration (D31). Every row here is derived from a fact body and an embedder
+(D8), so a rebuild recomputes by definition and can destroy nothing authored. The cost is entirely
+in embedder calls, which is why the dry run states the count before spending them.
+
+Progress is a plain callback rather than `IProgress<T>`: the only implementation anyone reaches
+for, `Progress<T>`, posts to the thread pool when there is no synchronisation context — which is
+every context this runs in — and a CLI would print its batch lines interleaved with, or after, its
+own summary.
+
 ## PreCompact cannot inject context
 
 Spec §10.1 assumes `PreCompact` can "inject one instruction" the same way `SessionStart`

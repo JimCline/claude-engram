@@ -18,9 +18,14 @@ public static class EmbedCommand
         ArgumentNullException.ThrowIfNull(stdout);
         ArgumentNullException.ThrowIfNull(stderr);
 
+        if (args.Contains("--rebuild"))
+        {
+            return Rebuild(homePath, args, stdout, stderr);
+        }
+
         if (!args.Contains("--probe"))
         {
-            stderr.WriteLine("error: engram embed needs --probe. Nothing else is wired up yet.");
+            stderr.WriteLine("error: engram embed needs --probe or --rebuild.");
             return 2;
         }
 
@@ -80,6 +85,131 @@ public static class EmbedCommand
             DateTimeOffset.UtcNow,
             stdout,
             stderr);
+    }
+
+    /// <summary>
+    /// <c>engram embed --rebuild</c> — discard the vector index and make it again from
+    /// <c>fact</c>. Dry run unless <c>--apply</c> is given.
+    /// </summary>
+    /// <remarks>
+    /// Refuses while the server is up, which is the one thing that makes this command correct
+    /// rather than merely present. <see cref="EmbeddingBacklog"/> is the single owner of vector
+    /// production, and the server holds an embedder built at its startup — so a rebuild prompted
+    /// by a config change would have that older embedder racing this one to refill the same rows,
+    /// and worse, its <c>EnsureCreated</c> would re-pin the table to the space the user just
+    /// moved away from. Stopping first is not politeness about a lock; it is the only way the new
+    /// space wins.
+    /// </remarks>
+    private static int Rebuild(string? homePath, string[] args, TextWriter stdout, TextWriter stderr)
+    {
+        var home = EngramHome.ResolveFromProcess(homePath);
+        if (!File.Exists(home.DatabasePath))
+        {
+            stderr.WriteLine($"error: no store at {home.DatabasePath} — run 'engram init' first");
+            return 1;
+        }
+
+        var settings = EmbeddingSettings.Read(ConfigFile.Load(home.ConfigPath));
+        if (settings.Provider is EmbeddingProvider.None)
+        {
+            stderr.WriteLine("error: provider = \"none\", so there is no index to rebuild.");
+            stderr.WriteLine("       Run 'engram init --with-embeddings' to choose one.");
+            return 1;
+        }
+
+        var lifecycle = new ServerLifecycle(
+            new ProcessInspector(),
+            new HttpServerHealthChecker(),
+            new ProcessServerLauncher());
+
+        if (lifecycle.Status(
+                home,
+                ExecutablePath.Current,
+                EngramVersion.Current,
+                ServerLifecycleTimeouts.Default.HealthCheckTimeout)
+            .Kind is ServerStatusKind.Running)
+        {
+            stderr.WriteLine("error: the server is running, and it embeds from the model it loaded at startup.");
+            stderr.WriteLine("       Rebuilding underneath it would refill the index in the old space.");
+            stderr.WriteLine("       Run 'engram stop' first, then rebuild, then 'engram start'.");
+            return 1;
+        }
+
+        using var connection = EngramDatabase.OpenInitialized(home);
+
+        if (VectorExtension.Load(connection, home.LibDir) is not VectorExtensionState.Loaded and var state)
+        {
+            stderr.WriteLine(state == VectorExtensionState.NotInstalled
+                ? $"error: sqlite-vec is not in {home.LibDir}, so there is no index to rebuild."
+                : $"error: sqlite-vec is in {home.LibDir} and would not load — wrong architecture, or truncated.");
+            return 1;
+        }
+
+        // Owned here and disposed here (D35). The factory attaches to this runtime and never
+        // launches one, so whoever creates it is the only thing that can stop it — and under
+        // provider = "local" a rebuild is exactly the caller that should pay to start a model.
+        using var local = new LocalRuntime(home, Environment.GetEnvironmentVariable);
+        var resolution = EmbedderFactory.Create(settings, Environment.GetEnvironmentVariable, client: null, local);
+        using var owned = resolution.Embedder as IDisposable;
+
+        if (resolution.Embedder is not { } embedder)
+        {
+            stderr.WriteLine($"error: {resolution.Reason}");
+            return 1;
+        }
+
+        var plan = VectorRebuild.Plan(connection, embedder.Space);
+        WritePlan(plan, stdout);
+
+        if (!args.Contains("--apply"))
+        {
+            stdout.WriteLine();
+            stdout.WriteLine($"Dry run only — nothing was changed. Re-run with --apply to spend {plan.ToEmbed} embedder call(s).");
+            return 0;
+        }
+
+        stdout.WriteLine();
+
+        var result = VectorRebuild.RunAsync(
+            connection,
+            embedder,
+            plan,
+            settings.MaxBatch,
+            pass => stdout.WriteLine($"  embedded {pass.Embedded}/{plan.ToEmbed}, {pass.Remaining} to go"))
+            .GetAwaiter()
+            .GetResult();
+
+        stdout.WriteLine();
+        stdout.WriteLine(result.Outcome switch
+        {
+            BackfillOutcome.Completed =>
+                $"Rebuilt: {result.Embedded} vector(s) in {embedder.Space}"
+                + (result.Failed > 0 ? $", {result.Failed} text(s) the embedder refused." : "."),
+            BackfillOutcome.StalledOnFailures =>
+                $"Stopped: {result.Embedded} embedded, then a whole batch failed. "
+                + $"{result.Remaining} still pending — the endpoint is answering, but not for these.",
+            BackfillOutcome.SpaceMismatch =>
+                "Stopped: the index reports a different space than the embedder, immediately after "
+                + "being rebuilt into it. That is a bug, not a configuration problem.",
+            _ => $"Stopped: {result.Embedded} embedded, {result.Remaining} pending.",
+        });
+
+        return result.Outcome is BackfillOutcome.Completed ? 0 : 1;
+    }
+
+    private static void WritePlan(RebuildPlan plan, TextWriter stdout)
+    {
+        stdout.WriteLine(plan.Action switch
+        {
+            RebuildAction.Build => $"No index yet. Building one in {plan.Target}.",
+            RebuildAction.Clear => $"Index holds {plan.Target} and stays; its {plan.Discarded} row(s) do not.",
+            _ => $"Index holds {plan.Current?.ToString() ?? "an unrecorded space"} and must be recreated — {plan.Reason}.",
+        });
+
+        stdout.WriteLine();
+        stdout.WriteLine($"  discard    {plan.Discarded} vector(s)");
+        stdout.WriteLine($"  re-embed   {plan.ToEmbed} live fact(s) through {plan.Target}");
+        stdout.WriteLine($"  input      {plan.TargetInput}");
     }
 
     /// <summary>The probe the picker uses, so its endpoint rung can stop asking for a width.</summary>

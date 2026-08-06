@@ -195,6 +195,26 @@ public static class VectorIndex
     }
 
     /// <summary>
+    /// How many facts want a vector at all, whether or not the index exists.
+    /// </summary>
+    /// <remarks>
+    /// The same eligibility predicate as <see cref="CountPending"/> and
+    /// <see cref="ReadBackfillBatch"/> with the index side of the join removed, which is the only
+    /// form of the question a rebuild can ask: it needs the count for a table it is about to
+    /// throw away, and <see cref="CountPending"/> against a dropped table is a SQL error rather
+    /// than an answer.
+    /// </remarks>
+    public static int CountEmbeddable(SqliteConnection connection)
+    {
+        ArgumentNullException.ThrowIfNull(connection);
+
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT COUNT(*) FROM fact WHERE valid_to IS NULL;";
+
+        return Convert.ToInt32(command.ExecuteScalar(), System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    /// <summary>
     /// Stores one fact's vector, replacing any it already had.
     /// </summary>
     /// <remarks>

@@ -151,6 +151,16 @@ reported red for a choice the user made is one people stop reading. Every check 
 wrapper that turns a throwing check into one broken row, because the state most likely to make a
 check throw is the state someone is running doctor in (D37).
 
+**A rebuild waits for the server to stop.** `EmbeddingBacklog` is the one owner of vector
+production, and a running server holds the embedder it built at *its* startup — so
+`embed --rebuild` refuses while it is up rather than racing it. Losing that race is not a slow
+rebuild, it is a wrong one: the server's `EnsureCreated` re-pins the recreated table to the space
+the user just moved away from. Which half of the rebuild runs is likewise not a preference —
+`Clear` keeps the table, `Drop` removes it and the space it pinned, and the plan picks by reading
+that pin, because a same-width model swap is invisible to everything else (`vec0` checks width,
+not provenance). Rebuilding derived state needs no snapshot, unlike a migration (D31): by D8 it
+recomputes from `fact` and can destroy nothing authored (D38).
+
 ## Build constraints
 
 - .NET 10, `net10.0`. Warnings are errors.

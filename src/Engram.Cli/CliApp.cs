@@ -78,6 +78,7 @@ public static class CliApp
         writer.WriteLine("  permissions [options]              allow Claude Code to call Engram's memory tools unprompted");
         writer.WriteLine("  model <list|install|path>          list the local embedding models, or download one");
         writer.WriteLine("  embed --probe                      ask the configured endpoint how wide its vectors are");
+        writer.WriteLine("  embed --rebuild                    discard the vector index and make it again from facts");
         writer.WriteLine();
         writer.WriteLine("embedding options:");
         writer.WriteLine("  init --with-embeddings             pick a provider: none, a local model, or an endpoint");
@@ -86,6 +87,7 @@ public static class CliApp
         writer.WriteLine("                                     leave --dim off and the endpoint is asked for it");
         writer.WriteLine("  model install <id> --use-it        download a model and switch the config to it");
         writer.WriteLine("  embed --probe [--use-it]           report the width, and optionally write it to the config");
+        writer.WriteLine("  embed --rebuild [--apply]          re-embed every live fact; needed after a model change");
         writer.WriteLine("  scan [path] [options]              report what indexing would read there, and what it would skip");
         writer.WriteLine("  explain <query> [options]          show why recall ranks what it ranks, and what it leaves out");
         writer.WriteLine("  backup <take|list|prune|restore|replay>  snapshot the store, or put the facts back");
