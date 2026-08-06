@@ -71,6 +71,14 @@ opens the database cannot wait on a lock; one that opens can, and `busy_timeout`
 against a 10 ms budget. `FileTouchedBudgetTests` guards the margin, not the absolute number,
 so it fails when the rule breaks rather than when the machine is busy.
 
+The rule is *never opens the database*, not *does as little as possible*. `file-touched` reads its
+stdin payload to record which file changed, because a queue of bare timestamps answers one bit no
+matter how long it gets, and the indexer that drains it has to know what to re-read. Measured on
+the published binary: piping the payload in costs 0.27 ms, and `user-prompt` parses the same
+stdin, opens the store *and* writes a fact for 0.67 ms more than `file-touched` spent doing none of
+it. A spool entry is a timestamp then an optional path — optional, so the entries written before
+this existed still drain (D39).
+
 This rule is about that hook, not about hooks: D4 justifies it entirely by per-edit
 frequency and write contention. The primer hooks — `session-start`, `subagent-start` —
 do take a short read and close it, because a primer that reports memory from a hardcoded

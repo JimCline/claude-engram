@@ -2080,6 +2080,44 @@ for, `Progress<T>`, posts to the thread pool when there is no synchronisation co
 every context this runs in — and a CLI would print its batch lines interleaved with, or after, its
 own summary.
 
+### D39 — a spool entry names the file, and reading stdin is not what threatens the budget
+
+`file-touched` wrote a single ISO timestamp per invocation and nothing else, so a thousand queued
+edits answered exactly one bit between them: *something changed*. The hook is registered as
+PostToolUse on `Edit|Write|MultiEdit|NotebookEdit`, and Claude Code puts the edited file in
+`tool_input.file_path` on stdin — the payload was there the whole time and the hook never read it.
+Nothing consumed the queue, so nothing noticed.
+
+**Measured before changing it,** because D4's budget is the reason this hook is spartan and "read
+stdin" sounds like exactly the sort of thing that breaks it. On the published binary, 100 runs each:
+
+| | p50 | p99 |
+|---|---|---|
+| `file-touched`, no stdin | 8.67 ms | 9.64 ms |
+| `file-touched`, payload piped but unread | 8.94 ms | 9.85 ms |
+| `user-prompt` — parses stdin, opens the store, writes a fact | 9.61 ms | 10.56 ms |
+
+Piping the payload in at all costs 0.27 ms. `user-prompt` does everything this hook would do
+*plus* open the database and write, for 0.67 ms more than `file-touched` spent doing none of it.
+So parsing is not what threatens this budget — opening the database is, and rule 4 stands
+unchanged: this hook still never opens it. (The earlier figures in §1.5 were taken on a quieter
+machine; what matters here is the difference between rows measured in one sitting, not the
+absolute numbers.)
+
+Recording the path strictly dominates the alternative. A consumer given paths can always coalesce
+them into "something changed" and rescan; a consumer given timestamps can never recover which
+files they were. The format is therefore a timestamp on the first line and an optional path on the
+second — optional so the entries already on disk, written before this existed, still drain as an
+edit whose target is unknown rather than as a corrupt file. That is not hypothetical: the queue on
+a real instance held 1058 of them.
+
+`SpoolReader.Drain` returns `SpooledEdit(At, Path)` and drops an entry it cannot parse rather than
+throwing, because this is a queue written by a hook that swallows its own errors to protect the
+budget — a truncated file is a thing that happens, and failing the whole drain over one would
+strand every edit behind it. It deletes what it read *before* the caller has acted, which is a
+durability hole that is tolerable only because a rescan is always available; a consumer that
+cannot rescan must not be built on it as it stands. That is written on the method.
+
 ## PreCompact cannot inject context
 
 Spec §10.1 assumes `PreCompact` can "inject one instruction" the same way `SessionStart`
