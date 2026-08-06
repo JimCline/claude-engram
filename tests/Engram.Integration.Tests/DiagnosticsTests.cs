@@ -428,6 +428,32 @@ public sealed class DiagnosticsTests : IDisposable
         Assert.Equal("engram permissions --apply", claude.Fix);
     }
 
+    /// <summary>
+    /// <c>file-touched</c> spools an edit per invocation and <see cref="SpoolReader.Drain"/> is
+    /// called by nothing in production, so the count only rises. Counting it is the whole check —
+    /// a doctor that stayed silent about a directory filling up would be hiding the one number
+    /// that says so.
+    /// </summary>
+    [Fact]
+    public void SpooledEditsAreCounted_AndSaidToBeGoingNowhere()
+    {
+        using var sandbox = new SandboxHome();
+
+        Assert.Contains("empty", Check(Run(sandbox), "edit queue").Detail, StringComparison.Ordinal);
+
+        Directory.CreateDirectory(sandbox.Home.QueueDir);
+        for (var i = 0; i < 3; i++)
+        {
+            File.WriteAllText(Path.Combine(sandbox.Home.QueueDir, $"{i}.spool"), "{}");
+        }
+
+        var queue = Check(Run(sandbox), "edit queue");
+
+        Assert.Equal(DiagnosisState.Off, queue.State);
+        Assert.Contains("3 edits", queue.Detail, StringComparison.Ordinal);
+        Assert.Contains("nothing drains them", queue.Detail, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void WarningsAlone_DoNotFailTheReport()
     {

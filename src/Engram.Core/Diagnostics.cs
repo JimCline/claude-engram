@@ -121,6 +121,7 @@ public static class Diagnostics
         Try(checks, "embedding", list => CheckEmbedding(home, embedding, environment, reachOut, client, list));
         Try(checks, "vector index", list => list.Add(CheckIndex(home, connection, embedding)));
         Try(checks, "backups", list => list.Add(CheckBackups(home, connection, config)));
+        Try(checks, "edit queue", list => list.Add(CheckQueue(home)));
 
         if (repoRoot is not null)
         {
@@ -570,6 +571,33 @@ public static class Diagnostics
         }
 
         return new Diagnosis("backups", DiagnosisState.Ok, detail);
+    }
+
+    /// <summary>
+    /// Counts what <c>file-touched</c> has spooled.
+    /// </summary>
+    /// <remarks>
+    /// Reported with a count and no threshold. <see cref="SpoolReader.Drain"/> exists and nothing
+    /// in production calls it yet, so this number only goes up — which is worth seeing, and is not
+    /// yet worth a warning at some figure chosen because it sounded large. When something does
+    /// drain it, the interesting question becomes whether the backlog is growing faster than the
+    /// reader clears it, and that is the point to pick a number with a measurement behind it.
+    /// </remarks>
+    private static Diagnosis CheckQueue(EngramHome home)
+    {
+        if (!Directory.Exists(home.QueueDir))
+        {
+            return new Diagnosis("edit queue", DiagnosisState.Off, "nothing spooled");
+        }
+
+        var spooled = Directory.EnumerateFiles(home.QueueDir, "*.spool").Count();
+
+        return new Diagnosis(
+            "edit queue",
+            DiagnosisState.Off,
+            spooled == 0
+                ? "empty"
+                : $"{Plural(spooled, "edit")} spooled by file-touched, and nothing drains them yet");
     }
 
     private static Diagnosis CheckRepo(string repoRoot, ConfigFile config)
