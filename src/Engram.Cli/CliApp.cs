@@ -47,6 +47,7 @@ public static class CliApp
             "permissions" => PermissionsCommand.Run(homePath, rest, stdout, stderr),
             "model" => ModelCommand.Run(homePath, rest, stdout, stderr),
             "scan" => ScanCommand.Run(homePath, rest, stdout, stderr),
+            "explain" => ExplainCommand.Run(homePath, rest, stdout, stderr),
             _ => Usage(stderr),
         };
     }
@@ -73,10 +74,16 @@ public static class CliApp
         writer.WriteLine("  permissions [options]              allow Claude Code to call Engram's memory tools unprompted");
         writer.WriteLine("  model <list|install|path>          list the local embedding models, or download one");
         writer.WriteLine("  scan [path] [options]              report what indexing would read there, and what it would skip");
+        writer.WriteLine("  explain <query> [options]          show why recall ranks what it ranks, and what it leaves out");
         writer.WriteLine();
         writer.WriteLine("scan options:");
         writer.WriteLine("  --skipped                          name every skipped file and why");
         writer.WriteLine("  --files                            name every file that would be indexed");
+        writer.WriteLine();
+        writer.WriteLine("explain options:");
+        writer.WriteLine("  --budget <n>                       token budget to test against (default 500)");
+        writer.WriteLine("  --limit <n>                        candidates to print (default 20)");
+        writer.WriteLine("  --session <id>                     treat this host session's notes as working memory");
         writer.WriteLine();
         writer.WriteLine("model subcommands:");
         writer.WriteLine("  list                               show every model, its size and tradeoff, and whether it is installed");

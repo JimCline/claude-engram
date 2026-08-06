@@ -23,12 +23,45 @@ public sealed record RecallPackResult(
     int LongTermFactCount,
     int PriorSessionFactCount);
 
-file enum FactSource
+/// <summary>Which tier of memory a candidate came from.</summary>
+public enum FactOrigin
 {
     CurrentSession,
     LongTerm,
     PriorSession,
 }
+
+/// <summary>
+/// One fact the ranker considered, in the order it considered it, and whether the budget let it
+/// through.
+/// </summary>
+public sealed record RecallCandidate(
+    long? FactId,
+    string Handle,
+    string Line,
+    int Score,
+    FactOrigin Origin,
+    int Tokens,
+    bool Packed);
+
+/// <summary>
+/// What <see cref="RecallEngine.Pack(string, IReadOnlyList{CannedFact}, IReadOnlyList{SessionFact}, IReadOnlyList{SessionFact}, int)"/>
+/// did, per candidate.
+/// </summary>
+/// <remarks>
+/// Produced by the same two routines that produce the pack itself, never by a second
+/// implementation of the ordering. An explainer that re-derives the ranking is a copy that will
+/// drift from it, and the drift is invisible precisely because the explainer is what one would
+/// use to notice.
+/// </remarks>
+public sealed record RecallExplanation(
+    string Query,
+    IReadOnlyList<string> QueryTerms,
+    IReadOnlyList<string> DroppedTerms,
+    IReadOnlyList<RecallCandidate> Candidates,
+    int BudgetTokens,
+    int TokensUsed,
+    RecallCoverage Coverage);
 
 file readonly record struct RankedOther(string Line, int Score, string Id, long SessionId, bool IsPriorSessionFact);
 
@@ -118,54 +151,31 @@ public static class RecallEngine
         IReadOnlyList<SessionFact> priorSessionFacts,
         int budgetTokens)
     {
-        var rankedCurrentSession = RankSessionFacts(query, currentSessionFacts);
-        var rankedLongTerm = Rank(query, facts);
-        var rankedPriorSession = RankSessionFacts(query, priorSessionFacts);
-        var discriminators = BuildPriorSessionDiscriminators(priorSessionFacts);
-
-        var otherRanked = rankedLongTerm
-            .Select(r => new RankedOther(FormatFactLine(r.Fact), r.Score, r.Fact.Id, 0, IsPriorSessionFact: false))
-            .Concat(rankedPriorSession.Select(r => new RankedOther(
-                FormatPriorSessionFactLine(r.Fact, discriminators[r.Fact.SessionId]),
-                r.Score,
-                FactCatalog.HandleFor(r.Fact.FactId),
-                r.Fact.SessionId,
-                IsPriorSessionFact: true)))
-            .OrderByDescending(r => r.Score)
-            .ThenBy(r => r.Id, StringComparer.Ordinal)
-            .ThenBy(r => r.SessionId)
-            .ToList();
-
-        var coverage = ClassifyCoverage(rankedCurrentSession.Count + otherRanked.Count);
-
-        var candidates = new List<(string Line, FactSource Source)>(rankedCurrentSession.Count + otherRanked.Count);
-        candidates.AddRange(rankedCurrentSession.Select(r => (FormatSessionFactLine(r.Fact), FactSource.CurrentSession)));
-        candidates.AddRange(otherRanked.Select(r => (r.Line, r.IsPriorSessionFact ? FactSource.PriorSession : FactSource.LongTerm)));
+        var candidates = BuildCandidates(query, facts, currentSessionFacts, priorSessionFacts);
+        var coverage = ClassifyCoverage(candidates.Count);
+        var tokensUsed = ApplyBudget(candidates, budgetTokens);
 
         var includedLines = new List<string>();
-        var tokensUsed = 0;
         var sessionFactCount = 0;
         var longTermFactCount = 0;
         var priorSessionFactCount = 0;
-        foreach (var (line, source) in candidates)
+        foreach (var candidate in candidates)
         {
-            var lineTokens = TokenEstimator.Estimate(line);
-            if (tokensUsed + lineTokens > budgetTokens)
+            if (!candidate.Packed)
             {
-                break;
+                continue;
             }
 
-            includedLines.Add(line);
-            tokensUsed += lineTokens;
-            switch (source)
+            includedLines.Add(candidate.Line);
+            switch (candidate.Origin)
             {
-                case FactSource.CurrentSession:
+                case FactOrigin.CurrentSession:
                     sessionFactCount++;
                     break;
-                case FactSource.LongTerm:
+                case FactOrigin.LongTerm:
                     longTermFactCount++;
                     break;
-                case FactSource.PriorSession:
+                case FactOrigin.PriorSession:
                     priorSessionFactCount++;
                     break;
             }
@@ -187,6 +197,119 @@ public static class RecallEngine
 
         return new RecallPackResult(
             string.Join('\n', lines), factCount, tokensUsed, coverage, sessionFactCount, longTermFactCount, priorSessionFactCount);
+    }
+
+    /// <summary>
+    /// Everything <see cref="Pack(string, IReadOnlyList{CannedFact}, IReadOnlyList{SessionFact}, IReadOnlyList{SessionFact}, int)"/>
+    /// decided, without building the digest.
+    /// </summary>
+    /// <remarks>
+    /// The point of D21, in one method: the ordering and the budget below are the ones recall
+    /// runs, not a reconstruction of them, so a candidate reported as fourth is fourth.
+    /// </remarks>
+    public static RecallExplanation Explain(
+        string query,
+        IReadOnlyList<CannedFact> facts,
+        IReadOnlyList<SessionFact> currentSessionFacts,
+        IReadOnlyList<SessionFact> priorSessionFacts,
+        int budgetTokens)
+    {
+        var candidates = BuildCandidates(query, facts, currentSessionFacts, priorSessionFacts);
+        var tokensUsed = ApplyBudget(candidates, budgetTokens);
+
+        var used = TokenizeQuery(query);
+        var dropped = Tokenize(query).Where(t => !used.Contains(t)).Order(StringComparer.Ordinal).ToList();
+
+        return new RecallExplanation(
+            query,
+            used.Order(StringComparer.Ordinal).ToList(),
+            dropped,
+            candidates,
+            budgetTokens,
+            tokensUsed,
+            ClassifyCoverage(candidates.Count));
+    }
+
+    /// <summary>Every fact that scored, in the order the budget will see them.</summary>
+    private static List<RecallCandidate> BuildCandidates(
+        string query,
+        IReadOnlyList<CannedFact> facts,
+        IReadOnlyList<SessionFact> currentSessionFacts,
+        IReadOnlyList<SessionFact> priorSessionFacts)
+    {
+        var rankedCurrentSession = RankSessionFacts(query, currentSessionFacts);
+        var rankedLongTerm = Rank(query, facts);
+        var rankedPriorSession = RankSessionFacts(query, priorSessionFacts);
+        var discriminators = BuildPriorSessionDiscriminators(priorSessionFacts);
+
+        var otherRanked = rankedLongTerm
+            .Select(r => new RankedOther(FormatFactLine(r.Fact), r.Score, r.Fact.Id, 0, IsPriorSessionFact: false))
+            .Concat(rankedPriorSession.Select(r => new RankedOther(
+                FormatPriorSessionFactLine(r.Fact, discriminators[r.Fact.SessionId]),
+                r.Score,
+                FactCatalog.HandleFor(r.Fact.FactId),
+                r.Fact.SessionId,
+                IsPriorSessionFact: true)))
+            .OrderByDescending(r => r.Score)
+            .ThenBy(r => r.Id, StringComparer.Ordinal)
+            .ThenBy(r => r.SessionId)
+            .ToList();
+
+        var candidates = new List<RecallCandidate>(rankedCurrentSession.Count + otherRanked.Count);
+
+        // Working memory first, whole, before anything competes for the remainder — this
+        // session's notes outranking everything is a tier decision, not a score.
+        foreach (var ranked in rankedCurrentSession)
+        {
+            var line = FormatSessionFactLine(ranked.Fact);
+            candidates.Add(new RecallCandidate(
+                ranked.Fact.FactId,
+                FactCatalog.HandleFor(ranked.Fact.FactId),
+                line,
+                ranked.Score,
+                FactOrigin.CurrentSession,
+                TokenEstimator.Estimate(line),
+                Packed: false));
+        }
+
+        foreach (var ranked in otherRanked)
+        {
+            candidates.Add(new RecallCandidate(
+                FactCatalog.TryParseHandle(ranked.Id, out var factId) ? factId : null,
+                ranked.Id,
+                ranked.Line,
+                ranked.Score,
+                ranked.IsPriorSessionFact ? FactOrigin.PriorSession : FactOrigin.LongTerm,
+                TokenEstimator.Estimate(ranked.Line),
+                Packed: false));
+        }
+
+        return candidates;
+    }
+
+    /// <summary>
+    /// Marks the prefix that fits, and returns what it spent.
+    /// </summary>
+    /// <remarks>
+    /// Stops at the first candidate that does not fit rather than skipping it to try smaller ones
+    /// further down. Packing tightly would reorder the digest by length, and a model reading a
+    /// ranked list is entitled to assume the order means something.
+    /// </remarks>
+    private static int ApplyBudget(List<RecallCandidate> candidates, int budgetTokens)
+    {
+        var tokensUsed = 0;
+        for (var i = 0; i < candidates.Count; i++)
+        {
+            if (tokensUsed + candidates[i].Tokens > budgetTokens)
+            {
+                break;
+            }
+
+            candidates[i] = candidates[i] with { Packed = true };
+            tokensUsed += candidates[i].Tokens;
+        }
+
+        return tokensUsed;
     }
 
     // p1, p2, … so the model can tell which notes came from the same earlier session. Ids

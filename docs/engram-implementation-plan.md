@@ -1566,6 +1566,54 @@ regular expression. The regex version worked and passed the same tests; it cost 
 published binary by linking `System.Text.RegularExpressions`, and binary size is a latency
 decision here because the `file-touched` budget's remaining headroom is all process start.
 
+### D30 — The explainer describes the ranker that runs, not the one that was planned
+
+D21 specifies what `engram explain` reports: lexical rank and BM25 score, vector rank and cosine
+distance, salience contribution, fused RRF position, provenance tier. Building it revealed that
+**four of those five do not participate in recall today.**
+
+`engram_recall` calls `RecallEngine.Pack`, which orders facts by *how many distinct query terms
+each one contains*. `fact_fts` is maintained by triggers and read by nothing on the recall path.
+`fact_vec` is queried only by its own tests. The `salience` table has no writer. Written to D21's
+letter, `explain` would have reported a ranking that does not happen — which is the exact failure
+D21 exists to prevent, one layer up.
+
+So two things are decided here.
+
+**The explainer shares the ranker's code, it does not reimplement it.** `Explain` and `Pack` call
+one `BuildCandidates` and one `ApplyBudget`; `Pack` renders the digest afterwards and `Explain`
+returns the candidate list. A separate implementation would be a copy that drifts, and the drift
+would be invisible precisely because the explainer is the tool one would use to notice. The guard
+is a test asserting the packed lines equal the digest's lines; breaking it by re-sorting inside
+`Explain` fails three tests.
+
+**Lanes are reported by observed state, not by intended role.** `term overlap` reports RANKING;
+`fts5` and `vector` report *idle — answerable, read by nothing*; `salience` and `RRF fusion`
+report *not built*. That disagreement is the deliverable, not an apology for one: a fact BM25
+ranks first and the shipped ranker never scores is evidence about whether fusing them is worth
+doing, available **before** the fusion is written rather than after.
+
+**What it found within minutes of existing.** Term overlap matches literal lowercased tokens;
+FTS5 tokenizes with `porter`. So recall is blind to morphology. Measured against Engram's own
+seeded corpus, on twelve plurals of words that corpus uses: **eight had facts the ranker never
+scored, and six returned "no facts matched" while FTS5 ranked the right fact first.** The
+singular controls find those same facts — `pragma` → 1 candidate, `pragmas` → 0; `connection` →
+1, `connections` → 0. Nine of twelve singulars match, and every one of their plurals returns
+nothing.
+
+That is not a ranking-quality problem, it is a false negative with a side effect: recall answers
+`coverage: none` and tells the model to *"discover and engram_remember what you find"*, so the
+agent re-derives a fact the store already holds and writes a near-duplicate — and facts are
+append-only, so `compact` may not clean up after it (D8). Fixing it is a change to the ranker and
+is therefore sequenced with step 8 rather than smuggled into the explainer, which is the point of
+building the explainer first.
+
+`explain` is read-only, including the vector lane — embedding a query is a provider call, never a
+write, and nothing here touches salience counters. An explainer that recorded an access would
+move the ranking it was asked to explain, and the effect would be invisible because the tool that
+would reveal it is the one causing it. A test asserts the row counts are unchanged across two
+explains.
+
 ---
 
 ## PreCompact cannot inject context
@@ -2177,11 +2225,15 @@ which that project does not evidence**, and it is now the whole of this group.
 6. `IEmbedder`, and a **deterministic stub embedder first** — tier-2 tests need it to
    exist before anything real does, per D18's ordering caveat.
 7. Vector table + backfill queue. Embedding runs server-side, off the hook path (D4).
-8. **`engram explain <query>` first (D21)**, then RRF fusion (`k≈60`) in retrieval, with
+8. ~~**`engram explain <query>` first (D21)**~~ — shipped, and it found the ranker blind to
+   morphology before fusion was written (D30). Then RRF fusion (`k≈60`) in retrieval, with
    FTS5-only as a fully supported configuration when the lane is absent — degraded
    quality, never a missing result. The order within this step is the decision: an
    explainer written after the fusion it explains is written against remembered
-   intentions rather than observed behaviour.
+   intentions rather than observed behaviour. **Fusion now has a prerequisite of its own:**
+   the lexical lane has to actually reach recall. Today `RecallEngine` ranks by literal term
+   overlap and never queries `fact_fts`, so "fuse BM25 with vectors" is two changes, and the
+   first is worth landing and measuring alone.
 9. `embed --rebuild`; `doctor` and `repair` coverage for the vector index as derived
    state (D8).
 

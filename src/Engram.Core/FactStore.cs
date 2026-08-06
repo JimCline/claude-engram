@@ -33,6 +33,9 @@ public sealed record StoredFact(
 
 public sealed record RememberResult(long FactId, long? SupersededFactId);
 
+/// <summary>One FTS5 hit: which fact, how well it scored, and where that put it.</summary>
+public sealed record LexicalHit(long FactId, double Bm25, int Rank);
+
 /// <summary>
 /// Reads and writes facts. The temporal model lives here: writing a belief about a
 /// subject+predicate that already has a live belief closes the old one rather than
@@ -315,6 +318,48 @@ public static class FactStore
         command.Parameters.AddWithValue("$limit", limit);
 
         return ReadFacts(command);
+    }
+
+    /// <summary>
+    /// The same search, reporting the score instead of the fact.
+    /// </summary>
+    /// <remarks>
+    /// Ids and scores only, because the caller joins this onto a candidate list it already holds
+    /// (D21) and reading the fact columns a second time would be a second temporal read that
+    /// could disagree with the first. bm25 is negative and smaller is better, which is SQLite's
+    /// convention and not worth normalizing away — an explainer that prettifies a score is one
+    /// more place the number a user sees differs from the number that ranked.
+    /// </remarks>
+    public static IReadOnlyList<LexicalHit> SearchRanked(SqliteConnection connection, string query, int limit)
+    {
+        ArgumentNullException.ThrowIfNull(connection);
+
+        var match = ToMatchExpression(query);
+        if (match.Length == 0)
+        {
+            return [];
+        }
+
+        using var command = connection.CreateCommand();
+        command.CommandText =
+            """
+            SELECT f.id, bm25(fact_fts)
+            FROM fact f
+            JOIN fact_fts ON fact_fts.rowid = f.id
+            WHERE fact_fts MATCH $match AND f.valid_to IS NULL
+            ORDER BY bm25(fact_fts) LIMIT $limit;
+            """;
+        command.Parameters.AddWithValue("$match", match);
+        command.Parameters.AddWithValue("$limit", limit);
+
+        var hits = new List<LexicalHit>();
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            hits.Add(new LexicalHit(reader.GetInt64(0), reader.GetDouble(1), hits.Count + 1));
+        }
+
+        return hits;
     }
 
     /// <summary>
