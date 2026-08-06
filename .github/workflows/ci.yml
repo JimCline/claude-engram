@@ -19,12 +19,15 @@ jobs:
           - os: macos-latest
             rid: osx-arm64
             exe: engram
+            vecext: vec0.dylib
           - os: ubuntu-latest
             rid: linux-x64
             exe: engram
+            vecext: vec0.so
           - os: windows-latest
             rid: win-x64
             exe: engram.exe
+            vecext: vec0.dll
 
     runs-on: ${{ matrix.os }}
 
@@ -48,11 +51,20 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: sudo apt-get update && sudo apt-get install -y clang zlib1g-dev
 
+      # The vector tests are environment-gated, so without this they skip — and a guard
+      # that never runs is worth nothing. Fetching it into the same home the smoke test
+      # uses means `engram init` below also exercises the real extension-load path
+      # rather than only the absent-extension one.
+      - name: Fetch sqlite-vec
+        run: scripts/fetch-vec0.sh --home "$PWD/ci-home"
+
       - name: Build
         run: dotnet build -c Release
 
       - name: Test
         run: dotnet test -c Release --no-build
+        env:
+          ENGRAM_VEC_EXTENSION: ${{ github.workspace }}/ci-home/lib/${{ matrix.vecext }}
 
       # 'home' only prints paths, so it exits 0 on an AOT image that cannot open a
       # database at all — which is the failure mode AOT actually produces, since the
