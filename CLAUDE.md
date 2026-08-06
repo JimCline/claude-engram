@@ -86,7 +86,8 @@ second reason, independent of AOT-hostility, that D1 keeps `sqlite-vec` and llam
 side-loaded rather than linked.
 
 **Anything destructive is dry-run first.** `repair`, `compact`, `forget`, `backup prune`,
-`backup restore`, and the installer print what they would do and require an explicit flag to act.
+`backup restore`, `backup replay`, and the installer print what they would do and require an
+explicit flag to act.
 Anything editing a user's file backs it up first and refuses to overwrite a value it did not
 create.
 
@@ -97,6 +98,13 @@ because a migration is the only thing Engram's own code does that rewrites struc
 appending to it, and it runs unattended on open (D31). Session start spawns `backup take --if-due`
 detached: +2.0 ms mean, and the snapshot is skipped entirely unless the fingerprint of authored
 truth actually moved, so an idle day costs nothing.
+
+**A snapshot restores; the journal survives.** `backups/facts.jsonl` is every fact in plain text,
+rewritten whole and atomically alongside each snapshot. A `.db` snapshot only restores into the
+schema version that wrote it — the journal is addressed by path and predicate, so it replays into
+any later one (D32). `backup replay` is additive and idempotent, matching on subject, predicate,
+body and `valid_from`: it never rewrites or closes a fact the target store already had, because a
+recovery tool that can retire live beliefs is worse than the loss it was called to fix.
 
 ## Build constraints
 

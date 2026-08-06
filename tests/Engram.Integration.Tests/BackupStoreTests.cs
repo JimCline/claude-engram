@@ -22,8 +22,9 @@ public class BackupStoreTests
         int intervalMinutes = 60,
         int hourly = 24,
         int daily = 7,
-        int weekly = 4) =>
-        new(enabled, intervalMinutes, hourly, daily, weekly, []);
+        int weekly = 4,
+        bool journal = true) =>
+        new(enabled, journal, intervalMinutes, hourly, daily, weekly, []);
 
     // --- taking one -------------------------------------------------------------------------
 

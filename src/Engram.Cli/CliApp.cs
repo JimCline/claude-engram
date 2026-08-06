@@ -76,12 +76,13 @@ public static class CliApp
         writer.WriteLine("  model <list|install|path>          list the local embedding models, or download one");
         writer.WriteLine("  scan [path] [options]              report what indexing would read there, and what it would skip");
         writer.WriteLine("  explain <query> [options]          show why recall ranks what it ranks, and what it leaves out");
-        writer.WriteLine("  backup <take|list|prune|restore>   snapshot the store, or put a snapshot back");
+        writer.WriteLine("  backup <take|list|prune|restore|replay>  snapshot the store, or put the facts back");
         writer.WriteLine();
         writer.WriteLine("backup options:");
         writer.WriteLine("  take --if-due                      snapshot only if the interval has passed and the store has changed");
         writer.WriteLine("  prune [--apply]                    thin old snapshots to the configured hourly/daily/weekly limits");
         writer.WriteLine("  restore [name] [--apply]           put a snapshot back, keeping the current store as a new snapshot");
+        writer.WriteLine("  replay [file] [--apply]            read facts.jsonl into the store, adding what it does not have");
         writer.WriteLine();
         writer.WriteLine("scan options:");
         writer.WriteLine("  --skipped                          name every skipped file and why");

@@ -38,6 +38,7 @@ public static class BackupCommand
             "list" => ListSnapshots(home, stdout),
             "prune" => Prune(home, settings, rest, stdout),
             "restore" => Restore(home, rest, stdout, stderr),
+            "replay" => Replay(home, rest, stdout, stderr),
             _ => Unknown(subcommand, stderr),
         };
     }
@@ -93,6 +94,21 @@ public static class BackupCommand
         }
 
         stdout.WriteLine($"Wrote {snapshot.Name} ({Size(snapshot.Bytes)}).");
+
+        if (settings.Journal)
+        {
+            try
+            {
+                var facts = FactJournal.Write(connection, home, DateTimeOffset.UtcNow);
+                stdout.WriteLine($"Journalled {facts} {(facts == 1 ? "fact" : "facts")} to {FactJournal.FileName}.");
+            }
+            catch (Exception exception) when (exception is IOException or Microsoft.Data.Sqlite.SqliteException)
+            {
+                // The snapshot is already on disk and is the tier that matters most. Failing the
+                // whole command now would report a backup that did not happen when one did.
+                stderr.WriteLine("warning: snapshot written, but the fact journal failed — " + exception.Message);
+            }
+        }
 
         var plan = BackupStore.Plan(BackupStore.List(home), settings);
         if (plan.Delete.Count > 0)
@@ -220,9 +236,84 @@ public static class BackupCommand
         return 0;
     }
 
+    /// <remarks>
+    /// Additive by design, and that is the difference between this and <c>restore</c>. Restore
+    /// replaces a store with an older one; replay reads facts into whatever is already there and
+    /// skips the ones it recognises. So it is the safe half of recovery — usable against a live
+    /// store, against a half-recovered one, and twice in a row.
+    /// </remarks>
+    private static int Replay(EngramHome home, string[] args, TextWriter stdout, TextWriter stderr)
+    {
+        var apply = args.Contains("--apply");
+        var named = args.FirstOrDefault(a => !a.StartsWith('-'));
+        var path = named ?? FactJournal.PathIn(home);
+
+        if (!File.Exists(path))
+        {
+            stderr.WriteLine($"error: no fact journal at {path}. Run 'engram backup take' to write one.");
+            return 1;
+        }
+
+        IReadOnlyList<JournalFact> facts;
+        int skipped;
+        try
+        {
+            facts = FactJournal.Parse(File.ReadLines(path), out skipped);
+        }
+        catch (IOException exception)
+        {
+            stderr.WriteLine("error: could not read " + path + " — " + exception.Message);
+            return 1;
+        }
+
+        if (skipped > 0)
+        {
+            stderr.WriteLine($"warning: {skipped} unreadable {(skipped == 1 ? "line was" : "lines were")} skipped in {path}.");
+        }
+
+        if (facts.Count == 0)
+        {
+            stdout.WriteLine("Nothing to replay — " + path + " holds no facts.");
+            return 0;
+        }
+
+        using var connection = EngramDatabase.OpenInitialized(home);
+
+        ReplayResult result;
+        try
+        {
+            result = FactJournal.Replay(connection, facts, apply);
+        }
+        catch (Microsoft.Data.Sqlite.SqliteException exception)
+        {
+            stderr.WriteLine("error: replay failed and nothing was written — " + exception.Message);
+            return 1;
+        }
+
+        stdout.WriteLine(
+            $"{(apply ? "Wrote" : "Would write")} {result.Written} {(result.Written == 1 ? "fact" : "facts")}"
+                + $", leaving {result.AlreadyPresent} already in the store.");
+
+        if (result.Unresolved > 0)
+        {
+            stdout.WriteLine(
+                $"  {result.Unresolved} supersession {(result.Unresolved == 1 ? "link" : "links")} pointed outside "
+                    + "this journal; those facts kept their end date but not what replaced them.");
+        }
+
+        if (!apply)
+        {
+            stdout.WriteLine();
+            stdout.WriteLine("Dry run only — nothing was changed. Re-run with --apply to write them.");
+        }
+
+        return 0;
+    }
+
     private static int Unknown(string subcommand, TextWriter stderr)
     {
-        stderr.WriteLine($"error: unknown backup subcommand '{subcommand}'. Expected take, list, prune, or restore.");
+        stderr.WriteLine(
+            $"error: unknown backup subcommand '{subcommand}'. Expected take, list, prune, restore, or replay.");
         return 2;
     }
 

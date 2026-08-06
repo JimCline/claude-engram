@@ -17,6 +17,7 @@ namespace Engram.Core;
 /// </remarks>
 public sealed record BackupSettings(
     bool Enabled,
+    bool Journal,
     int IntervalMinutes,
     int KeepHourly,
     int KeepDaily,
@@ -26,6 +27,15 @@ public sealed record BackupSettings(
     public const string Section = "backup";
 
     public const bool DefaultEnabled = true;
+
+    /// <summary>Whether each snapshot also rewrites the plain-text fact journal.</summary>
+    /// <remarks>
+    /// On, because the journal is the only tier that outlives a schema change, and the run that
+    /// needs it is the run nobody planned for. It is a switch rather than a certainty because it
+    /// is the one artifact here that holds every fact in readable text: someone who wants their
+    /// beliefs to exist only inside an opaque database should be able to say so.
+    /// </remarks>
+    public const bool DefaultJournal = true;
 
     /// <summary>
     /// The shortest gap between two snapshots.
@@ -43,6 +53,7 @@ public sealed record BackupSettings(
 
     public static BackupSettings Default { get; } = new(
         DefaultEnabled,
+        DefaultJournal,
         DefaultIntervalMinutes,
         DefaultKeepHourly,
         DefaultKeepDaily,
@@ -57,6 +68,7 @@ public sealed record BackupSettings(
 
         return new BackupSettings(
             config.Bool(Section, "enabled") ?? DefaultEnabled,
+            config.Bool(Section, "journal") ?? DefaultJournal,
             Positive(config, "interval_minutes", DefaultIntervalMinutes, problems),
             Positive(config, "keep_hourly", DefaultKeepHourly, problems),
             Positive(config, "keep_daily", DefaultKeepDaily, problems),

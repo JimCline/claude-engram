@@ -44,6 +44,7 @@ public static class DefaultConfig
         [backup]
         enabled = true
         interval_minutes = 60         # a ceiling: a snapshot is taken only if facts changed too
+        journal = true                # also write facts.jsonl, which replays into any later schema
         keep_hourly = 24
         keep_daily = 7
         keep_weekly = 4

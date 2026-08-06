@@ -14,6 +14,7 @@ public class BackupSettingsTests
     private static void AssertIsDefault(BackupSettings settings)
     {
         Assert.Equal(BackupSettings.DefaultEnabled, settings.Enabled);
+        Assert.Equal(BackupSettings.DefaultJournal, settings.Journal);
         Assert.Equal(BackupSettings.DefaultIntervalMinutes, settings.IntervalMinutes);
         Assert.Equal(BackupSettings.DefaultKeepHourly, settings.KeepHourly);
         Assert.Equal(BackupSettings.DefaultKeepDaily, settings.KeepDaily);

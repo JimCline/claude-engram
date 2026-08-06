@@ -1732,10 +1732,59 @@ redundant — both paths that set `valid_to` also write a supersession row — s
 insurance with a note saying no test can guard it, following the precedent set by the
 `foreign_keys` pragma.
 
-Not built here, and deliberately not stubbed: a plain-text fact journal. Because facts are
-append-only it would be incremental and nearly free, and unlike a `.db` snapshot it replays into
-any later schema — it is the tier that survives what these snapshots cannot. It gets its own
-change rather than a config key that does nothing, per the rule stated one decision above.
+---
+
+### D32 — The fact journal is plain text, rewritten whole, and replayed additively
+
+D31 deferred this and predicted the wrong shape for it, which is worth recording because the
+prediction was reasonable and still wrong. The claim was that append-only facts make the journal
+incremental and nearly free. On building it, the whole-file rewrite won on every axis that
+mattered, and the incremental version was abandoned rather than shipped.
+
+**Why the rewrite beats the append.** Appending only what is new needs a watermark, and a
+watermark is a second copy of the truth that starts lying the moment anyone touches the file — the
+same objection that put the snapshot fingerprint inside the snapshot rather than beside it. It also
+needs an ordering rule the append version has no natural place to enforce: a fact and the fact that
+superseded it must be written closed-then-open, because for as long as both look live they violate
+the live-fact uniqueness constraint. A whole-file rewrite has neither problem. Every line carries
+that fact's final validity, replay is one pass, and the file can be checked against the store by
+reading it. The cost traded away is O(facts) per run instead of O(new facts), which at an hourly
+ceiling in a detached process is not yet a cost; when it is, it will be a measured change.
+
+The rewrite is atomic — `.partial` then rename — for a sharper reason than the snapshots have.
+Whole-file rewriting is the one operation that could destroy the archive it maintains, so a process
+killed halfway must leave the previous complete journal exactly where it was.
+
+**It is the tier that outlives a schema.** A `.db` snapshot restores only into the version that
+wrote it, which is why the version is in its filename and why restore refuses a mismatch. The
+journal is addressed by path and predicate rather than by row id and table shape, so it replays
+forward into any later schema. Measured on the published binary: a home holding nothing but
+`facts.jsonl` replayed to 45 facts that then ranked through the real retrieval path, and a second
+`--apply` wrote none of them again.
+
+**Closed facts are journalled too.** A journal of only what is currently believed cannot
+reconstruct why it is believed. The supersession chain is the record of a mind changing, and D8
+protects it as authored truth exactly like the facts themselves.
+
+**Replay is additive, and that is the whole difference from restore.** Restore replaces a store
+with an older one; replay reads facts into whatever is already there and skips what it recognises,
+matching on subject, predicate, body and `valid_from`. So it is safe against a live store, against
+a half-recovered one, and against being run twice. It is deliberately not a merge: nothing in it
+rewrites or closes a fact the target already had. Facts are append-only, and a recovery tool that
+could silently retire live beliefs would be worse than the problem it was called to fix.
+
+Two smaller calls. `session_id` is dropped, because a session number means nothing in a store that
+did not host that session — the provenance that survives is what travels: subject, predicate, how
+it was learned, and when. And a malformed line is skipped and counted rather than fatal, because
+this file is read when something has already gone wrong, and refusing to recover four thousand
+facts over one truncated line is the tool preferring its own tidiness to the user's data.
+
+Two of the eight guards written for this did not fail when first broken, and both breaks were
+wrong rather than the guards. Opening the `.partial` file in append mode changes nothing — it is
+freshly created every run — so the honest falsification is to write straight to the live journal in
+append mode, which is precisely the rejected design; it fails. And `if (false)` will not compile
+under warnings-as-errors, so forcing the `apply` parameter true does the same job. The second
+attempt at each failed as intended, which is the only evidence that either guard exists.
 
 ---
 
