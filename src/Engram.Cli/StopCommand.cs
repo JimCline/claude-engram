@@ -16,7 +16,7 @@ internal static class StopCommand
         var executablePath = ExecutablePath.Current;
 
         var lifecycle = new ServerLifecycle(new ProcessInspector(), new HttpServerHealthChecker(), new ProcessServerLauncher());
-        var result = lifecycle.Stop(home, executablePath, ServerLifecycleTimeouts.Default);
+        var result = lifecycle.Stop(home, ServerLifecycleTimeouts.Default);
 
         stdout.WriteLine(result.Message);
         return 0;

@@ -1,7 +1,7 @@
 # Engram — working rules
 
 Read `docs/engram-implementation-plan.md` before any non-trivial change. It holds
-forty-one decisions (D1–D41) that resolve questions the spec left open, and each one was
+forty-two decisions (D1–D42) that resolve questions the spec left open, and each one was
 reached by argument or measurement, not preference. `docs/engram-schema.sql` is the authority for
 database shape.
 
@@ -192,6 +192,24 @@ the user just moved away from. Which half of the rebuild runs is likewise not a 
 that pin, because a same-width model swap is invisible to everything else (`vec0` checks width,
 not provenance). Rebuilding derived state needs no snapshot, unlike a migration (D31): by D8 it
 recomputes from `fact` and can destroy nothing authored (D38).
+
+**A running server is identified by its start time, never by where it was launched from.** pid plus
+the kernel's start time for that pid is unique, and it is exactly what a recycled pid cannot forge.
+Adding the executable path to that answers a different question — *was this launched from the same
+file I am?* — and two engram binaries legitimately serve one home, which is what every session
+working on this repo looks like. Measured here: the installed binary reported the server up while a
+freshly built one called the same pid file dead, in the same second. `stop` was the real damage — it
+deleted the pid file, said "not running", and left the server running with nothing left to address
+it by. The path is reported, never enforced: `StatusResult.LaunchedFrom` carries it and `status` and
+`doctor` print it only when it differs from the binary being asked. Nothing is terminated whose
+start time does not match what was recorded — that guarantee never rested on the path (D42).
+
+**Ask `ServerIsAlive`, never `Kind is Running`.** `Wedged` and `VersionMismatch` are both live
+processes holding whatever they loaded at startup, so any caller deciding whether it may act alone —
+`embed --rebuild`, by D38 — has to count them. Enumerating states at the call site is how one caller
+ends up racing a server it decided was absent. A version gap is also not a hang: it gets its own
+state and doctor warns rather than reporting `Broken`, because nothing is wrong with a server that
+answers correctly from the build before this one (D37, D42).
 
 ## Build constraints
 

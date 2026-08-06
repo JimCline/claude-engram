@@ -124,10 +124,9 @@ public static class EmbedCommand
 
         if (lifecycle.Status(
                 home,
-                ExecutablePath.Current,
                 EngramVersion.Current,
                 ServerLifecycleTimeouts.Default.HealthCheckTimeout)
-            .Kind is ServerStatusKind.Running)
+            .ServerIsAlive)
         {
             stderr.WriteLine("error: the server is running, and it embeds from the model it loaded at startup.");
             stderr.WriteLine("       Rebuilding underneath it would refill the index in the old space.");

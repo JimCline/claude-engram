@@ -261,18 +261,30 @@ public static class Diagnostics
     private static Diagnosis CheckServer(EngramHome home, ServerLifecycle? lifecycle, string? executablePath)
     {
         lifecycle ??= new ServerLifecycle(new ProcessInspector(), new HttpServerHealthChecker(), new ProcessServerLauncher());
-        var status = lifecycle.Status(
-            home,
-            executablePath ?? Environment.ProcessPath ?? string.Empty,
-            EngramVersion.Current,
-            HealthDeadline);
+        var status = lifecycle.Status(home, EngramVersion.Current, HealthDeadline);
+        var asking = executablePath ?? Environment.ProcessPath ?? string.Empty;
+
+        // Only worth a word when it is not the binary being asked — then it explains a surprising
+        // row, and most often it is a working copy asking about the installed server.
+        var from = status.LaunchedFrom is { Length: > 0 } launched
+            && !string.Equals(launched, asking, StringComparison.Ordinal)
+                ? $", started from {launched}"
+                : string.Empty;
 
         return status.Kind switch
         {
             ServerStatusKind.Running => new Diagnosis(
                 "server",
                 DiagnosisState.Ok,
-                $"pid {status.Health!.Pid} on port {status.Health.Port}, version {status.Health.Version}"),
+                $"pid {status.Health!.Pid} on port {status.Health.Port}, version {status.Health.Version}{from}"),
+
+            // Up and answering correctly, just not this build. Warn rather than Broken: nothing is
+            // wrong with it, and calling a working server broken is how a doctor stops being read.
+            ServerStatusKind.VersionMismatch => new Diagnosis(
+                "server",
+                DiagnosisState.Warn,
+                $"running version {status.Health!.Version}, but this engram is {EngramVersion.Current}{from}",
+                "engram stop, then engram start"),
 
             // Not a fault: the hooks and the whole CLI work without it, and the plugin starts it
             // on demand. Only the MCP tools need it up.

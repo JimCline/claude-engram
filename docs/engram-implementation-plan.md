@@ -21,7 +21,7 @@ stated as an erratum with a reason. Nothing here changes the spec's goals.
 
 ## 1. Decisions (locked)
 
-Forty-one architectural forks are locked below. Each is a decision, not an option.
+Forty-two architectural forks are locked below. Each is a decision, not an option.
 Six of them were adjudicated with Fable.
 
 ### D1 — Packaging: AOT core, Roslyn sidecar, native libs in the data directory
@@ -2223,6 +2223,47 @@ Six attempted breaks each failed a test: keep the oldest per path, keep the newe
 what could not be read, skip the ceiling, ignore the threshold, and stop spawning the compaction at
 session start. That last one is the only test that has ever covered the detached child at all —
 `backup take --if-due` had been spawned untested since D31.
+
+### D42 — a server's identity is its start time; a version gap is not a hang
+
+`ServerLifecycle` proved a pid file still described *our* server by comparing two things: the
+kernel's start time for that pid, and the executable path the process was launched from. The first
+is the check. The second was quietly answering a different question — *was this launched from the
+same file I am?* — and it made every honest answer wrong.
+
+Measured on this instance: the installed binary reported the server up while a freshly built one
+reported the same pid file dead, in the same second. That is not an edge case, it is what working on
+Engram looks like. And it was not cosmetic in `stop`, which is what makes this a defect rather than
+a wording problem. A path mismatch made `stop` delete the pid file, report "engram is not running",
+and leave the server running with nothing left to address it by — no later `stop` from any binary
+could find it, and recovery was `kill` by hand. `start` had the mirror bug: it deleted the record
+and launched a second server against a bound port.
+
+pid plus start time is already unique, and it is exactly the pair a recycled pid cannot forge — a
+stranger that inherited the number started at a different instant. The path adds nothing to it. So
+identity drops the path, and the guarantee that actually mattered is untouched because it never
+rested on the path: nothing is terminated whose start time does not match what was recorded.
+
+The path is demoted, not discarded. `StatusResult.LaunchedFrom` carries it, and `status` and
+`doctor` print it only when it differs from the binary being asked — that difference is the entire
+explanation for an otherwise baffling row, and printing it unconditionally would bury it in noise.
+
+**A version gap got its own state.** A healthy server on another version used to collapse into
+`Wedged`, whose text is "alive and not answering its health check" — said about a server that
+answered immediately and correctly. That sends someone hunting a stuck process when what they have
+is a server they have not restarted since upgrading. `VersionMismatch` says so plainly, and doctor
+warns rather than reporting `Broken`, per D37: nothing is wrong with that server.
+
+Splitting the states exposed the second half of the problem. Callers asked "is a server up?" by
+testing `Kind is Running`, which is false for both `Wedged` and `VersionMismatch` — and both are
+live processes holding whatever they loaded at startup. `embed --rebuild` refusing to run while the
+server is up (D38) is the one that matters: under the old test it would have decided the server was
+absent and raced it. `StatusResult.ServerIsAlive` is now the only way to ask, so the question cannot
+be answered by enumerating states again and getting a different answer in each caller.
+
+Seven attempted breaks each failed a test: restoring the path to identity (three tests), collapsing
+`VersionMismatch` back into `Wedged`, narrowing `ServerIsAlive` to `Running`, dropping
+`LaunchedFrom`, and inverting the doctor row's "only when it differs" condition.
 
 ## PreCompact cannot inject context
 

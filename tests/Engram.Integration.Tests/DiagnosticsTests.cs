@@ -44,14 +44,18 @@ public sealed class DiagnosticsTests : IDisposable
         }
     }
 
-    private static DiagnosticReport Run(SandboxHome sandbox, bool reachOut = false, string? repoRoot = null) =>
+    private static DiagnosticReport Run(
+        SandboxHome sandbox,
+        bool reachOut = false,
+        string? repoRoot = null,
+        ServerLifecycle? lifecycle = null) =>
         Diagnostics.Run(
             sandbox.Home,
             _ => null,
             repoRoot,
             // Nothing real: a doctor run must not depend on whether a server happens to be up on
             // the machine running the tests.
-            new ServerLifecycle(new FakeProcessInspector(), new FakeServerHealthChecker(), new FakeServerLauncher()),
+            lifecycle ?? new ServerLifecycle(new FakeProcessInspector(), new FakeServerHealthChecker(), new FakeServerLauncher()),
             reachOut,
             executablePath: "/nonexistent/engram",
 
@@ -65,6 +69,68 @@ public sealed class DiagnosticsTests : IDisposable
 
     private static void WriteConfig(SandboxHome sandbox, string toml) =>
         File.WriteAllText(sandbox.Home.ConfigPath, toml);
+
+    /// <summary>A healthy server on this home, launched from <paramref name="from"/>.</summary>
+    private static ServerLifecycle LiveServer(SandboxHome sandbox, string from, string version)
+    {
+        var started = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        PidFile.Write(sandbox.Home, new PidFileRecord(4242, 7433, version, started));
+
+        var inspector = new FakeProcessInspector();
+        inspector.SetAlive(4242, new ProcessIdentity(from, started));
+
+        var health = new FakeServerHealthChecker();
+        health.Enqueue(new HealthCheckOutcome(
+            HealthCheckStatus.Healthy,
+            new HealthResponsePayload(4242, 7433, version, started)));
+
+        return new ServerLifecycle(inspector, health, new FakeServerLauncher());
+    }
+
+    /// <summary>
+    /// The row that sent the author looking for a dead server that was serving requests.
+    /// </summary>
+    /// <remarks>
+    /// Measured on this instance: the installed binary reported the server up while a freshly built
+    /// one reported the same pid file dead, in the same second. Identity used to include the
+    /// executable path, which made "a working copy is asking about the installed server" — the
+    /// normal case while developing — indistinguishable from a recycled pid.
+    /// </remarks>
+    [Fact]
+    public void AServerStartedFromAnotherBinary_IsFineAndSaysWhichBinary()
+    {
+        using var sandbox = new SandboxHome();
+        var report = Run(sandbox, lifecycle: LiveServer(sandbox, "/opt/engram/engram", EngramVersion.Current));
+
+        var server = Check(report, "server");
+        Assert.Equal(DiagnosisState.Ok, server.State);
+        Assert.Contains("pid 4242", server.Detail, StringComparison.Ordinal);
+        Assert.Null(server.Fix);
+
+        // Named, because a row about a binary you are not running explains nothing without it.
+        Assert.Contains("started from /opt/engram/engram", server.Detail, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// An upgraded binary against a server nobody restarted warns; it is not broken.
+    /// </summary>
+    /// <remarks>
+    /// This used to land in <c>Wedged</c> — reported as "alive and not answering its health check"
+    /// about a server that answered immediately and correctly. D37 reserves red for faults, and a
+    /// red row for a working server is how a doctor stops being read.
+    /// </remarks>
+    [Fact]
+    public void AServerOnAnotherVersion_WarnsAndSaysToRestartIt()
+    {
+        using var sandbox = new SandboxHome();
+        var report = Run(sandbox, lifecycle: LiveServer(sandbox, "/opt/engram/engram", "0.0.0-ancient"));
+
+        var server = Check(report, "server");
+        Assert.Equal(DiagnosisState.Warn, server.State);
+        Assert.Contains("0.0.0-ancient", server.Detail, StringComparison.Ordinal);
+        Assert.Contains(EngramVersion.Current, server.Detail, StringComparison.Ordinal);
+        Assert.Equal("engram stop, then engram start", server.Fix);
+    }
 
     [Fact]
     public void AHomeThatWasNeverInitialised_IsBrokenAndSaysToRunInit()

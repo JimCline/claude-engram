@@ -42,9 +42,38 @@ public enum ServerStatusKind
     Stale,
     Wedged,
     Reused,
+
+    /// <summary>Answering, and answering correctly, from a build that is not this one.</summary>
+    VersionMismatch,
 }
 
-public sealed record StatusResult(ServerStatusKind Kind, PidFileRecord? Recorded, HealthResponsePayload? Health);
+/// <summary>
+/// What is serving this home, and from where.
+/// </summary>
+/// <param name="LaunchedFrom">
+/// The executable the running server was started from, when one could be read. It is reported
+/// rather than enforced: the same home is legitimately served by a binary at another path — an
+/// installed one while a working copy asks — and a status that called that "not running" was
+/// describing itself rather than the server.
+/// </param>
+public sealed record StatusResult(
+    ServerStatusKind Kind,
+    PidFileRecord? Recorded,
+    HealthResponsePayload? Health,
+    string? LaunchedFrom = null)
+{
+    /// <summary>
+    /// Whether a server process is alive on this home, whatever shape it is in.
+    /// </summary>
+    /// <remarks>
+    /// The question anything asks before doing something a live server would fight over. Answering
+    /// it with <c>Kind is Running</c> alone is how a caller ends up racing a server it decided was
+    /// absent: a wedged one still holds whatever it loaded at startup, and one on another version
+    /// is simply up.
+    /// </remarks>
+    public bool ServerIsAlive =>
+        Kind is ServerStatusKind.Running or ServerStatusKind.VersionMismatch or ServerStatusKind.Wedged;
+}
 
 public sealed class ServerLifecycle(
     IProcessInspector processInspector,
@@ -60,7 +89,7 @@ public sealed class ServerLifecycle(
             {
                 PidFile.Delete(home);
             }
-            else if (!IsOurs(record, executablePath))
+            else if (RecordedProcess(record) is null)
             {
                 PidFile.Delete(home);
             }
@@ -80,7 +109,7 @@ public sealed class ServerLifecycle(
         return DoStart(home, executablePath, ourVersion, port, timeouts);
     }
 
-    public StopResult Stop(EngramHome home, string executablePath, ServerLifecycleTimeouts timeouts)
+    public StopResult Stop(EngramHome home, ServerLifecycleTimeouts timeouts)
     {
         var record = PidFile.Read(home);
         if (record is null)
@@ -94,7 +123,7 @@ public sealed class ServerLifecycle(
             return new StopResult(StopOutcome.NothingRunning, "engram is not running");
         }
 
-        if (!IsOurs(record, executablePath))
+        if (RecordedProcess(record) is null)
         {
             PidFile.Delete(home);
             return new StopResult(StopOutcome.NothingRunning, "engram is not running (pid file referred to a different process)");
@@ -105,7 +134,7 @@ public sealed class ServerLifecycle(
         return new StopResult(StopOutcome.Stopped, "engram stopped");
     }
 
-    public StatusResult Status(EngramHome home, string executablePath, string ourVersion, TimeSpan healthCheckTimeout)
+    public StatusResult Status(EngramHome home, string ourVersion, TimeSpan healthCheckTimeout)
     {
         var record = PidFile.Read(home);
         if (record is null)
@@ -118,15 +147,24 @@ public sealed class ServerLifecycle(
             return new StatusResult(ServerStatusKind.Stale, record, null);
         }
 
-        if (!IsOurs(record, executablePath))
+        var identity = RecordedProcess(record);
+        if (identity is null)
         {
             return new StatusResult(ServerStatusKind.Reused, record, null);
         }
 
         var outcome = healthChecker.Check(record.Port, healthCheckTimeout);
-        return IsHealthyMatch(outcome, record, ourVersion)
-            ? new StatusResult(ServerStatusKind.Running, record, outcome.Result)
-            : new StatusResult(ServerStatusKind.Wedged, record, null);
+        if (!IsAnsweringForUs(outcome, record))
+        {
+            return new StatusResult(ServerStatusKind.Wedged, record, null, identity.ExecutablePath);
+        }
+
+        // Answering, and it is ours — the only question left is whether it is the build we are.
+        // Collapsing this into Wedged claimed a healthy server was not answering, which sends
+        // someone looking for a hang when what they have is a server they have not restarted.
+        return outcome.Result!.Version == ourVersion
+            ? new StatusResult(ServerStatusKind.Running, record, outcome.Result, identity.ExecutablePath)
+            : new StatusResult(ServerStatusKind.VersionMismatch, record, outcome.Result, identity.ExecutablePath);
     }
 
     private StartResult DoStart(EngramHome home, string executablePath, string ourVersion, int port, ServerLifecycleTimeouts timeouts)
@@ -186,17 +224,37 @@ public sealed class ServerLifecycle(
         }
     }
 
-    private bool IsOurs(PidFileRecord record, string executablePath)
+    /// <summary>
+    /// The process this pid file describes, or null if the pid now belongs to something else.
+    /// </summary>
+    /// <remarks>
+    /// <para><b>Start time is the identity; the executable path is not.</b> A pid plus the instant
+    /// the kernel started it is unique — that pair is exactly what a recycled pid cannot forge,
+    /// because a stranger that inherited the number started at a different moment. The path adds
+    /// nothing to that and quietly answered a different question: <i>was this launched from the
+    /// same file I am?</i> Two engram binaries legitimately serve one home — an installed one, and
+    /// a working copy asking about it — and treating that as a recycled pid was wrong in every
+    /// direction it could be. <c>status</c> called a live server dead. <c>stop</c> deleted the pid
+    /// file, reported "not running", and left the server running with nothing left to address it
+    /// by, so no later <c>stop</c> could find it either. <c>start</c> launched a second server
+    /// against a bound port. Measured on the author's instance: the installed binary reported the
+    /// server up while a freshly built one reported the same pid file dead, in the same second.
+    /// </para>
+    ///
+    /// <para>The guarantee that mattered is untouched, because it never rested on the path: nothing
+    /// is terminated whose start time does not match what was recorded.</para>
+    /// </remarks>
+    private ProcessIdentity? RecordedProcess(PidFileRecord record)
     {
         var identity = processInspector.GetIdentity(record.Pid);
-        return identity is not null
-            && identity.ExecutablePath == executablePath
-            && identity.StartTimeUtc == record.StartTimeUtc;
+        return identity is not null && identity.StartTimeUtc == record.StartTimeUtc ? identity : null;
     }
 
-    private static bool IsHealthyMatch(HealthCheckOutcome outcome, PidFileRecord record, string ourVersion) =>
+    private static bool IsAnsweringForUs(HealthCheckOutcome outcome, PidFileRecord record) =>
         outcome.Status == HealthCheckStatus.Healthy
         && outcome.Result is { } health
-        && health.Pid == record.Pid
-        && health.Version == ourVersion;
+        && health.Pid == record.Pid;
+
+    private static bool IsHealthyMatch(HealthCheckOutcome outcome, PidFileRecord record, string ourVersion) =>
+        IsAnsweringForUs(outcome, record) && outcome.Result!.Version == ourVersion;
 }
