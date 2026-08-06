@@ -294,3 +294,23 @@ CREATE UNIQUE INDEX ux_repo_identity ON repo_registry(identity);
 
 CREATE TABLE schema_meta (key TEXT PRIMARY KEY, value TEXT);
 INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1');
+
+
+-- ---------------------------------------------------------------------------
+-- fact_vec — the sqlite-vec index over fact bodies — is NOT here, and cannot
+-- be. Its DDL embeds the vector width, which is a property of whichever
+-- embedder is configured, and applying it at all needs sqlite-vec loaded on
+-- the connection; a static statement expresses neither. `VectorIndex` owns it
+-- and pins the space it holds in `schema_meta` (embedding_model,
+-- embedding_dimensions, embedding_input). Derived state throughout: it
+-- rebuilds from `fact` plus an embedder, which is what lets `compact` and
+-- `repair` touch it (D8) and makes dropping it a recovery, not data loss.
+--
+--   CREATE VIRTUAL TABLE fact_vec USING vec0(
+--     fact_id   INTEGER PRIMARY KEY,
+--     is_live   INTEGER,   -- mirrors fact.valid_to IS NULL; filtered INSIDE
+--                          -- the MATCH, because vec0 applies k before any
+--                          -- join and a post-filter silently returns short
+--     embedding float[N] distance_metric=cosine
+--   );
+-- ---------------------------------------------------------------------------

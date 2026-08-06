@@ -1794,6 +1794,25 @@ which keeps the index proportional to live facts rather than to every fact ever 
 permits either, a vector being derived state; the choice belongs to step 7 and is not settled
 here.
 
+**Settled in step 7: retire by update, and reconcile rather than maintain.** `UPDATE`, because
+a superseded fact is still answerable — `recall --as-of` and `history` both ask for beliefs that
+are no longer current, and a lane that has thrown its vectors away cannot serve them. The index
+therefore grows with every supersession, which is `compact`'s problem: pruning retired vectors
+is exactly the derived-state pruning D8 permits, and the cost of getting one back is one
+embedding.
+
+More consequential is *when* the update runs, and the obvious answer is also wrong. Retiring the
+vector inside `FactStore`'s supersession would put a `vec0` statement on the write path, so an
+instance whose `lib/` went missing — the extension is side-loaded and optional by construction
+(D1, D18) — would have a `fact_vec` table it can no longer address, and every `remember` would
+fail with `no such module: vec0`. Authored truth would then depend on an optional accelerator.
+Catching and ignoring that error is worse than failing: it leaves the index silently stale with
+nothing recording that it is. So liveness is **reconciled at the head of each backfill pass**
+instead of maintained at write time. Staleness is bounded by the pass interval and bounded in
+the safe direction — a stale row means a superseded fact can still be returned, never that a
+live one is hidden. The same pass drops vectors whose fact is gone entirely, which is what
+`compact` pruning a fact leaves behind.
+
 `PARTITION KEY` is also accepted and a partitioned KNN returns the right rows, which is the
 mechanism to reach for if scope ever needs to bound the search rather than merely filter it.
 
