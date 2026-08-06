@@ -109,8 +109,17 @@ unparseable: bytes that could not be obtained are left alone, because deleting o
 bound that depends on someone typing the command is not a bound (D41).
 
 **Anything destructive is dry-run first.** `repair`, `compact`, `forget`, `backup prune`,
-`backup restore`, `backup replay`, and the installer print what they would do and require an
-explicit flag to act.
+`backup restore`, `backup replay`, `queue compact`, and the installer print what they would do and
+require an explicit flag to act.
+
+**An optional installer step that fails does not discard a finished install.** `install.sh` runs
+under `set -e`, so a non-zero command aborts it where it stands — and `--with-plugin` is near the
+end, after the binary, the PATH entry and the home are all durable, and *before* the MCP permission
+grant. A failing `claude plugin install` therefore used to skip a step that has nothing to do with
+the plugin and swallow the summary that tells a person what happened. Optional steps run inside an
+`if` condition, which is exempt from `set -e`, and report through a tri-state the summary reads;
+the exit code stays 0 because the installation that was asked for did happen. This was a real
+defect, found by writing the test that had never existed for that flag.
 Anything editing a user's file backs it up first and refuses to overwrite a value it did not
 create. For `config.toml` that means `ConfigEditor`, which changes one line and leaves the rest of
 the file — the prose in there explains the choices, and a TOML round-trip would delete it. A value

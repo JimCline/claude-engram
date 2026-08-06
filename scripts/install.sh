@@ -484,14 +484,25 @@ fi
 
 # --- 8. --with-plugin ---
 
-plugin_installed=false
+# installed | no-claude | failed. Only read when --with-plugin was given.
+plugin_result=no-claude
 if $with_plugin; then
     if $apply; then
         if command -v claude >/dev/null 2>&1; then
             say "Registering the Claude Code marketplace and installing the plugin ..."
-            claude plugin marketplace add "$repo_root"
-            claude plugin install engram@engram
-            plugin_installed=true
+            # Under set -e a non-zero claude would abort the script here. By this point the
+            # binary, the PATH entry and the home are all installed and durable, and granting
+            # MCP permissions is the step after this one — so aborting would discard the summary
+            # and skip something that has nothing to do with the plugin. Commands in an if
+            # condition are exempt from set -e, which is what makes the failure reportable.
+            if claude plugin marketplace add "$repo_root" && claude plugin install engram@engram; then
+                plugin_result=installed
+            else
+                plugin_result=failed
+                say "the plugin step failed; run these commands yourself to finish it:"
+                say "  claude plugin marketplace add $repo_root"
+                say "  claude plugin install engram@engram"
+            fi
         else
             say "claude is not on PATH; run these commands yourself to install the plugin:"
             say "  claude plugin marketplace add $repo_root"
@@ -565,11 +576,17 @@ if $apply; then
         echo "  PATH: $prefix was already on \$PATH; nothing changed"
     fi
     if $with_plugin; then
-        if $plugin_installed; then
-            echo "  Claude Code plugin: registered and installed"
-        else
-            echo "  Claude Code plugin: NOT installed (claude was not on PATH); run the commands printed above"
-        fi
+        case "$plugin_result" in
+            installed)
+                echo "  Claude Code plugin: registered and installed"
+                ;;
+            no-claude)
+                echo "  Claude Code plugin: NOT installed (claude was not on PATH); run the commands printed above"
+                ;;
+            failed)
+                echo "  Claude Code plugin: NOT installed (claude reported an error); run the commands printed above"
+                ;;
+        esac
     fi
     case "$grant_result" in
         granted)
@@ -587,7 +604,7 @@ if $apply; then
     if $path_changed; then
         echo "  Open a new shell, or run: source $path_rc_file"
     fi
-    if $with_plugin && $plugin_installed; then
+    if $with_plugin && [ "$plugin_result" = installed ]; then
         echo "  In a running Claude Code session, run: /reload-plugins"
     fi
     if [ "$grant_result" = granted ]; then

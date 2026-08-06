@@ -91,7 +91,7 @@ scripts/install.sh --apply --with-plugin   # also register the Claude Code plugi
 | `--prefix DIR` | Install directory. Default `$HOME/.local/bin`. |
 | `--binary PATH` | Install an already-built binary instead of building one. |
 | `--no-path` | Do not put the binary on `PATH` by any means. |
-| `--with-plugin` | Also run the two `claude plugin` commands below. |
+| `--with-plugin` | Also run the two `claude plugin` commands below. Optional: if `claude` is missing or those commands fail, the install still finishes and prints them for you to run. |
 | `--grant-permissions` | Allow the memory tools without prompting, instead of asking. |
 | `--no-grant-permissions` | Never grant them, and do not ask. |
 

@@ -1,12 +1,11 @@
 using System.Diagnostics;
+using static Engram.EndToEnd.Tests.InstallerHarness;
 
 namespace Engram.EndToEnd.Tests;
 
 public class InstallerRoundTripTests
 {
     private const string SeedZshrc = "# seeded by InstallerRoundTripTests\nexport SOME_ENGRAM_TEST_VAR=1\n";
-
-    private static readonly string RepoRoot = FindRepoRoot();
 
     private static readonly string SidecarName =
         OperatingSystem.IsMacOS() ? "libe_sqlite3.dylib" : "libe_sqlite3.so";
@@ -300,44 +299,6 @@ public class InstallerRoundTripTests
             "the original content should be followed by exactly one newline before the engram block");
     }
 
-    private static (int ExitCode, string Stdout, string Stderr) RunScript(string scriptName, string home, params string[] args)
-    {
-        var scriptPath = Path.Combine(RepoRoot, "scripts", scriptName);
-
-        var startInfo = new ProcessStartInfo("/bin/bash")
-        {
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-        };
-        startInfo.ArgumentList.Add(scriptPath);
-        foreach (var arg in args)
-        {
-            startInfo.ArgumentList.Add(arg);
-        }
-
-        startInfo.Environment["HOME"] = home;
-        startInfo.Environment["SHELL"] = "/bin/zsh";
-        startInfo.Environment.Remove("ENGRAM_HOME");
-        // install.sh's PATH-symlink step only considers directories that are
-        // actually on PATH; pinning PATH to the sandboxed home plus the bare
-        // minimum system directories keeps every test hermetic and makes
-        // sure a test can never create or touch a symlink under the real
-        // /usr/local/bin, no matter what the host machine's PATH contains.
-        startInfo.Environment["PATH"] = $"{home}/bin:/usr/bin:/bin";
-
-        using var process = Process.Start(startInfo) ?? throw new InvalidOperationException($"failed to start {scriptName}");
-        var stdout = process.StandardOutput.ReadToEnd();
-        var stderr = process.StandardError.ReadToEnd();
-
-        if (!process.WaitForExit(60_000))
-        {
-            process.Kill(entireProcessTree: true);
-            throw new TimeoutException($"{scriptName} did not exit within 60 seconds.");
-        }
-
-        return (process.ExitCode, stdout, stderr);
-    }
 
     private static (int ExitCode, string Stdout, string Stderr) RunBinary(string binaryPath, string engramHome, params string[] args)
     {
@@ -384,44 +345,5 @@ public class InstallerRoundTripTests
         return count;
     }
 
-    private static string FindRepoRoot()
-    {
-        var current = new DirectoryInfo(AppContext.BaseDirectory);
-        while (current is not null && !File.Exists(Path.Combine(current.FullName, "CLAUDE.md")))
-        {
-            current = current.Parent;
-        }
 
-        if (current is null)
-        {
-            throw new InvalidOperationException($"could not locate repo root (CLAUDE.md) above {AppContext.BaseDirectory}");
-        }
-
-        return current.FullName;
-    }
-
-    private sealed class InstallerTestHome : IDisposable
-    {
-        public string Root { get; }
-        public string Prefix { get; }
-        public string BinaryPath { get; }
-        public string ZshrcPath { get; }
-
-        public InstallerTestHome()
-        {
-            Root = Path.Combine(Path.GetTempPath(), "engram-installer-e2e-" + Guid.NewGuid().ToString("N"));
-            Directory.CreateDirectory(Root);
-            Prefix = Path.Combine(Root, ".local", "bin");
-            BinaryPath = Path.Combine(Prefix, "engram");
-            ZshrcPath = Path.Combine(Root, ".zshrc");
-        }
-
-        public void Dispose()
-        {
-            if (Directory.Exists(Root))
-            {
-                Directory.Delete(Root, recursive: true);
-            }
-        }
-    }
 }
