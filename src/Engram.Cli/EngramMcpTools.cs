@@ -26,7 +26,8 @@ public sealed class EngramMcpTools
         [Description("What you want to know, as a few keywords or a short question.")] string query,
         [Description("Maximum tokens to spend on the response. Defaults to 500.")] int? budget_tokens = null)
     {
-        var budget = budget_tokens is > 0 ? budget_tokens.Value : RecallEngine.DefaultBudgetTokens;
+        var settings = RetrievalSettings.Read(ConfigFile.Load(home.ConfigPath));
+        var budget = budget_tokens is > 0 ? budget_tokens.Value : settings.BudgetTokens;
 
         // One connection, one temporal model. Recall used to assemble its idea of memory at
         // this call site from three stores — a JSON directory, a JSONL file per session, and
@@ -38,7 +39,14 @@ public sealed class EngramMcpTools
         var longTermFacts = FactCatalog.ReadLongTerm(connection, now);
         var (currentSessionFacts, priorSessionFacts) = SessionFacts.Read(connection, session.Value, now);
 
-        var result = RecallEngine.Pack(query, longTermFacts, currentSessionFacts, priorSessionFacts, budget);
+        // The lexical lane, drawn to seed_k and fused with term overlap. Without it recall cannot
+        // match a plural against a singular, because the overlap lane compares literal tokens
+        // while fact_fts stems (D30).
+        var lexicalRanks = FactStore.SearchRanked(connection, query, settings.SeedK)
+            .ToDictionary(hit => hit.FactId, hit => hit.Rank);
+
+        var result = RecallEngine.Pack(
+            query, longTermFacts, currentSessionFacts, priorSessionFacts, lexicalRanks, budget);
 
         if (homeState.Initialized)
         {

@@ -17,7 +17,7 @@ internal static class ExplainCommand
 {
     public static int Run(string? homePath, string[] rest, TextWriter stdout, TextWriter stderr)
     {
-        var budget = RecallEngine.DefaultBudgetTokens;
+        int? budget = null;
         var limit = 20;
         string? session = null;
         var terms = new List<string>();
@@ -27,12 +27,13 @@ internal static class ExplainCommand
             switch (rest[i])
             {
                 case "--budget" when i + 1 < rest.Length:
-                    if (!int.TryParse(rest[++i], NumberStyles.Integer, CultureInfo.InvariantCulture, out budget) || budget <= 0)
+                    if (!int.TryParse(rest[++i], NumberStyles.Integer, CultureInfo.InvariantCulture, out var given) || given <= 0)
                     {
                         stderr.WriteLine("error: --budget takes a positive number of tokens");
                         return 1;
                     }
 
+                    budget = given;
                     break;
 
                 case "--limit" when i + 1 < rest.Length:
@@ -74,12 +75,20 @@ internal static class ExplainCommand
             return 1;
         }
 
+        // Defaulted from config, not from a constant, so explain reports the budget recall would
+        // actually spend on this instance rather than the one it ships with.
+        var configured = RetrievalSettings.Read(ConfigFile.Load(home.ConfigPath));
+        foreach (var problem in configured.Problems)
+        {
+            stderr.WriteLine($"warning: {problem}");
+        }
+
         using var connection = EngramDatabase.OpenInitialized(home);
         var explanation = RetrievalExplainer.Explain(
             connection,
             home,
             query,
-            budget,
+            budget ?? configured.BudgetTokens,
             session,
             DateTimeOffset.UtcNow,
             Environment.GetEnvironmentVariable);
@@ -132,7 +141,7 @@ internal static class ExplainCommand
             return;
         }
 
-        stdout.WriteLine("  #  handle    ovl  fts        vec        sal   tier      tok  in  fact");
+        stdout.WriteLine("  #  handle     rrf     ovl  fts        vec        sal   tier      tok  in  fact");
 
         var rank = 0;
         foreach (var explained in explanation.Candidates)
@@ -149,14 +158,26 @@ internal static class ExplainCommand
                 "  ",
                 rank.ToString(CultureInfo.InvariantCulture).PadLeft(3),
                 candidate.Handle.PadRight(8),
-                candidate.Score.ToString(CultureInfo.InvariantCulture).PadLeft(3),
-                Lexical(explained.Lexical).PadRight(9),
+                candidate.Fused.ToString("0.0000", CultureInfo.InvariantCulture),
+                Position(candidate.OverlapRank).PadLeft(3),
+                Lexical(explained.Lexical, candidate.LexicalRank).PadRight(9),
                 Vector(explained.Vector).PadRight(9),
                 Salience(explained.Salience).PadRight(4),
                 (explained.Tier ?? Origin(candidate.Origin)).PadRight(8),
                 candidate.Tokens.ToString(CultureInfo.InvariantCulture).PadLeft(3),
                 candidate.Packed ? "yes" : "no ",
                 Trim(candidate.Line)));
+        }
+
+        // Which lane carried a fact is the question this whole command exists to answer, so it
+        // gets a line rather than leaving the reader to scan two columns for dashes.
+        var overlapOnly = explanation.Candidates.Count(c => c.Candidate.LexicalRank is null);
+        var lexicalOnly = explanation.Candidates.Count(c => c.Candidate.OverlapRank is null);
+        if (overlapOnly > 0 || lexicalOnly > 0)
+        {
+            stdout.WriteLine(
+                $"  ({overlapOnly} found only by term overlap, {lexicalOnly} only by fts5 — "
+                + $"{explanation.Candidates.Count - overlapOnly - lexicalOnly} by both)");
         }
     }
 
@@ -176,9 +197,12 @@ internal static class ExplainCommand
         }
     }
 
-    private static string Lexical(LexicalHit? hit) => hit is null
+    private static string Position(int? rank) =>
+        rank is { } r ? "#" + r.ToString(CultureInfo.InvariantCulture) : "—";
+
+    private static string Lexical(LexicalHit? hit, int? rank) => hit is null || rank is null
         ? "—"
-        : $"#{hit.Rank} {hit.Bm25.ToString("0.0", CultureInfo.InvariantCulture)}";
+        : $"#{rank} {hit.Bm25.ToString("0.0", CultureInfo.InvariantCulture)}";
 
     private static string Vector(VectorHit? hit) => hit is null
         ? "—"
@@ -199,6 +223,7 @@ internal static class ExplainCommand
     private static string Describe(LaneState state) => state switch
     {
         LaneState.Ranking => "RANKING    ",
+        LaneState.Contributing => "contributes",
         LaneState.Idle => "idle       ",
         LaneState.Off => "off        ",
         LaneState.Unavailable => "unavailable",

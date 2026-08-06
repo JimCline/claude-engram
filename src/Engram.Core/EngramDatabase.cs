@@ -20,7 +20,7 @@ namespace Engram.Core;
 /// </remarks>
 public static class EngramDatabase
 {
-    public const int SchemaVersion = 1;
+    public const int SchemaVersion = 2;
 
     public const int BusyTimeoutMilliseconds = 5000;
 
@@ -103,6 +103,7 @@ public static class EngramDatabase
     {
         if (TableExists(connection, "schema_meta"))
         {
+            Migrate(connection, ReadSchemaVersion(connection));
             VerifySchemaVersion(connection);
             return;
         }
@@ -182,6 +183,99 @@ public static class EngramDatabase
                 $"Database schema version {version} does not match the {SchemaVersion} this binary "
                     + "was built for. Refusing to open it rather than reading it wrongly.");
         }
+    }
+
+    /// <summary>
+    /// Brings an older store forward, one version at a time.
+    /// </summary>
+    /// <remarks>
+    /// <para>Bounded by D8 rather than by convention: a migration may only touch state that can
+    /// be regenerated from what is already stored. Every step below rebuilds a derived index. The
+    /// day one needs to alter a fact body, a validity window, or a supersession row, it is not a
+    /// migration — it is a rewrite of authored truth, and the answer is a new fact.</para>
+    ///
+    /// <para>Forward only, and no version is skipped, so each step can assume exactly the shape
+    /// the one before it left.</para>
+    /// </remarks>
+    private static void Migrate(SqliteConnection connection, int from)
+    {
+        if (from > SchemaVersion)
+        {
+            // An older binary against a newer store. Nothing to do here — the verify below is
+            // what refuses it, and refusing is right: this code cannot know what changed.
+            return;
+        }
+
+        if (from < 2)
+        {
+            RebuildFactFts(connection);
+            WriteMeta(connection, null, "schema_version", "2");
+        }
+    }
+
+    /// <summary>
+    /// Drops the lexical index and rebuilds it in its current shape from the live facts.
+    /// </summary>
+    /// <remarks>
+    /// <para>Schema version 2 added <c>path</c> to <c>fact_fts</c>, and an FTS5 table's columns
+    /// cannot be altered in place. Dropping it is safe because it holds nothing that is not
+    /// derivable: external content means every indexed value is read back from <c>fact</c>.</para>
+    ///
+    /// <para>The DDL is duplicated from the schema file, which is the one thing about this that
+    /// is genuinely unpleasant — <c>docs/engram-schema.sql</c> is the authority for database
+    /// shape, and here is a second copy of part of it. Extracting the statements from the
+    /// embedded file by parsing would be worse: it would make the authority a string-matching
+    /// exercise that fails silently when someone reformats a comment. Instead the duplication is
+    /// guarded, by a test asserting that a migrated store and a freshly created one have
+    /// byte-identical <c>sqlite_master</c> entries for this table and its triggers.</para>
+    /// </remarks>
+    private static void RebuildFactFts(SqliteConnection connection)
+    {
+        Execute(
+            connection,
+            """
+            DROP TRIGGER IF EXISTS fact_fts_insert;
+            DROP TRIGGER IF EXISTS fact_fts_close;
+            DROP TRIGGER IF EXISTS fact_fts_delete;
+            DROP TRIGGER IF EXISTS fact_fts_repath;
+            DROP TABLE IF EXISTS fact_fts;
+
+            CREATE VIRTUAL TABLE fact_fts USING fts5(
+              body,
+              predicate,
+              path,
+              content='fact',
+              content_rowid='id',
+              tokenize='porter unicode61'
+            );
+
+            CREATE TRIGGER fact_fts_insert AFTER INSERT ON fact BEGIN
+              INSERT INTO fact_fts(rowid, body, predicate, path)
+                VALUES (new.id, new.body, new.predicate, new.path);
+            END;
+
+            CREATE TRIGGER fact_fts_close AFTER UPDATE OF valid_to ON fact
+              WHEN old.valid_to IS NULL AND new.valid_to IS NOT NULL BEGIN
+              INSERT INTO fact_fts(fact_fts, rowid, body, predicate, path)
+                VALUES ('delete', old.id, old.body, old.predicate, old.path);
+            END;
+
+            CREATE TRIGGER fact_fts_delete AFTER DELETE ON fact BEGIN
+              INSERT INTO fact_fts(fact_fts, rowid, body, predicate, path)
+                VALUES ('delete', old.id, old.body, old.predicate, old.path);
+            END;
+
+            CREATE TRIGGER fact_fts_repath AFTER UPDATE OF path ON fact
+              WHEN new.valid_to IS NULL AND old.path <> new.path BEGIN
+              INSERT INTO fact_fts(fact_fts, rowid, body, predicate, path)
+                VALUES ('delete', old.id, old.body, old.predicate, old.path);
+              INSERT INTO fact_fts(rowid, body, predicate, path)
+                VALUES (new.id, new.body, new.predicate, new.path);
+            END;
+
+            INSERT INTO fact_fts(rowid, body, predicate, path)
+              SELECT id, body, predicate, path FROM fact WHERE valid_to IS NULL;
+            """);
     }
 
     private static bool TableExists(SqliteConnection connection, string name)

@@ -32,14 +32,21 @@ public enum FactOrigin
 }
 
 /// <summary>
-/// One fact the ranker considered, in the order it considered it, and whether the budget let it
-/// through.
+/// One fact the ranker considered, in the order it considered it, with each lane's position and
+/// whether the budget let it through.
 /// </summary>
+/// <remarks>
+/// A lane's rank is null where that lane did not return the fact at all, which is a different
+/// thing from returning it last — and the distinction is the one worth seeing, because a fact
+/// only one lane found is exactly what fusion exists to rescue.
+/// </remarks>
 public sealed record RecallCandidate(
     long? FactId,
     string Handle,
     string Line,
-    int Score,
+    double Fused,
+    int? OverlapRank,
+    int? LexicalRank,
     FactOrigin Origin,
     int Tokens,
     bool Packed);
@@ -63,11 +70,37 @@ public sealed record RecallExplanation(
     int TokensUsed,
     RecallCoverage Coverage);
 
-file readonly record struct RankedOther(string Line, int Score, string Id, long SessionId, bool IsPriorSessionFact);
+/// <summary>One fact in the universe recall ranks over, before any lane has an opinion.</summary>
+file sealed record Entry(
+    long? FactId,
+    string Handle,
+    string Line,
+    FactOrigin Origin,
+    long SessionId,
+    int OverlapScore);
 
 public static class RecallEngine
 {
-    public const int DefaultBudgetTokens = 500;
+    public const int DefaultBudgetTokens = RetrievalSettings.DefaultBudgetTokens;
+
+    /// <summary>
+    /// Reciprocal rank fusion's damping constant.
+    /// </summary>
+    /// <remarks>
+    /// <para>60 is the value from the paper the technique comes from and the one §6.1 step 8
+    /// names. What it buys: the contribution of rank <i>r</i> is <c>1/(60 + r)</c>, so the gap
+    /// between first and second place is small (0.0164 against 0.0161) while the gap between
+    /// "one lane found it" and "both lanes found it" is nearly double. Fusion therefore rewards
+    /// agreement between lanes far more than a good position within one of them, which is the
+    /// property wanted here — the lanes measure different things and neither is authoritative.</para>
+    ///
+    /// <para>A much smaller k would make each lane's top hit dominate and turn fusion into
+    /// whichever lane happened to answer first; a much larger one flattens the ranks until only
+    /// lane agreement counts and position stops mattering at all.</para>
+    /// </remarks>
+    public const int RrfK = 60;
+
+    private static readonly Dictionary<long, int> EmptyRanks = [];
 
     private static readonly HashSet<string> Stopwords = new(StringComparer.Ordinal)
     {
@@ -88,8 +121,7 @@ public static class RecallEngine
         var scored = new List<RankedFact>();
         foreach (var fact in facts)
         {
-            var factTerms = Tokenize(fact.Subject + " " + fact.Body);
-            var score = queryTerms.Count(factTerms.Contains);
+            var score = OverlapScore(queryTerms, fact.Subject + " " + fact.Body);
             if (score > 0)
             {
                 scored.Add(new RankedFact(fact, score));
@@ -113,8 +145,7 @@ public static class RecallEngine
         var scored = new List<RankedSessionFact>();
         foreach (var fact in facts)
         {
-            var factTerms = Tokenize((fact.Subject ?? string.Empty) + " " + fact.Statement);
-            var score = queryTerms.Count(factTerms.Contains);
+            var score = OverlapScore(queryTerms, (fact.Subject ?? string.Empty) + " " + fact.Statement);
             if (score > 0)
             {
                 scored.Add(new RankedSessionFact(fact, score));
@@ -134,6 +165,13 @@ public static class RecallEngine
         _ => RecallCoverage.High,
     };
 
+    /// <summary>Ranks by term overlap alone — the lexical lane contributes nothing.</summary>
+    /// <remarks>
+    /// Kept for callers that have facts but no store to query, which is every unit test of the
+    /// overlap lane and nothing on the recall path. Production goes through the overload taking
+    /// <c>lexicalRanks</c>; a caller that has a connection and does not pass them is silently
+    /// running the ranker that D30 measured blind to plurals.
+    /// </remarks>
     public static RecallPackResult Pack(string query, IReadOnlyList<CannedFact> facts, int budgetTokens) =>
         Pack(query, facts, [], [], budgetTokens);
 
@@ -149,9 +187,18 @@ public static class RecallEngine
         IReadOnlyList<CannedFact> facts,
         IReadOnlyList<SessionFact> currentSessionFacts,
         IReadOnlyList<SessionFact> priorSessionFacts,
+        int budgetTokens) =>
+        Pack(query, facts, currentSessionFacts, priorSessionFacts, EmptyRanks, budgetTokens);
+
+    public static RecallPackResult Pack(
+        string query,
+        IReadOnlyList<CannedFact> facts,
+        IReadOnlyList<SessionFact> currentSessionFacts,
+        IReadOnlyList<SessionFact> priorSessionFacts,
+        IReadOnlyDictionary<long, int> lexicalRanks,
         int budgetTokens)
     {
-        var candidates = BuildCandidates(query, facts, currentSessionFacts, priorSessionFacts);
+        var candidates = BuildCandidates(query, facts, currentSessionFacts, priorSessionFacts, lexicalRanks);
         var coverage = ClassifyCoverage(candidates.Count);
         var tokensUsed = ApplyBudget(candidates, budgetTokens);
 
@@ -212,9 +259,19 @@ public static class RecallEngine
         IReadOnlyList<CannedFact> facts,
         IReadOnlyList<SessionFact> currentSessionFacts,
         IReadOnlyList<SessionFact> priorSessionFacts,
+        int budgetTokens) =>
+        Explain(query, facts, currentSessionFacts, priorSessionFacts, EmptyRanks, budgetTokens);
+
+    /// <inheritdoc cref="Explain(string, IReadOnlyList{CannedFact}, IReadOnlyList{SessionFact}, IReadOnlyList{SessionFact}, int)"/>
+    public static RecallExplanation Explain(
+        string query,
+        IReadOnlyList<CannedFact> facts,
+        IReadOnlyList<SessionFact> currentSessionFacts,
+        IReadOnlyList<SessionFact> priorSessionFacts,
+        IReadOnlyDictionary<long, int> lexicalRanks,
         int budgetTokens)
     {
-        var candidates = BuildCandidates(query, facts, currentSessionFacts, priorSessionFacts);
+        var candidates = BuildCandidates(query, facts, currentSessionFacts, priorSessionFacts, lexicalRanks);
         var tokensUsed = ApplyBudget(candidates, budgetTokens);
 
         var used = TokenizeQuery(query);
@@ -230,62 +287,116 @@ public static class RecallEngine
             ClassifyCoverage(candidates.Count));
     }
 
-    /// <summary>Every fact that scored, in the order the budget will see them.</summary>
+    /// <summary>
+    /// Every fact either lane found, fused, in the order the budget will see them.
+    /// </summary>
+    /// <remarks>
+    /// <para><b>Both lanes, because each finds what the other cannot.</b> The lexical lane is
+    /// FTS5 over <c>body</c> and <c>predicate</c> with porter stemming, so it matches "pragmas"
+    /// against "pragma" — which the overlap lane, comparing literal tokens, cannot. The overlap
+    /// lane reads the subject name, which <c>fact_fts</c> does not index at all because an
+    /// external-content table can only index columns on the content table. Replacing one with the
+    /// other trades one class of miss for another; fusing them has neither.</para>
+    ///
+    /// <para>Reciprocal rank fusion rather than a combined score, because the two lanes are not
+    /// on a common scale and cannot be put on one: bm25 is an unbounded negative number whose
+    /// magnitude depends on corpus statistics, and the overlap score is a small count of terms.
+    /// Any weighting between them would be a constant nobody could justify. Ranks are comparable
+    /// by construction, which is the entire argument for RRF.</para>
+    /// </remarks>
     private static List<RecallCandidate> BuildCandidates(
         string query,
         IReadOnlyList<CannedFact> facts,
         IReadOnlyList<SessionFact> currentSessionFacts,
-        IReadOnlyList<SessionFact> priorSessionFacts)
+        IReadOnlyList<SessionFact> priorSessionFacts,
+        IReadOnlyDictionary<long, int> lexicalRanks)
     {
-        var rankedCurrentSession = RankSessionFacts(query, currentSessionFacts);
-        var rankedLongTerm = Rank(query, facts);
-        var rankedPriorSession = RankSessionFacts(query, priorSessionFacts);
+        var queryTerms = TokenizeQuery(query);
         var discriminators = BuildPriorSessionDiscriminators(priorSessionFacts);
+        var entries = new List<Entry>(facts.Count + currentSessionFacts.Count + priorSessionFacts.Count);
 
-        var otherRanked = rankedLongTerm
-            .Select(r => new RankedOther(FormatFactLine(r.Fact), r.Score, r.Fact.Id, 0, IsPriorSessionFact: false))
-            .Concat(rankedPriorSession.Select(r => new RankedOther(
-                FormatPriorSessionFactLine(r.Fact, discriminators[r.Fact.SessionId]),
-                r.Score,
-                FactCatalog.HandleFor(r.Fact.FactId),
-                r.Fact.SessionId,
-                IsPriorSessionFact: true)))
-            .OrderByDescending(r => r.Score)
-            .ThenBy(r => r.Id, StringComparer.Ordinal)
-            .ThenBy(r => r.SessionId)
-            .ToList();
-
-        var candidates = new List<RecallCandidate>(rankedCurrentSession.Count + otherRanked.Count);
-
-        // Working memory first, whole, before anything competes for the remainder — this
-        // session's notes outranking everything is a tier decision, not a score.
-        foreach (var ranked in rankedCurrentSession)
+        foreach (var fact in facts)
         {
-            var line = FormatSessionFactLine(ranked.Fact);
-            candidates.Add(new RecallCandidate(
-                ranked.Fact.FactId,
-                FactCatalog.HandleFor(ranked.Fact.FactId),
-                line,
-                ranked.Score,
+            entries.Add(new Entry(
+                FactCatalog.TryParseHandle(fact.Id, out var id) ? id : null,
+                fact.Id,
+                FormatFactLine(fact),
+                FactOrigin.LongTerm,
+                0,
+                OverlapScore(queryTerms, fact.Subject + " " + fact.Body)));
+        }
+
+        foreach (var fact in currentSessionFacts)
+        {
+            entries.Add(new Entry(
+                fact.FactId,
+                FactCatalog.HandleFor(fact.FactId),
+                FormatSessionFactLine(fact),
                 FactOrigin.CurrentSession,
-                TokenEstimator.Estimate(line),
-                Packed: false));
+                fact.SessionId,
+                OverlapScore(queryTerms, (fact.Subject ?? string.Empty) + " " + fact.Statement)));
         }
 
-        foreach (var ranked in otherRanked)
+        foreach (var fact in priorSessionFacts)
         {
-            candidates.Add(new RecallCandidate(
-                FactCatalog.TryParseHandle(ranked.Id, out var factId) ? factId : null,
-                ranked.Id,
-                ranked.Line,
-                ranked.Score,
-                ranked.IsPriorSessionFact ? FactOrigin.PriorSession : FactOrigin.LongTerm,
-                TokenEstimator.Estimate(ranked.Line),
+            entries.Add(new Entry(
+                fact.FactId,
+                FactCatalog.HandleFor(fact.FactId),
+                FormatPriorSessionFactLine(fact, discriminators[fact.SessionId]),
+                FactOrigin.PriorSession,
+                fact.SessionId,
+                OverlapScore(queryTerms, (fact.Subject ?? string.Empty) + " " + fact.Statement)));
+        }
+
+        // One overlap ranking over the whole universe rather than one per tier, so a rank means
+        // the same thing on both sides of the fusion.
+        var overlapRanks = new Dictionary<string, int>(StringComparer.Ordinal);
+        var overlapOrder = entries
+            .Where(e => e.OverlapScore > 0)
+            .OrderByDescending(e => e.OverlapScore)
+            .ThenBy(e => e.Handle, StringComparer.Ordinal)
+            .ThenBy(e => e.SessionId);
+        foreach (var entry in overlapOrder)
+        {
+            overlapRanks[entry.Handle] = overlapRanks.Count + 1;
+        }
+
+        var scored = new List<RecallCandidate>();
+        foreach (var entry in entries)
+        {
+            var overlap = overlapRanks.TryGetValue(entry.Handle, out var o) ? o : (int?)null;
+            var lexical = entry.FactId is { } id && lexicalRanks.TryGetValue(id, out var l) ? l : (int?)null;
+            if (overlap is null && lexical is null)
+            {
+                continue;
+            }
+
+            scored.Add(new RecallCandidate(
+                entry.FactId,
+                entry.Handle,
+                entry.Line,
+                Reciprocal(overlap) + Reciprocal(lexical),
+                overlap,
+                lexical,
+                entry.Origin,
+                TokenEstimator.Estimate(entry.Line),
                 Packed: false));
         }
 
-        return candidates;
+        // Working memory first, whole, before anything competes for the remainder — this session's
+        // notes outranking everything is a tier decision, not a score, and fusion does not get a
+        // vote on it.
+        return scored
+            .OrderBy(c => c.Origin == FactOrigin.CurrentSession ? 0 : 1)
+            .ThenByDescending(c => c.Fused)
+            .ThenBy(c => c.Handle, StringComparer.Ordinal)
+            .ToList();
     }
+
+    private static double Reciprocal(int? rank) => rank is { } r ? 1d / (RrfK + r) : 0d;
+
+    private static int OverlapScore(HashSet<string> queryTerms, string text) =>
+        queryTerms.Count == 0 ? 0 : queryTerms.Count(Tokenize(text).Contains);
 
     /// <summary>
     /// Marks the prefix that fits, and returns what it spent.

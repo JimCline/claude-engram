@@ -28,15 +28,17 @@ public class RetrievalExplainerTests
             T0).FactId;
 
     [Fact]
-    public void Explain_ReportsTheTermOverlapLaneAsTheOneThatRanks()
+    public void Explain_ReportsFusionAsTheRankerAndBothLexicalLanesAsFeedingIt()
     {
         using var sandbox = new SandboxHome(initialize: false);
         using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
         Write(connection, "pragma", "Every connection sets its own pragmas.");
 
-        var lane = Assert.Single(Explain(sandbox, connection, "pragmas").Lanes, l => l.Name == "term overlap");
+        var lanes = Explain(sandbox, connection, "pragmas").Lanes;
 
-        Assert.Equal(LaneState.Ranking, lane.State);
+        Assert.Equal(LaneState.Ranking, Assert.Single(lanes, l => l.Name == "RRF fusion").State);
+        Assert.Equal(LaneState.Contributing, Assert.Single(lanes, l => l.Name == "term overlap").State);
+        Assert.Equal(LaneState.Contributing, Assert.Single(lanes, l => l.Name == "lexical (fts5/bm25)").State);
     }
 
     [Fact]
@@ -59,33 +61,89 @@ public class RetrievalExplainerTests
     }
 
     /// <summary>
-    /// The row that justifies the whole command. FTS5 stems with porter, the shipped ranker
-    /// matches literal tokens, so a plural in the query finds a fact the ranker never scores —
-    /// and recall answers "nothing matched" while the answer sits one lane over.
+    /// The defect the explainer found, now a regression guard. FTS5 stems with porter and the
+    /// overlap lane matches literal tokens, so before fusion a plural query scored nothing and
+    /// recall told the model to go rediscover a fact the store already held.
     /// </summary>
-    [Fact]
-    public void Explain_NamesFactsALaneFoundThatTheRankerNeverConsidered()
+    [Theory]
+    [InlineData("pragmas")]
+    [InlineData("connections")]
+    public void Explain_FindsASingularFactFromAPluralQuery(string query)
     {
         using var sandbox = new SandboxHome(initialize: false);
         using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
         var id = Write(connection, "pragma", "Every connection sets its own pragma.");
 
-        var explanation = Explain(sandbox, connection, "pragmas");
+        var explained = Assert.Single(Explain(sandbox, connection, query).Candidates);
 
-        Assert.Empty(explanation.Recall.Candidates);
-        var missed = Assert.Single(explanation.Missed);
-        Assert.Equal(id, missed.FactId);
-        Assert.Equal("fts5", missed.Lane);
-        Assert.Contains("pragma", missed.Body, StringComparison.Ordinal);
+        Assert.Equal(id, explained.Candidate.FactId);
+        Assert.NotNull(explained.Candidate.LexicalRank);
+        Assert.Null(explained.Candidate.OverlapRank);
+        Assert.True(explained.Candidate.Packed);
     }
 
+    /// <summary>
+    /// A word that lives only in the subject, queried in the plural — the case neither lane could
+    /// serve alone. The overlap lane reads the subject but matches literally; FTS5 stems but,
+    /// until <c>path</c> joined the index, could not see the subject at all.
+    /// </summary>
+    [Theory]
+    [InlineData("kestrel")]
+    [InlineData("kestrels")]
+    public void Explain_FindsAFactByASubjectWordAbsentFromItsBody(string query)
+    {
+        using var sandbox = new SandboxHome(initialize: false);
+        using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
+        var id = FactStore.Remember(
+            connection,
+            new FactWrite("/knowledge/testing/kestrel", "note", "states", "It binds loopback only.", "project", "stated"),
+            T0).FactId;
+
+        var explained = Assert.Single(Explain(sandbox, connection, query).Candidates);
+
+        Assert.Equal(id, explained.Candidate.FactId);
+        Assert.NotNull(explained.Candidate.LexicalRank);
+    }
+
+    /// <summary>
+    /// <c>path</c> follows its entity on rename (D2), and it is the one indexed column that can
+    /// change. Without the re-index trigger the fact stays findable at an address it no longer
+    /// has, and not findable at the one it does.
+    /// </summary>
     [Fact]
-    public void Explain_WhenALaneAgreesWithTheRanker_ReportsNothingMissed()
+    public void Explain_AfterAPathChanges_FindsTheFactAtItsNewAddressOnly()
+    {
+        using var sandbox = new SandboxHome(initialize: false);
+        using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
+        var id = FactStore.Remember(
+            connection,
+            new FactWrite("/knowledge/testing/kestrel", "note", "states", "It binds loopback only.", "project", "stated"),
+            T0).FactId;
+
+        using (var command = connection.CreateCommand())
+        {
+            command.CommandText = "UPDATE fact SET path = '/knowledge/testing/hummingbird' WHERE id = $id;";
+            command.Parameters.AddWithValue("$id", id);
+            command.ExecuteNonQuery();
+        }
+
+        Assert.Empty(FactStore.SearchRanked(connection, "kestrel", 10));
+        Assert.Equal(id, Assert.Single(FactStore.SearchRanked(connection, "hummingbird", 10)).FactId);
+    }
+
+    /// <summary>
+    /// An invariant rather than a feature: both lexical lanes now feed the ranker at the same
+    /// depth, so anything FTS5 returns must be a candidate. If this ever reports something, the
+    /// two depths have drifted apart.
+    /// </summary>
+    [Fact]
+    public void Explain_ReportsNothingMissedByTheLexicalLane()
     {
         using var sandbox = new SandboxHome(initialize: false);
         using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
         Write(connection, "pragma", "Every connection sets its own pragma.");
 
+        Assert.Empty(Explain(sandbox, connection, "pragmas").Missed);
         Assert.Empty(Explain(sandbox, connection, "pragma").Missed);
     }
 
@@ -147,15 +205,45 @@ public class RetrievalExplainerTests
         Assert.Equal(LaneState.Idle, Assert.Single(explanation.Lanes, l => l.Name == "salience").State);
     }
 
+    /// <summary>
+    /// Fusion rewards lane agreement over position within one lane, which is the property k=60
+    /// buys. A fact both lanes found must beat one only a single lane found, even when the loser
+    /// is that lane's top hit.
+    /// </summary>
     [Fact]
-    public void Explain_ReportsFusionAsUnbuiltUntilSomethingFuses()
+    public void Explain_RanksAFactBothLanesFoundAboveOneOnlyALaneFound()
     {
         using var sandbox = new SandboxHome(initialize: false);
         using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
+        var both = Write(connection, "kestrel-both", "Kestrel binds loopback only.");
+        var lexicalOnly = Write(connection, "loopback-only", "The listener binds loopback addresses.");
 
-        var lane = Assert.Single(Explain(sandbox, connection, "anything").Lanes, l => l.Name == "RRF fusion");
+        var explanation = Explain(sandbox, connection, "kestrel loopback");
 
-        Assert.Equal(LaneState.Unbuilt, lane.State);
+        var first = Assert.Single(explanation.Candidates, c => c.Candidate.FactId == both);
+        var second = Assert.Single(explanation.Candidates, c => c.Candidate.FactId == lexicalOnly);
+
+        Assert.NotNull(first.Candidate.OverlapRank);
+        Assert.NotNull(first.Candidate.LexicalRank);
+        Assert.True(first.Candidate.Fused > second.Candidate.Fused);
+        Assert.Equal(both, explanation.Candidates[0].Candidate.FactId);
+    }
+
+    [Fact]
+    public void Explain_DrawsEachLaneToTheConfiguredSeedK()
+    {
+        using var sandbox = new SandboxHome(initialize: false);
+        using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
+        File.WriteAllText(sandbox.Home.ConfigPath, "[retrieval]\nseed_k = 2\n");
+        for (var i = 0; i < 6; i++)
+        {
+            Write(connection, "loopback-" + i, $"Listener {i} binds loopback addresses only.");
+        }
+
+        var explanation = Explain(sandbox, connection, "loopback");
+
+        Assert.Equal(2, explanation.Candidates.Count(c => c.Candidate.LexicalRank is not null));
+        Assert.Contains(explanation.Lanes, l => l.Name == "RRF fusion" && l.Detail.Contains("seed_k=2", StringComparison.Ordinal));
     }
 
     /// <summary>

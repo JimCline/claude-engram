@@ -6,8 +6,11 @@ namespace Engram.Core;
 /// <summary>What a retrieval lane is currently contributing.</summary>
 public enum LaneState
 {
-    /// <summary>This lane decides the order recall returns.</summary>
+    /// <summary>This decides the order recall returns.</summary>
     Ranking,
+
+    /// <summary>Feeding the fusion that ranks.</summary>
+    Contributing,
 
     /// <summary>It works and it has answers, but nothing consumes them yet.</summary>
     Idle,
@@ -58,18 +61,12 @@ public sealed record RetrievalExplanation(
 /// Answers "why did recall return that, in that order, and why not this other thing" (D21).
 /// </summary>
 /// <remarks>
-/// <para><b>Built against what recall does, not against what it is planned to do.</b> D21
-/// describes fusing a BM25 rank and a vector rank by RRF and reporting both. Today neither
-/// participates: <see cref="RecallEngine"/> orders by how many distinct query terms a fact
-/// contains, the FTS5 table is written by triggers and read by nothing on the recall path, the
-/// vector table is queried only by its own tests, and the <c>salience</c> table has no writer.
-/// An explainer written to the letter of D21 would therefore report a ranking that does not
-/// happen — which is precisely the failure D21 exists to prevent, one layer up.</para>
-///
-/// <para>So the shipped ranker is reported as the ranker, and the other lanes are reported as
-/// what they are: present, answerable, and unread. That disagreement is the point. A fact BM25
-/// places first and the term-overlap ranker misses entirely is evidence about whether fusing
-/// them is worth doing, available before the fusion is written rather than after.</para>
+/// <para><b>Reports what recall does, not what it is planned to do.</b> Every lane's state here
+/// is observed rather than assumed, which is what makes the report usable for debugging: when
+/// this was first built it showed that four of D21's five signals did not participate in recall
+/// at all, and the disagreement it exposed between the lexical lane and the shipped ranker is
+/// what produced the fusion those lanes now feed (D30). A lane that stops contributing must
+/// therefore start reporting that it has, rather than being described by this comment.</para>
 ///
 /// <para>Read-only, including the vector lane: embedding the query is a network or model call,
 /// never a database write, and nothing here touches salience counters. An explainer that
@@ -77,12 +74,6 @@ public sealed record RetrievalExplanation(
 /// </remarks>
 public static class RetrievalExplainer
 {
-    /// <summary>
-    /// How deep each unfused lane is queried. Mirrors <c>[retrieval] seed_k</c>, which is what a
-    /// fused implementation would draw per lane before combining.
-    /// </summary>
-    public const int LaneDepth = 32;
-
     public static RetrievalExplanation Explain(
         SqliteConnection connection,
         EngramHome home,
@@ -97,29 +88,35 @@ public static class RetrievalExplainer
         ArgumentNullException.ThrowIfNull(query);
         ArgumentNullException.ThrowIfNull(environment);
 
+        var settings = RetrievalSettings.Read(ConfigFile.Load(home.ConfigPath));
         var longTerm = FactCatalog.ReadLongTerm(connection, now);
         var (currentSession, priorSession) = SessionFacts.Read(connection, sessionExternalId, now);
-        var recall = RecallEngine.Explain(query, longTerm, currentSession, priorSession, budgetTokens);
 
-        var lanes = new List<LaneReport>
-        {
-            new(
-                "term overlap",
-                LaneState.Ranking,
-                $"{recall.Candidates.Count} candidates — this is the order engram_recall returns"),
-        };
+        var lanes = new List<LaneReport>();
+        var lexical = ReadLexical(connection, query, settings.SeedK, lanes);
 
-        var lexical = ReadLexical(connection, query, lanes);
-        var (vector, vectorSpace) = ReadVector(connection, home, query, environment, lanes);
+        var recall = RecallEngine.Explain(
+            query,
+            longTerm,
+            currentSession,
+            priorSession,
+            lexical.ToDictionary(pair => pair.Key, pair => pair.Value.Rank),
+            budgetTokens);
+
+        lanes.Insert(0, new LaneReport(
+            "term overlap",
+            LaneState.Contributing,
+            $"{Count(recall.Candidates.Count(c => c.OverlapRank is not null))} over subject and body, matched literally"));
+
+        var (vector, vectorSpace) = ReadVector(connection, home, query, environment, settings.SeedK, lanes);
         var salience = ReadSalience(connection, lanes);
         var tiers = ReadTiers(connection, recall.Candidates);
 
         lanes.Add(new LaneReport(
             "RRF fusion",
-            LaneState.Unbuilt,
-            vectorSpace is null
-                ? "M4 step 8. Fuses the lanes above once there is more than one to fuse."
-                : $"M4 step 8. Both lanes answer in {vectorSpace}; nothing combines them yet."));
+            LaneState.Ranking,
+            $"k={RecallEngine.RrfK}, seed_k={settings.SeedK} — this is the order engram_recall returns"
+                + (vectorSpace is null ? ", over the two lexical lanes" : $", over three lanes including {vectorSpace}")));
 
         var explained = recall.Candidates
             .Select(candidate => new ExplainedCandidate(
@@ -140,17 +137,21 @@ public static class RetrievalExplainer
         return new RetrievalExplanation(recall, explained, missed, lanes);
     }
 
+    private static string Count(int hits) =>
+        hits == 1 ? "1 hit" : hits.ToString(CultureInfo.InvariantCulture) + " hits";
+
     private static Dictionary<long, LexicalHit> ReadLexical(
         SqliteConnection connection,
         string query,
+        int seedK,
         List<LaneReport> lanes)
     {
-        var hits = FactStore.SearchRanked(connection, query, LaneDepth);
+        var hits = FactStore.SearchRanked(connection, query, seedK);
         lanes.Add(new LaneReport(
             "lexical (fts5/bm25)",
-            hits.Count > 0 ? LaneState.Idle : LaneState.Unavailable,
+            hits.Count > 0 ? LaneState.Contributing : LaneState.Unavailable,
             hits.Count > 0
-                ? $"{hits.Count} hits, best bm25 {hits[0].Bm25.ToString("0.00", CultureInfo.InvariantCulture)} — indexed and answerable, read by nothing on the recall path"
+                ? $"{Count(hits.Count)} over body and predicate, porter-stemmed, best bm25 {hits[0].Bm25.ToString("0.00", CultureInfo.InvariantCulture)}"
                 : "no hits for this query"));
 
         return hits.ToDictionary(h => h.FactId);
@@ -172,6 +173,7 @@ public static class RetrievalExplainer
         EngramHome home,
         string query,
         Func<string, string?> environment,
+        int seedK,
         List<LaneReport> lanes)
     {
         const string Name = "vector (sqlite-vec)";
@@ -237,7 +239,7 @@ public static class RetrievalExplainer
             return (empty, null);
         }
 
-        var matches = VectorIndex.Search(connection, embedded, LaneDepth);
+        var matches = VectorIndex.Search(connection, embedded, seedK);
         lanes.Add(new LaneReport(
             Name,
             matches.Count > 0 ? LaneState.Idle : LaneState.Unavailable,

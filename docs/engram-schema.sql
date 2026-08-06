@@ -242,30 +242,56 @@ CREATE TABLE session (
 -- over closed facts.
 --
 -- subject_name is absent by necessity — external content can only index columns
--- that exist on the content table. Join entity at query time.
+-- that exist on the content table. `path` carries the subject anyway: it is the
+-- denormalized subject path (D2), it lives on this table, and unicode61 splits
+-- it on / and - into the same words the name is made of.
+--
+-- Indexing it is not cosmetic. Measured on the seeded corpus, 30 of 45 live
+-- facts (67%) have at least one subject word that appears nowhere in their body,
+-- across 39 such words. Without `path` here those words are reachable only by
+-- the literal-token lane, so any morphological variant of them — most often a
+-- plural — matches nothing at all.
+--
+-- Columns are weighted equally by bm25, which is the honest default rather than
+-- a measured one. `path` is short, so a hit in it is not cheap to earn; the root
+-- and topic segments repeat across every fact and are therefore nearly free of
+-- IDF, which is what keeps "/knowledge" from matching the whole store.
 
 CREATE VIRTUAL TABLE fact_fts USING fts5(
   body,
   predicate,
+  path,
   content='fact',
   content_rowid='id',
   tokenize='porter unicode61'
 );
 
 CREATE TRIGGER fact_fts_insert AFTER INSERT ON fact BEGIN
-  INSERT INTO fact_fts(rowid, body, predicate)
-    VALUES (new.id, new.body, new.predicate);
+  INSERT INTO fact_fts(rowid, body, predicate, path)
+    VALUES (new.id, new.body, new.predicate, new.path);
 END;
 
 CREATE TRIGGER fact_fts_close AFTER UPDATE OF valid_to ON fact
   WHEN old.valid_to IS NULL AND new.valid_to IS NOT NULL BEGIN
-  INSERT INTO fact_fts(fact_fts, rowid, body, predicate)
-    VALUES ('delete', old.id, old.body, old.predicate);
+  INSERT INTO fact_fts(fact_fts, rowid, body, predicate, path)
+    VALUES ('delete', old.id, old.body, old.predicate, old.path);
 END;
 
 CREATE TRIGGER fact_fts_delete AFTER DELETE ON fact BEGIN
-  INSERT INTO fact_fts(fact_fts, rowid, body, predicate)
-    VALUES ('delete', old.id, old.body, old.predicate);
+  INSERT INTO fact_fts(fact_fts, rowid, body, predicate, path)
+    VALUES ('delete', old.id, old.body, old.predicate, old.path);
+END;
+
+-- `path` is the one piece of belief content that is allowed to change: it
+-- follows its entity on rename (D2). Every other indexed column is immutable, so
+-- this is the only trigger of its kind, and without it a rename would leave the
+-- fact indexed under its old address with nothing to say so.
+CREATE TRIGGER fact_fts_repath AFTER UPDATE OF path ON fact
+  WHEN new.valid_to IS NULL AND old.path <> new.path BEGIN
+  INSERT INTO fact_fts(fact_fts, rowid, body, predicate, path)
+    VALUES ('delete', old.id, old.body, old.predicate, old.path);
+  INSERT INTO fact_fts(rowid, body, predicate, path)
+    VALUES (new.id, new.body, new.predicate, new.path);
 END;
 
 
@@ -293,7 +319,7 @@ CREATE UNIQUE INDEX ux_repo_identity ON repo_registry(identity);
 
 
 CREATE TABLE schema_meta (key TEXT PRIMARY KEY, value TEXT);
-INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1');
+INSERT INTO schema_meta(key, value) VALUES ('schema_version', '2');
 
 
 -- ---------------------------------------------------------------------------

@@ -141,6 +141,62 @@ public class RecallExplanationTests
         Assert.Equal(0, explanation.TokensUsed);
     }
 
+    /// <summary>
+    /// The fusion arithmetic, spelled out once so the constant is not a mystery number: each lane
+    /// contributes <c>1/(60 + rank)</c> and the lanes are summed.
+    /// </summary>
+    [Fact]
+    public void Explain_ScoresACandidateAsTheSumOfItsReciprocalRanks()
+    {
+        // f11 is the only fact matching both terms, so it is the overlap lane's first hit.
+        var lexical = new Dictionary<long, int> { [11] = 1 };
+
+        var explanation = RecallEngine.Explain("pragmas connection scoped", Facts, [], [], lexical, 500);
+
+        var fused = Assert.Single(explanation.Candidates, c => c.FactId == 11);
+        Assert.Equal(1, fused.OverlapRank);
+        Assert.Equal(1, fused.LexicalRank);
+        Assert.Equal((1d / 61) + (1d / 61), fused.Fused, 12);
+    }
+
+    [Fact]
+    public void Explain_IncludesAFactOnlyTheLexicalLaneFound()
+    {
+        // f14 shares no term with the query; only the lexical lane returns it.
+        var lexical = new Dictionary<long, int> { [14] = 1 };
+
+        var explanation = RecallEngine.Explain("pragmas connection scoped", Facts, [], [], lexical, 500);
+
+        var rescued = Assert.Single(explanation.Candidates, c => c.FactId == 14);
+        Assert.Null(rescued.OverlapRank);
+        Assert.Equal(1, rescued.LexicalRank);
+        Assert.Equal(1d / 61, rescued.Fused, 12);
+    }
+
+    [Fact]
+    public void Explain_RanksAgreementAboveAGoodPositionInOneLane()
+    {
+        // f12 is the lexical lane's top hit and nothing else; f11 is second there and first on
+        // overlap. Agreement has to win, or k is doing nothing.
+        var lexical = new Dictionary<long, int> { [12] = 1, [11] = 2 };
+
+        var explanation = RecallEngine.Explain("pragmas connection scoped", Facts, [], [], lexical, 500);
+
+        Assert.Equal(11, explanation.Candidates[0].FactId);
+        Assert.Equal(12, explanation.Candidates[1].FactId);
+    }
+
+    [Fact]
+    public void Explain_WithNoLexicalLane_RanksByOverlapAlone()
+    {
+        var explanation = RecallEngine.Explain("pragmas connection scoped", Facts, [], [], 500);
+
+        Assert.All(explanation.Candidates, c => Assert.Null(c.LexicalRank));
+        Assert.Equal(
+            explanation.Candidates.OrderBy(c => c.OverlapRank).Select(c => c.Handle),
+            explanation.Candidates.Select(c => c.Handle));
+    }
+
     [Fact]
     public void Explain_CountsTokensPerCandidateTheSameWayTheBudgetDoes()
     {

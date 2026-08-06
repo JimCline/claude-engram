@@ -1614,6 +1614,49 @@ move the ranking it was asked to explain, and the effect would be invisible beca
 would reveal it is the one causing it. A test asserts the row counts are unchanged across two
 explains.
 
+**The fix: fuse the lanes, do not swap one for the other.** Recall now draws `fact_fts` to
+`seed_k` and fuses it with term overlap by reciprocal rank, `k = 60`. Replacing overlap with FTS5
+was the tempting one-line version and it is wrong, because the two lanes miss different things:
+FTS5 stems and reads the predicate but cannot index the subject's display name, while overlap
+reads the subject but matches literally. Swapping trades one class of false negative for another
+and the tests would not have noticed.
+
+RRF rather than a weighted sum, because there is no honest weight to pick: `bm25` returns an
+unbounded negative whose scale depends on the corpus, and overlap returns a small count. Any
+constant reconciling them would be a number nobody could defend. Reciprocal rank throws the
+magnitudes away and keeps only the order, which is the part both lanes agree means something. It
+also lands on the right emphasis by construction: at `k = 60` the gap between rank 1 and rank 2 is
+1/61 − 1/62 ≈ 0.0003, while a fact both lanes found scores nearly double one only a single lane
+found. Fusion rewards **agreement between lanes** far more than position within one, which is
+exactly the confidence signal available here.
+
+Measured after fusion, against the same corpus: the six queries that returned "no facts matched"
+became **one**. Every other plural now matches or beats its singular — `hooks` 11 vs `hook` 10,
+`settings` 5 vs `setting` 2, `indexes` 2 vs `index` 1.
+
+**The last false negative was structural, and cost a schema version.** `pragmas` still returned
+nothing because "pragma" appears in no fact body at all — only in the subject path
+`/knowledge/dotnet-and-storage/pragma-foreign-keys-scope`. That is not a tail case: **30 of 45
+live facts (67%) had at least one subject token absent from their body, 39 such tokens in total.**
+An FTS5 external-content table can only index columns present on the content table, so the
+entity's display name is genuinely unreachable — but `path` is denormalized onto `fact` (D2), it
+is on the content table, and `unicode61` splits its slug on `/` and `-`. So schema version 2 adds
+`path` to `fact_fts`, with a fourth trigger to re-index a fact whose path follows its entity on
+rename. `bm25`'s IDF is what stops this flooding results: a segment appearing in every document
+contributes almost nothing, so `/knowledge` does not match the store. Columns are weighted
+equally, as the honest default until something is measured.
+
+Rebuilding the index is a legal migration under D8 precisely because it destroys nothing
+authored: external content means every indexed value is read back out of `fact`. The migration
+carries its own copy of the FTS5 DDL, since an FTS5 table's columns cannot be altered in place and
+parsing the statements back out of the schema file would fail silently on a reformatted comment.
+The duplication is guarded by a test asserting a migrated store and a fresh one have byte-identical
+`sqlite_master` rows for the table and its triggers.
+
+`[retrieval]` stops being decorative: `budget_tokens` and `seed_k` are now read by both `recall`
+and `explain`. `graph_hops` and `recency_half_life_days` stay deliberately unread — the features
+behind them do not exist, and a setting that silently does nothing is worse than an absent one.
+
 ---
 
 ## PreCompact cannot inject context
