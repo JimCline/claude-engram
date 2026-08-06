@@ -1724,6 +1724,98 @@ by a test rather than a memory — `AConnectionThatLoadedNothing_StillInheritsTh
 fails loudly if the provider ever stops recycling handles, which would make the whole argument
 above obsolete rather than merely wrong.
 
+**Spike H — a KNN filter must live inside the MATCH, not after it (2026-08-05, measured).**
+Step 7's obvious design is to run KNN over `fact_vec` and then join `fact` and drop anything
+with `valid_to` set. That design is wrong, and it fails in the worst available shape: silently,
+and worse as the instance ages.
+
+`vec0` applies `k` before the join. So the k nearest *vectors* are chosen with no regard to
+liveness, and the join then deletes some of them. Measured on ten facts whose four nearest to
+the query are closed: **a post-filter join asking for 5 live facts returns 1.** No error, no
+warning, just a short answer. Because facts are append-only and superseded rows accumulate
+forever, the proportion of dead vectors only grows — recall that works on a young instance
+quietly starves on an old one, which is precisely the degradation this project keeps writing
+guards against.
+
+**The fix is a metadata column in the `vec0` table, filtered in the same statement as the
+MATCH.** The same query with `AND v.is_live = 1` returns a full five. Inequalities work too.
+Both retirement paths are available and both were exercised: **`UPDATE fact_vec SET is_live = 0`
+works in place** — so supersession can retire a vector without deleting it — and `DELETE` works,
+which keeps the index proportional to live facts rather than to every fact ever written. D8
+permits either, a vector being derived state; the choice belongs to step 7 and is not settled
+here.
+
+`PARTITION KEY` is also accepted and a partitioned KNN returns the right rows, which is the
+mechanism to reach for if scope ever needs to bound the search rather than merely filter it.
+
+Two flaws in the spike, recorded so the result is not read as stronger than it is. **The first
+run was worthless and looked fine**: the insert loop never called `ExecuteNonQuery`, so every
+probe queried an empty table, and the headline check — "post-filtering loses results" — passed
+vacuously on a count of zero. It now asserts the row count after insert, and the check requires
+`> 0 and < 5` rather than merely `< 5`, so an empty table fails instead of confirming. Second,
+the `IN (...)` probe used `IN (0, 1)` on a column whose only values are 0 and 1, so the set
+covered everything and the probe shows only that the syntax is *accepted* — it does not show
+that `IN` filters correctly, and must not be cited for that.
+
+### 1.6 Constraints the in-process embedder has to satisfy
+
+These are requirements with stated reasons, **not measurements** — none has been verified here,
+and each is written so it can be falsified when `LLamaSharpEmbedder` is built. They are recorded
+now because every one of them is cheap to satisfy up front and expensive to retrofit, and
+because several fail silently rather than loudly.
+
+**Native logging has to be redirected before the first model load.** llama.cpp writes progress
+and warnings to the process's standard streams. Engram's MCP server speaks JSON-RPC over stdio
+and its hooks emit JSON on stdout, so unsuppressed native logging does not merely add noise —
+it corrupts the protocol frame and takes the whole integration down in a way that looks like a
+client bug. The log callback must be installed before any weights load, and must forward errors
+somewhere useful rather than discarding them.
+
+**Each sequence's KV cache must be cleared after its embedding is read.** Batched embedding
+packs N texts into one decode as N sequences; if the per-sequence cache is not released after
+reading, the next batch inherits state from the last. The result is not a crash but *plausible
+wrong vectors* — they have the right shape, the right norm, and rank badly. Nothing downstream
+can detect this, which is why it belongs in the first version rather than a later fix.
+
+**A batch failure must degrade to per-text retries, and a text that still fails must produce no
+row at all.** The tempting representation for "this one failed" is an empty or zero vector, and
+it is a trap: a zero vector makes cosine similarity NaN, which surfaces later, elsewhere, as a
+ranking that is neither right nor obviously wrong — the same hazard `StubEmbedder` already
+guards against for empty input. Leaving the fact unembedded is strictly better, because the
+backfill query is `LEFT JOIN … WHERE v.fact_id IS NULL`: a fact with no vector is already the
+representation of "needs embedding", so a failure retries itself on the next pass with no
+bookkeeping. **This obliges `IEmbedder.EmbedAsync` to express per-item failure**, which the
+current signature cannot — it returns `IReadOnlyList<float[]>`, so the only failure it can
+express is "the whole batch threw", and one poison text would then block its whole batch
+permanently. The return type has to admit a null per element.
+
+**The embedder must serialize its own callers.** One context is not concurrency-safe, and the
+MCP server is concurrent by construction. Serializing inside the embedder rather than at each
+call site is what keeps that from being a rule every future caller has to remember.
+
+**Model identity and dimension must both be pinned, and a mismatch must degrade rather than
+refuse.** Spike F established why the model and not just the width: two models of equal width
+insert happily and rank meaninglessly. The response to a mismatch is a separate question, and
+for Engram it is *not* to refuse to open the database — recall works without the vector lane,
+and a memory system that will not start because an optional accelerator changed is worse than
+one that answers on FTS5 and says so. `doctor` names it; `embed --rebuild` fixes it.
+
+**External-content FTS5 deletes must run while the row they mirror still exists.** D3's FTS5
+index is external-content, so its delete reads the content table to find what to unindex.
+Deleting the content row first leaves the index holding a phantom. This orders every deletion
+path — `forget`, compaction, and any re-embed that replaces a row.
+
+**Fetching a native library is a supply-chain decision, not a download.** `init
+--with-embeddings` has to pull `sqlite-vec` and llama.cpp for the host platform, pin an exact
+version — the extension version and the schema it writes are coupled — and cache them in
+`lib/`. The obvious implementation fetches a release archive over HTTPS and extracts it, and
+the obvious implementation is not sufficient here: Engram would be downloading a native library
+and loading it into its own process, so the archive's **checksum must be pinned and verified
+before the file is written**, and a mismatch must abort rather than warn. An unavailable
+download degrades to embeddings-off with a message naming the manual path, per the three states
+`VectorExtensionState` already distinguishes. The uninstaller removes `lib/` with everything
+else it created.
+
 ---
 
 ## 2. Riskiest assumption, and how it gets tested first

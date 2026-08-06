@@ -72,7 +72,12 @@ public sealed class StubEmbedder : IEmbedder
         return new StubEmbedder(vectors, dimensions);
     }
 
-    public Task<IReadOnlyList<float[]>> EmbedAsync(
+    /// <remarks>
+    /// Never returns a null element: hashing cannot fail on a well-formed string, and inventing
+    /// failures the algorithm does not have would make every caller's null-handling look tested
+    /// when it is not. Tests that need the failure path construct it explicitly.
+    /// </remarks>
+    public Task<IReadOnlyList<float[]?>> EmbedAsync(
         IReadOnlyList<string> texts,
         CancellationToken cancellationToken = default)
     {
@@ -85,7 +90,7 @@ public sealed class StubEmbedder : IEmbedder
             results[i] = Embed(texts[i]);
         }
 
-        return Task.FromResult<IReadOnlyList<float[]>>(results);
+        return Task.FromResult<IReadOnlyList<float[]?>>(results);
     }
 
     private float[] Embed(string text)

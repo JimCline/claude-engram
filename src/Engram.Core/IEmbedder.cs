@@ -71,16 +71,32 @@ public interface IEmbedder
     EmbeddingSpace Space { get; }
 
     /// <summary>
-    /// Embeds each text, returning one vector per input, in order, each
-    /// <see cref="EmbeddingSpace.Dimensions"/> wide.
+    /// Embeds each text, returning one entry per input, in order — a vector
+    /// <see cref="EmbeddingSpace.Dimensions"/> wide, or <c>null</c> where that one text could
+    /// not be embedded.
     /// </summary>
     /// <remarks>
     /// Implementations must verify the width they actually produce against the width they
     /// declare, and fail rather than return a differently-shaped vector. A provider that
     /// quietly returns 768 floats into a 1024-wide index corrupts every subsequent query,
     /// and does so without an error anywhere.
+    ///
+    /// <para><b>Why an element may be null.</b> A real provider batches, and a batch can fail
+    /// on one input — an overlong text, a tokenizer edge case — while the rest are fine. The
+    /// alternatives are both worse. Throwing for the whole batch lets one poison text block
+    /// every fact batched with it, permanently, since the backfill will re-batch them together
+    /// forever. Returning an empty or zero vector is worse still: zero vectors make cosine
+    /// similarity NaN, and the damage surfaces later and elsewhere as a ranking that is neither
+    /// right nor obviously wrong.</para>
+    ///
+    /// <para>Null costs nothing to handle because "no vector" is already the backfill's
+    /// representation of work to do — the queue is <c>LEFT JOIN … WHERE v.fact_id IS NULL</c>,
+    /// so a fact whose embedding failed simply stays in it and is retried on the next pass,
+    /// with no error table and no bookkeeping. Callers must skip nulls rather than store them.
+    /// Implementations should still exhaust their own retries first; null is the last word on
+    /// one text, not a shrug.</para>
     /// </remarks>
-    Task<IReadOnlyList<float[]>> EmbedAsync(
+    Task<IReadOnlyList<float[]?>> EmbedAsync(
         IReadOnlyList<string> texts,
         CancellationToken cancellationToken = default);
 }

@@ -26,7 +26,12 @@ public class StubEmbedderTests
     private static async Task<float[]> EmbedOne(IEmbedder embedder, string text)
     {
         var vectors = await embedder.EmbedAsync([text], TestContext.Current.CancellationToken);
-        return vectors[0];
+
+        // EmbedAsync may return null per element when a real provider fails on one text. The
+        // stub has no failure path, so asserting here states that contract rather than
+        // suppressing the warning and letting a future stub start returning nulls unnoticed.
+        Assert.NotNull(vectors[0]);
+        return vectors[0]!;
     }
 
     // The guard that actually matters, and the one same-process determinism cannot give.
