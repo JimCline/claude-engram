@@ -7,6 +7,7 @@ namespace Engram.Integration.Tests;
 /// Every schema version bump ships with a test that opens a database written by the previous
 /// version and reads it correctly. This is that test for version 2.
 /// </summary>
+[Collection(SqlitePoolCollection.Name)]
 public class SchemaMigrationTests
 {
     private static readonly DateTimeOffset T0 = new(2026, 8, 5, 12, 0, 0, TimeSpan.Zero);
@@ -140,6 +141,65 @@ public class SchemaMigrationTests
         using var fresh = EngramDatabase.OpenInitialized(freshHome.Home);
 
         Assert.Equal(LexicalDdl(fresh), LexicalDdl(migrated));
+    }
+
+    /// <summary>
+    /// A migration is the one thing Engram's own code does that rewrites structure, unattended, on
+    /// open, before anyone has decided today is a good day for it. It takes a snapshot first.
+    /// </summary>
+    [Fact]
+    public void Migrating_SnapshotsTheStoreBeforeTouchingIt()
+    {
+        using var sandbox = new SandboxHome(initialize: false);
+        WriteVersion1Store(sandbox, "/knowledge/testing/kestrel", "It binds loopback only.");
+        SqliteConnection.ClearAllPools();
+
+        using var reopened = EngramDatabase.OpenInitialized(sandbox.Home);
+
+        var snapshot = Assert.Single(BackupStore.List(sandbox.Home));
+        Assert.Contains("pre-v" + EngramDatabase.SchemaVersion, snapshot.Name, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// And the snapshot has to predate the migration, not merely accompany it. A copy taken after
+    /// the rebuild would restore you to the state you were trying to get away from.
+    /// </summary>
+    [Fact]
+    public void TheSnapshotAMigrationTakes_StillHoldsTheOldSchema()
+    {
+        using var sandbox = new SandboxHome(initialize: false);
+        WriteVersion1Store(sandbox, "/knowledge/testing/kestrel", "It binds loopback only.");
+        SqliteConnection.ClearAllPools();
+
+        using (var reopened = EngramDatabase.OpenInitialized(sandbox.Home))
+        {
+            Assert.Equal(EngramDatabase.SchemaVersion, EngramDatabase.ReadSchemaVersion(reopened));
+        }
+
+        var snapshot = Assert.Single(BackupStore.List(sandbox.Home));
+        SqliteConnection.ClearAllPools();
+        using var fromSnapshot = EngramDatabase.Open(snapshot.Path);
+
+        Assert.Equal(1, EngramDatabase.ReadSchemaVersion(fromSnapshot));
+        Assert.Empty(FactStore.SearchRanked(fromSnapshot, "kestrel", 10));
+    }
+
+    [Fact]
+    public void Opening_AStoreAlreadyAtTheCurrentVersion_SnapshotsNothing()
+    {
+        using var sandbox = new SandboxHome(initialize: false);
+        using (var connection = EngramDatabase.OpenInitialized(sandbox.Home))
+        {
+            FactStore.Remember(
+                connection,
+                new FactWrite("/knowledge/testing/kestrel", "note", "states", "It binds loopback only.", "project", "stated"),
+                T0);
+        }
+
+        SqliteConnection.ClearAllPools();
+        using var reopened = EngramDatabase.OpenInitialized(sandbox.Home);
+
+        Assert.Empty(BackupStore.List(sandbox.Home));
     }
 
     [Fact]

@@ -41,6 +41,13 @@ public static class DefaultConfig
         graph_hops = 2
         recency_half_life_days = 45
 
+        [backup]
+        enabled = true
+        interval_minutes = 60         # a ceiling: a snapshot is taken only if facts changed too
+        keep_hourly = 24
+        keep_daily = 7
+        keep_weekly = 4
+
         [indexing]
         auto_index_on_session_start = true
         max_sync_index_ms = 1500      # beyond this, indexing continues async

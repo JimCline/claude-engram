@@ -85,9 +85,18 @@ latency decision**: 1.06 MB started in 3.44 ms, 21.2 MB starts in 7.80 ms. That 
 second reason, independent of AOT-hostility, that D1 keeps `sqlite-vec` and llama.cpp
 side-loaded rather than linked.
 
-**Anything destructive is dry-run first.** `repair`, `compact`, `forget`, and the
-installer print what they would do and require an explicit flag to act. Anything editing
-a user's file backs it up first and refuses to overwrite a value it did not create.
+**Anything destructive is dry-run first.** `repair`, `compact`, `forget`, `backup prune`,
+`backup restore`, and the installer print what they would do and require an explicit flag to act.
+Anything editing a user's file backs it up first and refuses to overwrite a value it did not
+create.
+
+**The store gets a snapshot before anything rewrites it.** `VACUUM INTO`, never `cp` — a WAL
+database copied with `cp` was measured here to yield not a stale file but an unusable one, with no
+`fact` table at all because everything was still in the log. Migrations snapshot unconditionally,
+because a migration is the only thing Engram's own code does that rewrites structure rather than
+appending to it, and it runs unattended on open (D31). Session start spawns `backup take --if-due`
+detached: +2.0 ms mean, and the snapshot is skipped entirely unless the fingerprint of authored
+truth actually moved, so an idle day costs nothing.
 
 ## Build constraints
 

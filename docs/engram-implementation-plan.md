@@ -1653,9 +1653,89 @@ parsing the statements back out of the schema file would fail silently on a refo
 The duplication is guarded by a test asserting a migrated store and a fresh one have byte-identical
 `sqlite_master` rows for the table and its triggers.
 
-`[retrieval]` stops being decorative: `budget_tokens` and `seed_k` are now read by both `recall`
-and `explain`. `graph_hops` and `recency_half_life_days` stay deliberately unread — the features
-behind them do not exist, and a setting that silently does nothing is worse than an absent one.
+`[retrieval]` stops being decorative: `default_budget_tokens` and `seed_k` are now read by both
+`recall` and `explain`. `graph_hops` and `recency_half_life_days` stay deliberately unread — the
+features behind them do not exist, and a setting that silently does nothing is worse than an
+absent one.
+
+---
+
+### D31 — Snapshots are triggered by change, thinned by generation, and taken before every migration
+
+The store had no copy of itself anywhere, and nothing that would notice it leaving. This was
+written after `engram.db` disappeared from a live instance with the rest of the home untouched —
+no logged command removed it, the test suite provably does not (a sentinel database under a
+redirected `HOME` survives a full run), and the installer's verification home is a real
+`mktemp -d`. The cause is still unknown, which is the strongest argument available for the
+feature: the recovery story cannot depend on first explaining the loss.
+
+**`VACUUM INTO`, never a file copy.** The store runs in WAL mode, so a committed fact lives in
+`engram.db-wal` until something checkpoints it. Copying `engram.db` alone was measured here to
+produce not a stale database but an unusable one — the copy had no `fact` table at all, because
+everything was still in the log. `VACUUM INTO` reads through one transaction, writes a single
+consistent compacted database, and takes no write lock, so a snapshot never blocks a hook trying
+to record a fact. Written to `.partial` and renamed, because a truncated file whose name says it
+is a snapshot is worse than no snapshot: it is the one you would reach for.
+
+**Change is the trigger; the interval is only a ceiling.** A clock-driven backup copies identical
+bytes twenty-four times on a day nothing was written and then thins twenty-three of them back
+out — work performed solely to undo itself. Facts are append-only, so counts over the
+authored-truth tables make a monotonic fingerprint that moves on a write, a close, a rename (which
+lands a row in `entity_alias`), or a new edge. Derived state is excluded deliberately: the FTS
+index and salience are rebuildable (D8), so a snapshot taken because an index changed is a copy
+taken for no reason. Measured: 101 session-start invocations produced exactly one snapshot.
+
+The comparison is against the newest snapshot's own fingerprint, read back out of it, rather than
+a watermark kept on the side. A watermark is a second copy of the truth that starts lying the
+moment someone deletes a snapshot by hand; a fingerprint read out of the file it describes cannot
+drift from it.
+
+**Retention is generational because the failure modes are.** Losing an hour of facts is noticed at
+once; losing a fortnight is noticed long after a flat window of hourly snapshots has rolled past.
+Keeping the newest in each of the last 24 hours, 7 days and 4 weeks spends a bounded number of
+files on a reach measured in months. Zero is refused for any retention count — it reads like "keep
+none", and one mistyped line deleting every snapshot is the failure the feature exists to prevent.
+
+**Session start spawns it detached.** A snapshot is a `VACUUM` over the whole store, unbounded as
+the store grows, and hooks have budgets; the parent pays one `fork` and never waits. Sessions are
+also when facts get written. A timer would need a daemon that is not always running — hooks write
+facts whether or not the server is up — and a cron entry would be a second installation surface to
+own and uninstall (D28). Measured: session start goes from 11.0/12.2 ms to 13.8/13.5 ms, **+2.0 ms
+mean over 100 runs**. This does not touch `file-touched`, whose rule is about that hook and its
+per-edit rate, not about hooks (D4).
+
+Fanning out from session start needed a lock, which the tests found rather than the design:
+thirty concurrent session starts spawned thirty backups, which stampeded the store and outlived
+the temp home the harness was deleting. One holder does the work and the rest exit at once.
+`DeleteOnClose` rather than a pid file with staleness rules — the kernel closes the handle however
+the process dies, so there is no such thing as a lock left behind by a crash.
+
+**Every migration snapshots first.** It is the one moment Engram's own code rewrites structure
+rather than appending to it, and it does so unattended, on open, before anyone has decided today is
+a good day for it. The first migration shipped one commit before this without that guard.
+
+**Restore is dry-run first, and assumes it is being used on a bad day.** It refuses a snapshot from
+a newer schema version rather than reading it wrongly; it preserves the current store before
+overwriting it, falling back to moving the raw bytes aside when that store will not open, because a
+store worth restoring over is disproportionately likely to be one that will not open; and it
+removes the stale `-wal`/`-shm`, since a log belonging to the database that was just replaced is
+corruption with a clean exit code.
+
+**Three guards did not survive falsification and were rewritten rather than kept.** The retention
+rule's unconditional keep-the-newest is unreachable through config, since the counts are floored at
+one and the newest snapshot always leads its own hourly bucket — it is reachable only from code
+constructing settings directly, which is what its test now does. The WAL cleanup passed with the
+code deleted twice, because anything that opens SQLite on the way past makes SQLite unlink the
+sidecars itself; it only does work when the database file is gone and its log is not, which is
+exactly the state this instance was found in. And the fingerprint's closed-fact count is genuinely
+redundant — both paths that set `valid_to` also write a supersession row — so it is kept as cheap
+insurance with a note saying no test can guard it, following the precedent set by the
+`foreign_keys` pragma.
+
+Not built here, and deliberately not stubbed: a plain-text fact journal. Because facts are
+append-only it would be incremental and nearly free, and unlike a `.db` snapshot it replays into
+any later schema — it is the tier that survives what these snapshots cannot. It gets its own
+change rather than a config key that does nothing, per the rule stated one decision above.
 
 ---
 

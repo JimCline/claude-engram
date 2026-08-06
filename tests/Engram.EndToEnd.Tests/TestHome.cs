@@ -19,11 +19,34 @@ internal sealed class TestHome : IDisposable
         }
     }
 
+    /// <summary>
+    /// Removes the home, tolerating a detached child still writing into it.
+    /// </summary>
+    /// <remarks>
+    /// Session start spawns a backup process that outlives the hook by design, so a test that
+    /// drives thirty concurrent hooks can reach here while one is mid-write and the recursive
+    /// delete fails with "directory not empty". That is a fact about detached children, not a
+    /// defect the test is placed to catch: this is cleanup of a temp directory, and turning a
+    /// cleanup race into a failed assertion reports a bug that is not there. Retry briefly, then
+    /// leave it to the operating system's temp reaper.
+    /// </remarks>
     public void Dispose()
     {
-        if (Directory.Exists(Root))
+        for (var attempt = 0; attempt < 10 && Directory.Exists(Root); attempt++)
         {
-            Directory.Delete(Root, recursive: true);
+            try
+            {
+                Directory.Delete(Root, recursive: true);
+                return;
+            }
+            catch (IOException)
+            {
+                Thread.Sleep(50);
+            }
+            catch (UnauthorizedAccessException)
+            {
+                Thread.Sleep(50);
+            }
         }
     }
 }

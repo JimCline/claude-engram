@@ -185,6 +185,21 @@ internal static class HookCommand
         {
         }
 
+        // Fire and forget, and swallowing everything is deliberate: a session must start even if
+        // no snapshot can be taken. The child decides for itself whether one is due, so this
+        // costs a fork whether or not it ends up doing any work — cheaper than reading config
+        // and fingerprinting the store here to find out, which is the work itself.
+        try
+        {
+            if (Environment.ProcessPath is { Length: > 0 } executable)
+            {
+                BackupLauncher.SpawnIfDue(executable, home.Root);
+            }
+        }
+        catch
+        {
+        }
+
         // An empty primer became reachable once the standing guidance moved into the tool
         // descriptions (D15): with nothing stored there is no coverage line and nothing
         // left to say. Emitting an empty additionalContext would spend a hook round trip

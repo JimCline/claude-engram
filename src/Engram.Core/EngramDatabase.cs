@@ -39,7 +39,7 @@ public static class EngramDatabase
         var connection = Open(home);
         try
         {
-            EnsureSchema(connection);
+            EnsureSchema(connection, home);
             return connection;
         }
         catch
@@ -99,11 +99,27 @@ public static class EngramDatabase
     public static SqliteTransaction BeginWrite(SqliteConnection connection) =>
         connection.BeginTransaction(deferred: false);
 
-    public static void EnsureSchema(SqliteConnection connection)
+    public static void EnsureSchema(SqliteConnection connection) => EnsureSchema(connection, home: null);
+
+    /// <param name="home">
+    /// Where to put the snapshot taken before a migration runs. Omitting it migrates without one,
+    /// which is correct only for a caller that has no home to write into — a test opening a bare
+    /// file, say. <see cref="OpenInitialized(EngramHome)"/> supplies it.
+    /// </param>
+    public static void EnsureSchema(SqliteConnection connection, EngramHome? home)
     {
         if (TableExists(connection, "schema_meta"))
         {
-            Migrate(connection, ReadSchemaVersion(connection));
+            var from = ReadSchemaVersion(connection);
+            if (from < SchemaVersion && home is not null)
+            {
+                // The one moment Engram's own code puts authored truth at risk. Everything else
+                // that writes is append-only; a migration rewrites structure, and it does so
+                // unattended, on open, before anyone has decided today is a good day for it.
+                BackupStore.Take(connection, home, DateTimeOffset.UtcNow, $"pre-v{SchemaVersion}");
+            }
+
+            Migrate(connection, from);
             VerifySchemaVersion(connection);
             return;
         }

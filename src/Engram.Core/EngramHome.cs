@@ -25,6 +25,18 @@ public sealed class EngramHome
     public string LibDir { get; }
 
     /// <summary>
+    /// Snapshots of the store, and the append-only fact journal.
+    /// </summary>
+    /// <remarks>
+    /// Inside the home, which is the honest limitation to state up front: this defends against
+    /// logical loss — a migration that goes wrong, a bad <c>forget</c>, corruption — and not
+    /// against the directory itself going away. Putting it outside would mean inventing a second
+    /// location to resolve, own, and uninstall, for a class of failure a real backup tool already
+    /// covers better.
+    /// </remarks>
+    public string BackupDir { get; }
+
+    /// <summary>
     /// Which MCP tool permissions we granted in Claude Code's settings, so the uninstaller can
     /// take back exactly those and nothing the user wrote themselves.
     /// </summary>
@@ -47,6 +59,7 @@ public sealed class EngramHome
         QueueDir = Path.Combine(root, "queue");
         ReportDir = Path.Combine(root, "report");
         LibDir = Path.Combine(root, "lib");
+        BackupDir = Path.Combine(root, "backups");
         GrantedPermissionsPath = Path.Combine(root, "granted-permissions.json");
         ClaudeSettingsPath = Path.Combine(userProfileDirectory, ".claude", "settings.json");
     }
