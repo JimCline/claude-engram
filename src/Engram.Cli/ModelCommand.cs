@@ -86,19 +86,50 @@ internal static class ModelCommand
 
     private static int Install(EngramHome home, string[] rest, TextWriter stdout, TextWriter stderr)
     {
-        if (rest.Length != 1)
+        var flags = rest.Where(a => a.StartsWith('-')).ToArray();
+        var names = rest.Where(a => !a.StartsWith('-')).ToArray();
+
+        if (names.Length != 1 || flags.Any(f => f != "--use-it" && f != "--force"))
         {
             stderr.WriteLine("error: model install requires exactly one model id, or 'default'");
             stderr.WriteLine("run 'engram model list' to see the options");
             return 1;
         }
 
-        var id = rest[0] == "default" ? EmbeddingModels.DefaultId : rest[0];
+        var id = names[0] == "default" ? EmbeddingModels.DefaultId : names[0];
         if (EmbeddingModels.Find(id) is not { } model)
         {
             return UnknownModel(id, stderr);
         }
 
+        if (Fetch(home, model, stdout, stderr) != 0)
+        {
+            return 1;
+        }
+
+        stdout.WriteLine();
+
+        if (!flags.Contains("--use-it"))
+        {
+            // Downloading a model is not the same as choosing it, and this command is also how
+            // someone stages a second model before switching. So the config edit is asked for.
+            stdout.WriteLine("Downloaded, but not yet in use. To switch to it:");
+            stdout.WriteLine($"  engram model install {model.Id} --use-it");
+            return 0;
+        }
+
+        return EmbeddingSetup.Apply(
+            home,
+            new EmbeddingChoice("local", model.Id, null, null, null),
+            flags.Contains("--force"),
+            DateTimeOffset.UtcNow,
+            stdout,
+            stderr);
+    }
+
+    /// <summary>Downloads the model if it is not already on disk, reporting progress as it goes.</summary>
+    internal static int Fetch(EngramHome home, EmbeddingModel model, TextWriter stdout, TextWriter stderr)
+    {
         stdout.WriteLine($"{model.DisplayName} — {model.SizeLabel}, {model.Dimensions} dimensions");
         stdout.WriteLine($"  from {model.Source!.Url}");
 
@@ -122,10 +153,6 @@ internal static class ModelCommand
 
         stdout.WriteLine(result.Message);
         stdout.WriteLine($"  {result.Path}");
-        stdout.WriteLine();
-        stdout.WriteLine("Then set this in the [embedding] section of your config:");
-        stdout.WriteLine("  provider = \"local\"");
-        stdout.WriteLine($"  model = \"{model.Id}\"");
         return 0;
     }
 

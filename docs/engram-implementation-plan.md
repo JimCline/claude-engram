@@ -1788,6 +1788,50 @@ attempt at each failed as intended, which is the only evidence that either guard
 
 ---
 
+### D33 — Choosing an embedding provider is a command, and the line it writes says who wrote it
+
+`model install` ended by printing two lines to paste into a config file. Everything needed to
+write them was already in hand at that moment: the model id, the provider it implies, the path to
+the file. What was left was the step where a typo produces an instance that looks configured and
+is silently lexical-only. So `engram init --with-embeddings` presents the rungs and writes the
+answer, and `model install <id> --use-it` does the same for a model already being downloaded.
+Downloading is still not the same as choosing — staging a second model before switching to it is a
+real thing to want — so the config edit is asked for rather than assumed.
+
+**Three rungs, and the first one is a real answer.** `none` is lexical recall, which works; `local`
+is a model Engram runs from a file in the home; `endpoint` is anything already serving
+`/v1/embeddings`. The lane costs disk, memory and startup, so a picker that treated the largest
+model as the obvious choice would be selling something. Only the endpoint rung asks for `dim`, and
+it asks rather than defaulting, because a wrong width does not fail — it produces vectors that
+never match anything, which is the worst available way for this to be wrong.
+
+**Line surgery, not a TOML round-trip.** The shipped config is mostly prose explaining these very
+choices. Parsing it into a model and serializing it back yields a valid file with the
+documentation deleted: it would still work and would no longer explain itself. So one line changes
+and every other byte survives, including the commented-out suggestions the user never uncommented,
+which count as absent rather than as decisions.
+
+**The line records who wrote it.** The rule is that nothing overwrites a value it did not write,
+and the obvious implementation — compare against the shipped default — refuses its own previous
+edit the second time it runs, because by then the file no longer matches the shipped default. The
+tests found this rather than the design. The fix is a marker comment on the line itself:
+`provider = "local"   # written by engram`. It lives with the value instead of in a state file
+beside the config, because a record kept elsewhere starts lying the moment someone edits the line
+it describes — the same reason the snapshot fingerprint lives inside the snapshot (D31). The no-op
+check then has to compare values rather than file text, or stamping the marker would itself count
+as a change and the config would be backed up and rewritten to say what it already said.
+
+**No terminal means no answer.** Piped or redirected, the rungs are printed and nothing changes,
+with the flag form shown instead. A prompt that reads EOF as an answer picks on the user's behalf,
+and this is the file where being wrong is quiet. With `--provider` given outright, that is the
+explicit intent the dry-run rule exists to require, so it acts.
+
+For `local`, the download runs before the config is written. A config naming a model that is not on
+disk describes an instance that cannot start, and it would have been written by the very command
+someone ran to avoid getting this wrong by hand.
+
+---
+
 ## PreCompact cannot inject context
 
 Spec §10.1 assumes `PreCompact` can "inject one instruction" the same way `SessionStart`

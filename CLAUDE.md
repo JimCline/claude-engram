@@ -89,7 +89,10 @@ side-loaded rather than linked.
 `backup restore`, `backup replay`, and the installer print what they would do and require an
 explicit flag to act.
 Anything editing a user's file backs it up first and refuses to overwrite a value it did not
-create.
+create. For `config.toml` that means `ConfigEditor`, which changes one line and leaves the rest of
+the file — the prose in there explains the choices, and a TOML round-trip would delete it. A value
+Engram wrote carries `# written by engram` on its own line, because comparing against the shipped
+default alone makes the second run refuse the first run's edit (D33).
 
 **The store gets a snapshot before anything rewrites it.** `VACUUM INTO`, never `cp` — a WAL
 database copied with `cp` was measured here to yield not a stale file but an unusable one, with no

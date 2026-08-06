@@ -65,7 +65,7 @@ public static class CliApp
         writer.WriteLine();
         writer.WriteLine("commands:");
         writer.WriteLine("  home                              print resolved Engram home paths");
-        writer.WriteLine("  init                              create the Engram home directory structure and default config");
+        writer.WriteLine("  init [--with-embeddings]          create the Engram home directory structure and default config");
         writer.WriteLine("  serve [--port <n>]                 run the MCP server over HTTP in the foreground");
         writer.WriteLine("  start [--port <n>]                 start the MCP server as a detached daemon");
         writer.WriteLine("  stop                               stop the running MCP server");
@@ -74,6 +74,12 @@ public static class CliApp
         writer.WriteLine("  probe [options]                    summarize telemetry and store density for the M0 adoption probe");
         writer.WriteLine("  permissions [options]              allow Claude Code to call Engram's memory tools unprompted");
         writer.WriteLine("  model <list|install|path>          list the local embedding models, or download one");
+        writer.WriteLine();
+        writer.WriteLine("embedding options:");
+        writer.WriteLine("  init --with-embeddings             pick a provider: none, a local model, or an endpoint");
+        writer.WriteLine("  init --provider <name> [...]       say it outright instead: none|local|openai-compat|ollama");
+        writer.WriteLine("       --model --endpoint --dim --api-key-env --force");
+        writer.WriteLine("  model install <id> --use-it        download a model and switch the config to it");
         writer.WriteLine("  scan [path] [options]              report what indexing would read there, and what it would skip");
         writer.WriteLine("  explain <query> [options]          show why recall ranks what it ranks, and what it leaves out");
         writer.WriteLine("  backup <take|list|prune|restore|replay>  snapshot the store, or put the facts back");
