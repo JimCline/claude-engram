@@ -1,7 +1,7 @@
 # Engram — working rules
 
 Read `docs/engram-implementation-plan.md` before any non-trivial change. It holds
-forty-three decisions (D1–D43) that resolve questions the spec left open, and each one was
+forty-four decisions (D1–D44) that resolve questions the spec left open, and each one was
 reached by argument or measurement, not preference. `docs/engram-schema.sql` is the authority for
 database shape.
 
@@ -224,6 +224,25 @@ consequence to know before trusting an adoption number: a tool call cannot be at
 Claude Code session that caused it, so "what fraction of sessions used memory" — what D18 gates M4
 on — is not computable today, and the percentages are over MCP sessions, a population that by
 construction called a tool (D43).
+
+**`coverage` counts lane agreement, not rows.** The spec always said so — "computed from lane
+agreement and score mass" — and the code counted candidates until it was measured: `weekend saturday
+personal activity outing` returned seven, six of them engineering notes bm25 reached through a shared
+stem, and the count called it `high`. `high` is the value that suppresses the `gaps:` line, so a
+result that was 86% noise told the model memory had the question covered and the discover-then-remember
+loop never fired. Corroboration separates cleanly on every query this instance has recorded — 8, 7, 8
+for the ones that worked against 1, 1, 1, 1 for the ones that did not — so the `3+` boundary is kept
+rather than fitted. `none` stays keyed to the total: it means the store said nothing and selects a
+different response shape, and returning facts beneath it would be worse than the bug being fixed.
+Score mass, the spec's other input, is still open on purpose — one unmeasured knob is a rule, two are
+a preference. `Corroborated` is public because its `> 1` is the whole rule and `Pack` cannot reach it
+from a unit test (`CannedFact` has no numeric id, so lexical ranks need a real store) (D44).
+
+**The M4 gate is unmet, and the number that looks like it isn't.** 28.6% of recalls returning
+`coverage: none` reads as a paraphrase-miss rate. Both of them fired ~82 minutes *before* the fact
+that answers them was written — cold start, not retrieval failure. No recorded query has yet missed
+a fact that existed when it was asked, so D18 still gates M4 shut. Check `valid_from` against the
+telemetry timestamp before reading any miss as a retrieval failure (D44).
 
 ## Build constraints
 

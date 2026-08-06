@@ -21,7 +21,7 @@ stated as an erratum with a reason. Nothing here changes the spec's goals.
 
 ## 1. Decisions (locked)
 
-Forty-three architectural forks are locked below. Each is a decision, not an option.
+Forty-four architectural forks are locked below. Each is a decision, not an option.
 Six of them were adjudicated with Fable.
 
 ### D1 — Packaging: AOT core, Roslyn sidecar, native libs in the data directory
@@ -2312,6 +2312,66 @@ Code session that caused it: the client does not forward its session id, and the
 own. So "what fraction of sessions used memory" — the number D18 gates M4 on — is not computable
 today. The adoption percentages are over MCP sessions, a population that by construction called a
 tool at least once, and they are labelled that way rather than rounded up to "sessions".
+
+### D44 — coverage is lane agreement, as the spec always said
+
+Spec §"Rules" specifies an "explicit `coverage` estimate (high/partial/none) computed from lane
+agreement and score mass". The implementation was `ClassifyCoverage(int matchedFactCount)`:
+`0 → none, 1-2 → partial, 3+ → high`. Neither lane agreement nor score mass — how many rows came
+back.
+
+That is not a measure of whether anything was found, because bm25 hands back a row for nearly any
+query. Measured on the author's store: `weekend saturday personal activity outing` returned seven
+candidates, six of which were engineering notes about lint tests, documentation absence and
+`BEGIN IMMEDIATE`, reached through shared porter stems. The count called that `high`.
+`permissions settings grant` did the same — seven candidates, one relevant.
+
+The damage is not the label. `high` is exactly the value that suppresses the `gaps:` line, and the
+spec calls that line "the instruction that trains the *discover → remember* fallback loop". So the
+model was told memory had the question covered, and the loop that would have gone and found the
+answer never fired. D12 additionally makes recall coverage *the* health metric, so the same number
+was the evidence for the M4 gate.
+
+Lane agreement was already computed and already printed by `explain` — "N found only by term
+overlap, M only by fts5, K by both". Measured across all seven queries this instance has ever
+recorded, K separates them without a fitted threshold:
+
+| query | candidates | corroborated | old | new |
+|---|---|---|---|---|
+| plugin slash-command conventions | 39 | 8 | high | high |
+| work done on Saturday | 32 | 7 | high | high |
+| son's favourite game | 32 | 8 | high | high |
+| weekend/outing | 7 | **1** | high | partial |
+| permissions/settings/grant | 7 | **1** | high | partial |
+| movie/cinema | 2 | 1 | partial | partial |
+| movie/theater | 2 | 1 | partial | partial |
+
+8, 7, 8 against 1, 1, 1, 1. Any cutoff in 2..7 gives the same answer, so the existing `3+` boundary
+is kept rather than fitted to this sample — the point is that the quantity changed, not that a
+number was tuned.
+
+`none` stays keyed to the total candidate count, not the corroborated one. It means the store said
+nothing and selects a different response shape (under five lines), so returning facts beneath
+`coverage: none` would be a worse lie than the one this fixes. Only the high/partial boundary moves.
+
+**Score mass is deliberately still open.** The spec names two inputs and this implements one. One
+unmeasured knob is a rule; two are a preference, and there is nothing yet to measure the second
+against.
+
+Four attempted breaks each failed a test: classifying on the total again, counting a single lane as
+agreement, dropping a lane from the tally, and keying `none` to corroboration. The third and fourth
+are the ones a reviewer would not think to check, which is why `Corroborated` is public — the
+boundary is the whole rule and it is unreachable from a unit test of `Pack`, since `CannedFact`
+carries no numeric id and the lexical ranks that corroborate a candidate only exist against a real
+store.
+
+**What this says about the M4 gate, which is the reason the investigation started.** The instance
+showed 28.6% of recalls returning `coverage: none`, which reads as a paraphrase-miss rate and would
+be evidence for embeddings under D18. It is not. Both `none` recalls fired at 03:43:23Z and
+03:43:30Z on 2026-08-05; the fact that answers them, `Jim saw the new Spider-Man movie…`, has
+`valid_from` 05:05:56Z — 82 minutes later. They returned nothing because the answer had not been
+written yet. That is cold start, not retrieval failure, and D18's gate is still unmet: **no recorded
+query has yet missed a fact that existed at the time it was asked.**
 
 ## PreCompact cannot inject context
 

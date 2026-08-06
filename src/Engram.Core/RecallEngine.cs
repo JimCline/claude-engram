@@ -159,12 +159,62 @@ public static class RecallEngine
             .ToList();
     }
 
-    public static RecallCoverage ClassifyCoverage(int matchedFactCount) => matchedFactCount switch
+    /// <summary>
+    /// How much of the question the store answered — from lane agreement, not from how many rows
+    /// came back.
+    /// </summary>
+    /// <param name="matchedFactCount">Candidates in total. Only <c>none</c> turns on this.</param>
+    /// <param name="corroboratedCount">
+    /// Candidates more than one lane found. The spec asks for "lane agreement and score mass";
+    /// this is the agreement half, and score mass is deliberately still open — one unmeasured
+    /// knob is a rule, two are a preference.
+    /// </param>
+    /// <remarks>
+    /// <para>This used to be the candidate count alone, which is not a measure of whether anything
+    /// was <i>found</i>. bm25 will hand back a fact for almost any query: measured on the author's
+    /// store, "weekend saturday personal activity outing" returned seven candidates of which six
+    /// were engineering notes about lint tests and <c>BEGIN IMMEDIATE</c>, and the count called
+    /// that <c>high</c>. That is not a cosmetic mislabel — <c>high</c> is precisely the value that
+    /// suppresses the <c>gaps:</c> line, so the model was told memory had this covered and the
+    /// discover-then-remember loop the spec builds on that line never fired.</para>
+    ///
+    /// <para>Measured across all seven queries this instance has ever recorded, the corroborated
+    /// count separates them without needing a tuned threshold: 8, 7 and 8 for the three that
+    /// returned what was asked for, and 1 for each of the four that did not. Any cutoff in 2..7
+    /// gives the same answer, so the existing 3+ boundary is kept rather than fitted.</para>
+    ///
+    /// <para><c>none</c> stays keyed to the total, because it means the store said nothing and
+    /// triggers a different response shape. Returning facts under <c>coverage: none</c> would be a
+    /// worse lie than the one this fixes.</para>
+    /// </remarks>
+    public static RecallCoverage ClassifyCoverage(int matchedFactCount, int corroboratedCount) =>
+        matchedFactCount == 0 ? RecallCoverage.None
+        : corroboratedCount >= 3 ? RecallCoverage.High
+        : RecallCoverage.Partial;
+
+    /// <summary>Lanes that independently found this candidate.</summary>
+    public static int LanesThatFound(RecallCandidate candidate)
     {
-        0 => RecallCoverage.None,
-        1 or 2 => RecallCoverage.Partial,
-        _ => RecallCoverage.High,
-    };
+        ArgumentNullException.ThrowIfNull(candidate);
+
+        return (candidate.OverlapRank is null ? 0 : 1)
+            + (candidate.LexicalRank is null ? 0 : 1)
+            + (candidate.VectorRank is null ? 0 : 1);
+    }
+
+    /// <summary>Candidates more than one lane found — the input to <see cref="ClassifyCoverage"/>.</summary>
+    /// <remarks>
+    /// Public because the boundary is the whole rule and it is not reachable from a unit test of
+    /// <c>Pack</c>: <see cref="CannedFact"/> carries no numeric id, so the lexical ranks that make
+    /// a candidate corroborated only exist against a real store. A <c>&gt;= 1</c> here counts every
+    /// candidate and silently restores the count-based classification this replaced.
+    /// </remarks>
+    public static int Corroborated(IEnumerable<RecallCandidate> candidates)
+    {
+        ArgumentNullException.ThrowIfNull(candidates);
+
+        return candidates.Count(candidate => LanesThatFound(candidate) > 1);
+    }
 
     /// <summary>Ranks by term overlap alone — the lexical lane contributes nothing.</summary>
     /// <remarks>
@@ -211,7 +261,7 @@ public static class RecallEngine
     {
         var candidates = BuildCandidates(
             query, facts, currentSessionFacts, priorSessionFacts, lexicalRanks, vectorRanks);
-        var coverage = ClassifyCoverage(candidates.Count);
+        var coverage = ClassifyCoverage(candidates.Count, Corroborated(candidates));
         var tokensUsed = ApplyBudget(candidates, budgetTokens);
 
         var includedLines = new List<string>();
@@ -307,7 +357,7 @@ public static class RecallEngine
             candidates,
             budgetTokens,
             tokensUsed,
-            ClassifyCoverage(candidates.Count));
+            ClassifyCoverage(candidates.Count, Corroborated(candidates)));
     }
 
     /// <summary>

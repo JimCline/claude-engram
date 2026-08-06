@@ -46,14 +46,83 @@ public class RecallEngineTests
     }
 
     [Theory]
-    [InlineData(0, RecallCoverage.None)]
-    [InlineData(1, RecallCoverage.Partial)]
-    [InlineData(2, RecallCoverage.Partial)]
-    [InlineData(3, RecallCoverage.High)]
-    [InlineData(10, RecallCoverage.High)]
-    public void ClassifyCoverage_UsesMatchedFactCountThresholds(int matchedCount, RecallCoverage expected)
+    [InlineData(0, 0, RecallCoverage.None)]
+    [InlineData(1, 0, RecallCoverage.Partial)]
+    [InlineData(2, 1, RecallCoverage.Partial)]
+    [InlineData(3, 3, RecallCoverage.High)]
+    [InlineData(10, 4, RecallCoverage.High)]
+    public void ClassifyCoverage_UsesLaneAgreementThresholds(int matchedCount, int corroborated, RecallCoverage expected)
     {
-        Assert.Equal(expected, RecallEngine.ClassifyCoverage(matchedCount));
+        Assert.Equal(expected, RecallEngine.ClassifyCoverage(matchedCount, corroborated));
+    }
+
+    /// <summary>
+    /// A pile of single-lane hits is not coverage, however tall it is.
+    /// </summary>
+    /// <remarks>
+    /// The case this rule exists for, measured on the author's store: "weekend saturday personal
+    /// activity outing" returned seven candidates, six of them engineering notes about lint tests
+    /// and <c>BEGIN IMMEDIATE</c> that bm25 reached through a shared stem, and the count called it
+    /// <c>high</c> — which is the value that suppresses the <c>gaps:</c> line. The model was told
+    /// memory had this covered.
+    /// </remarks>
+    [Fact]
+    public void ClassifyCoverage_ManyCandidatesButNoLaneAgrees_IsNotHigh()
+    {
+        Assert.Equal(RecallCoverage.Partial, RecallEngine.ClassifyCoverage(matchedFactCount: 7, corroboratedCount: 1));
+    }
+
+    /// <summary>
+    /// <c>none</c> still means the store said nothing, not that nothing was corroborated.
+    /// </summary>
+    /// <remarks>
+    /// It selects a different response shape — under five lines, per the spec — so returning facts
+    /// beneath it would be a worse lie than the one lane agreement was introduced to fix.
+    /// </remarks>
+    [Fact]
+    public void ClassifyCoverage_UncorroboratedCandidatesAreStillCandidates()
+    {
+        Assert.Equal(RecallCoverage.Partial, RecallEngine.ClassifyCoverage(matchedFactCount: 2, corroboratedCount: 0));
+        Assert.Equal(RecallCoverage.None, RecallEngine.ClassifyCoverage(matchedFactCount: 0, corroboratedCount: 0));
+    }
+
+    /// <summary>
+    /// One lane is not agreement. This is the boundary the whole rule rests on.
+    /// </summary>
+    [Fact]
+    public void Corroborated_CountsOnlyCandidatesMoreThanOneLaneFound()
+    {
+        RecallCandidate Found(long id, int? overlap, int? lexical, int? vector) => new(
+            FactId: id, Handle: $"f{id}", Line: "x", Fused: 0.1,
+            OverlapRank: overlap, LexicalRank: lexical, VectorRank: vector,
+            Origin: FactOrigin.LongTerm, Tokens: 4, Packed: true);
+
+        // The measured shape of a thin result: a pile of lone bm25 hits behind one real match.
+        var candidates = new List<RecallCandidate>
+        {
+            Found(1, overlap: 1, lexical: 1, vector: null),
+            Found(2, overlap: null, lexical: 2, vector: null),
+            Found(3, overlap: null, lexical: 3, vector: null),
+            Found(4, overlap: null, lexical: 4, vector: null),
+            Found(5, overlap: 2, lexical: null, vector: null),
+        };
+
+        Assert.Equal(1, RecallEngine.Corroborated(candidates));
+        Assert.Equal(
+            RecallCoverage.Partial,
+            RecallEngine.ClassifyCoverage(candidates.Count, RecallEngine.Corroborated(candidates)));
+    }
+
+    [Fact]
+    public void LanesThatFound_CountsEachLaneOnce()
+    {
+        var candidate = new RecallCandidate(
+            FactId: 1, Handle: "f1", Line: "x", Fused: 0.1,
+            OverlapRank: 1, LexicalRank: 2, VectorRank: null,
+            Origin: FactOrigin.LongTerm, Tokens: 4, Packed: true);
+
+        Assert.Equal(2, RecallEngine.LanesThatFound(candidate));
+        Assert.Equal(0, RecallEngine.LanesThatFound(candidate with { OverlapRank = null, LexicalRank = null }));
     }
 
     [Fact]
