@@ -306,12 +306,18 @@ compaction. `--auto` declines silently unless `[indexing] auto_index_on_session_
 true` is set, a store already exists, and the directory actually is a git checkout — a
 shell that happens to start in `$HOME` must not index `$HOME`.
 
-Today's analyzers are tier 0 of D24: managed code in-core, regex-shaped, no external
-dependencies. Deeper tiers — tree-sitter grammars, a Roslyn sidecar for C# — slot into the
-same language registry without changing what tier 0 already wrote, because the grammar
-version and analyzer version are recorded in the store and a bump forces re-analysis.
-`engram doctor` reports the index per registered repo: how many files, into which project
-path, how stale.
+The default analyzers are tier 0 of D24: managed code in-core, regex-shaped, no external
+dependencies. C# has tier 2: `engram-roslyn`, a separate Roslyn process (D1 keeps Roslyn
+out of the core binary) that the indexer batch-feeds over stdin/stdout when the sidecar
+sits beside the `engram` executable, or wherever `ENGRAM_ROSLYN_SIDECAR` points. It
+replaces symbol and import facts with syntax-tree-accurate ones — nested types stop
+masquerading as top-level — while keeping tier 0's file impression, and it formats the
+imports fact byte-identically to tier 0, so swapping tiers rewrites nothing that did not
+change. Anything that stops the sidecar (absent, no runtime, hung) silently leaves that
+run at tier 0. Tree-sitter grammars (tier 1) for the other languages remain future work,
+slotting into the same registry, because the grammar version and analyzer version are
+recorded in the store and a bump forces re-analysis. `engram doctor` reports the index
+per registered repo: how many files, into which project path, how stale.
 
 ### Slash commands
 

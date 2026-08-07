@@ -3,7 +3,7 @@ using Microsoft.Data.Sqlite;
 
 namespace Engram.Core;
 
-public sealed record IndexOptions(string Root, bool Apply, bool Drain, bool Full);
+public sealed record IndexOptions(string Root, bool Apply, bool Drain, bool Full, string? SidecarPath = null);
 
 public sealed record IndexReport(
     string RepoPath,
@@ -146,9 +146,12 @@ public static class CodeIndexer
             }
         }
 
+        var deep = DeepAnalyses(root, changed, options.SidecarPath, notes);
+
         foreach (var rel in changed)
         {
-            ProcessFile(connection, repoPath, root, rel, shas[rel], options.Apply, now, counters, notes);
+            deep.TryGetValue(rel, out var analysis);
+            ProcessFile(connection, repoPath, root, rel, shas[rel], options.Apply, now, counters, notes, analysis);
         }
 
         foreach (var rel in deletions)
@@ -183,6 +186,58 @@ public static class CodeIndexer
             Notes: notes);
     }
 
+    /// <summary>
+    /// Batch pre-pass for files whose language declares tier 2 (D24): one sidecar process
+    /// for the whole run, results keyed by relative path. Anything that stops it — no
+    /// binary beside the executable, no runtime, a hang — leaves the batch at tier 0,
+    /// because the deep tier is an upgrade, never a requirement.
+    /// </summary>
+    private static Dictionary<string, SidecarAnalysis> DeepAnalyses(
+        string root,
+        List<string> changed,
+        string? sidecarPath,
+        List<string> notes)
+    {
+        var deep = changed.Where(rel => LanguageRegistry.Resolve(rel).Tier == 2).ToList();
+        if (deep.Count == 0)
+        {
+            return [];
+        }
+
+        var sidecar = sidecarPath ?? RoslynSidecar.Locate(Environment.GetEnvironmentVariable);
+        if (sidecar is null)
+        {
+            return [];
+        }
+
+        var inputs = new List<(string RelativePath, string Content)>();
+        foreach (var rel in deep)
+        {
+            try
+            {
+                inputs.Add((rel, File.ReadAllText(Path.Combine(root, rel))));
+            }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+            {
+                // ProcessFile reports the unreadable file; the sidecar just never sees it.
+            }
+        }
+
+        // Ten seconds to start plus 50 ms a file: parsing costs milliseconds, and the
+        // bound exists to kill a hung process, not to race a slow one.
+        var results = RoslynSidecar.Analyze(
+            sidecar, inputs, TimeSpan.FromMilliseconds(10_000 + (50 * inputs.Count)));
+
+        if (results is null)
+        {
+            notes.Add($"deep analyzer did not answer; {deep.Count} file(s) took tier 0");
+            return [];
+        }
+
+        notes.Add($"tier 2: deep analyzer covered {results.Count} of {deep.Count} file(s)");
+        return results;
+    }
+
     private sealed class Counters
     {
         public int Written;
@@ -200,7 +255,8 @@ public static class CodeIndexer
         bool apply,
         DateTimeOffset now,
         Counters counters,
-        List<string> notes)
+        List<string> notes,
+        SidecarAnalysis? deep)
     {
         string content;
         try
@@ -216,6 +272,11 @@ public static class CodeIndexer
         var language = LanguageRegistry.Resolve(rel);
         var filePath = CodePaths.ForFile(repoPath, rel);
         var candidates = CodeAnalyzer.Analyze(filePath, content, language);
+        if (deep is not null)
+        {
+            candidates = RoslynSidecar.Merge(filePath, candidates, deep);
+        }
+
         var live = ReadLiveUnder(connection, filePath);
 
         var evidence = $"{rel} @ {sha[..Math.Min(8, sha.Length)]}";

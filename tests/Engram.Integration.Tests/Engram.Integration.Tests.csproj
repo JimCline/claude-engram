@@ -18,6 +18,10 @@
   <ItemGroup>
     <ProjectReference Include="../../src/Engram.Core/Engram.Core.csproj" />
     <ProjectReference Include="../../src/Engram.Cli/Engram.Cli.csproj" />
+    <!-- Builds the sidecar so its tests can drive the real binary, without linking
+         Roslyn into this process (D1). -->
+    <ProjectReference Include="../../src/Engram.Sidecar.Roslyn/engram-roslyn.csproj"
+                      ReferenceOutputAssembly="false" />
   </ItemGroup>
 
 </Project>

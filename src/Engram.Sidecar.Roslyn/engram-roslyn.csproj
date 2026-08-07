@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- D1/D24 tier 2: Roslyn never links into the core binary. This publishes
+       framework-dependent on purpose — measured 2026-08-07: 16 MB against 99 MB
+       self-contained, identical ~40 ms warm start — because every machine that installed
+       Engram had an SDK (a superset of the runtime) at install time, and a machine that
+       later loses it degrades to tier 0 silently rather than failing. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>engram-roslyn</AssemblyName>
+    <RootNamespace>Engram.Sidecar.Roslyn</RootNamespace>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" />
+  </ItemGroup>
+
+</Project>

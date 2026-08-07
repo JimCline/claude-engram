@@ -76,18 +76,22 @@ public class LanguageRegistryTests
     }
 
     /// <summary>
-    /// D24's other direction: the analyzer must not know any language by name. A language
-    /// id appearing in CodeAnalyzer.cs means a switch grew somewhere and the row stopped
-    /// being the whole story.
+    /// D24's other direction: neither the analyzer nor the tier drivers may know any
+    /// language by name — deep tiers key off the registry's Tier column, so a language id
+    /// appearing in these files means a switch grew somewhere and the row stopped being
+    /// the whole story.
     /// </summary>
     [Fact]
-    public void CodeAnalyzer_CarriesNoLanguageIdLiterals()
+    public void AnalyzerAndTierDrivers_CarryNoLanguageIdLiterals()
     {
-        var source = File.ReadAllText(Path.Combine(SourceRoot(), "src", "Engram.Core", "CodeAnalyzer.cs"));
-
-        foreach (var language in LanguageRegistry.All)
+        foreach (var file in new[] { "CodeAnalyzer.cs", "CodeIndexer.cs", "RoslynSidecar.cs" })
         {
-            Assert.DoesNotContain($"\"{language.Id}\"", source, StringComparison.OrdinalIgnoreCase);
+            var source = File.ReadAllText(Path.Combine(SourceRoot(), "src", "Engram.Core", file));
+
+            foreach (var language in LanguageRegistry.All)
+            {
+                Assert.DoesNotContain($"\"{language.Id}\"", source, StringComparison.OrdinalIgnoreCase);
+            }
         }
     }
 

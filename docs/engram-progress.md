@@ -152,9 +152,25 @@ Three things the plan promised in M1 and never got, built the same night as M3:
   permissions grant as reads; revise stays withheld beside forget, because closing a
   belief should cost a confirmation prompt.
 
-Still absent after tonight, in plan order: the Roslyn sidecar (packaging fork recorded
-under "Open work" below), tree-sitter, the salience writer (M5, and deliberately blind
-until there is a retrieval benchmark to tune against), `compact` for the fact store, D5.
+- **Roslyn sidecar (tier 2, D1)** — `engram-roslyn`, a separate Roslyn process the indexer
+  batch-feeds JSON-lines over stdin/stdout; one process per run, kill-on-timeout, and any
+  failure leaves the batch at tier 0, because the deep tier is an upgrade, never a
+  requirement. Packaging measured before building: framework-dependent 16 MB against
+  self-contained 99 MB, identical ~40 ms warm start — FD won because every install ran
+  from an SDK, and losing the runtime later degrades silently. The merge contract is the
+  part that had to be proven: tier 2 replaces symbol and import facts, keeps tier 0's
+  file impression, and formats the imports body byte-identically, so a tier swap
+  supersedes nothing. The guard went red when the separator was deliberately broken —
+  but only the unit test did; the end-to-end parity test sat green until its fixture got
+  a second import, because a one-element join reads identically under any separator. The
+  driver keys off `Tier == 2` and the language-id lint now covers it. What tier 2
+  actually fixes on day one: tier 0's 0–4-space indent window reads a nested type in a
+  file-scoped namespace as top-level; Roslyn sees the nesting and writes nothing there.
+
+Still absent after tonight, in plan order: tree-sitter, the salience writer (M5, and
+deliberately blind until there is a retrieval benchmark to tune against), `compact` for
+the fact store, D5, and the installer wiring that puts `engram-roslyn` beside the binary
+— until that lands, a production install still reads C# at tier 0.
 
 ### D42 amended: a start time you compute is not a start time
 
@@ -338,12 +354,11 @@ code-structure recall can finally hit or miss something.
 
 What remains, in the order the plan argues for:
 
-- **Roslyn sidecar (tier 2, D1)** — separate process, never opens the store, returns
-  entities/facts for the core to write. First real exercise of D2's adopt/merge if it
-  re-keys deep symbols. The packaging question is undesigned: Roslyn cannot AOT-link, so
-  the sidecar is either framework-dependent (requires a runtime the installer does not
-  guarantee at runtime) or self-contained (~80 MB beside a 22 MB binary). Decide that on
-  paper before writing code.
+- **Sidecar deployment** — `engram-roslyn` builds, tests, and merges (above), but
+  `install.sh` does not yet place it beside the binary, so the slice is inert in
+  production. The locator is already done: `ENGRAM_ROSLYN_SIDECAR` overrides, else
+  beside the executable — the same layout the test ProjectReference produces for free.
+  `doctor` should learn to report the sidecar's presence when this lands.
 - **tree-sitter (tier 1, D24)** — real grammars for the languages regex is faking.
 - **Overload grammar v2 (D27)** — nested types, overloads, member fragments. A grammar
   bump re-keys, which is adopt/merge's job, and `code_index_version` already forces the

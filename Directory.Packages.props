@@ -21,6 +21,9 @@
          GHSA-2m69-gcr7-jv3q (high, affects <= 2.1.11). Warnings are errors, so this is a
          build break rather than an advisory. Pinned forward to the first clean release. -->
     <PackageVersion Include="SQLitePCLRaw.bundle_e_sqlite3" Version="2.1.12" />
+    <!-- Roslyn, for the tier-2 sidecar only — engram-roslyn.csproj is the sole referent,
+         and D1 keeps it out of every other project. -->
+    <PackageVersion Include="Microsoft.CodeAnalysis.CSharp" Version="5.6.0" />
     <!-- The managed binding and the native llama.cpp build it loads. Their versions move
          together: the binding P/Invokes an unversioned C API, so a backend from a different
          release is an undefined-symbol crash at first load rather than a restore failure. -->

@@ -223,7 +223,7 @@ public static class CodeAnalyzer
         return end < 0 ? content[start..] : content[start..end];
     }
 
-    private static string Cap(string text)
+    internal static string Cap(string text)
     {
         if (TokenEstimator.Estimate(text) <= ImpressionExtractor.MaxTokens)
         {
