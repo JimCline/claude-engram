@@ -249,9 +249,31 @@ public static class BackupCommand
         var named = args.FirstOrDefault(a => !a.StartsWith('-'));
         var path = named ?? FactJournal.PathIn(home);
 
+        return ReplayInto(
+            home,
+            path,
+            apply,
+            $"error: no fact journal at {path}. Run 'engram backup take' to write one.",
+            stdout,
+            stderr);
+    }
+
+    /// <summary>
+    /// The shared back half of <c>backup replay</c> and top-level <c>import</c> — one flow,
+    /// because a bundle is a filtered journal and two ingestion paths would diverge the
+    /// first time one learns a lesson.
+    /// </summary>
+    internal static int ReplayInto(
+        EngramHome home,
+        string path,
+        bool apply,
+        string missingFileError,
+        TextWriter stdout,
+        TextWriter stderr)
+    {
         if (!File.Exists(path))
         {
-            stderr.WriteLine($"error: no fact journal at {path}. Run 'engram backup take' to write one.");
+            stderr.WriteLine(missingFileError);
             return 1;
         }
 

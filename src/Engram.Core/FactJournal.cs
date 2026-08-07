@@ -91,20 +91,7 @@ public static class FactJournal
             using (var stream = new FileStream(partial, FileMode.Create, FileAccess.Write, FileShare.None))
             using (var writer = new StreamWriter(stream))
             {
-                var header = new JsonObject
-                {
-                    ["format"] = "engram-facts",
-                    ["format_version"] = FormatVersion,
-                    ["schema_version"] = EngramDatabase.ReadSchemaVersion(connection),
-                    ["written_at"] = now.ToUniversalTime().ToString("o", CultureInfo.InvariantCulture),
-                };
-                writer.WriteLine(header.ToJsonString());
-
-                foreach (var fact in Read(connection))
-                {
-                    writer.WriteLine(ToJson(fact).ToJsonString());
-                    written++;
-                }
+                written = WriteTo(connection, writer, pathPrefix: null, now);
             }
 
             File.Move(partial, final, overwrite: true);
@@ -117,6 +104,61 @@ public static class FactJournal
 
         return written;
     }
+
+    /// <summary>
+    /// Streams the journal to a writer — the whole store, or one subtree when
+    /// <paramref name="pathPrefix"/> is given. This is what <c>export</c> produces, and the
+    /// format is exactly the backup journal's on purpose: a bundle that is a filtered
+    /// <c>facts.jsonl</c> is one <c>Parse</c>/<c>Replay</c> away from any store, with no
+    /// second format to keep honest.
+    /// </summary>
+    public static int WriteTo(
+        SqliteConnection connection,
+        TextWriter writer,
+        string? pathPrefix,
+        DateTimeOffset now)
+    {
+        ArgumentNullException.ThrowIfNull(connection);
+        ArgumentNullException.ThrowIfNull(writer);
+
+        var header = new JsonObject
+        {
+            ["format"] = "engram-facts",
+            ["format_version"] = FormatVersion,
+            ["schema_version"] = EngramDatabase.ReadSchemaVersion(connection),
+            ["written_at"] = now.ToUniversalTime().ToString("o", CultureInfo.InvariantCulture),
+        };
+        if (pathPrefix is not null)
+        {
+            header["path"] = pathPrefix;
+        }
+
+        writer.WriteLine(header.ToJsonString());
+
+        var written = 0;
+        foreach (var fact in Read(connection))
+        {
+            if (pathPrefix is not null && !InSubtree(fact.Subject, pathPrefix))
+            {
+                continue;
+            }
+
+            writer.WriteLine(ToJson(fact).ToJsonString());
+            written++;
+        }
+
+        return written;
+    }
+
+    /// <summary>
+    /// The subtree boundary MoveSubtree uses: the path itself, or a descendant across
+    /// <c>/</c> or <c>#</c> — never a sibling that merely shares a spelling
+    /// (<c>/code/api-docs</c> is not under <c>/code/api</c>).
+    /// </summary>
+    private static bool InSubtree(string subject, string prefix) =>
+        subject.Length >= prefix.Length
+        && subject.StartsWith(prefix, StringComparison.Ordinal)
+        && (subject.Length == prefix.Length || subject[prefix.Length] is '/' or '#');
 
     /// <summary>Every fact in the store, oldest first, with its subject and object resolved.</summary>
     public static IEnumerable<JournalFact> Read(SqliteConnection connection)

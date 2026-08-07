@@ -54,6 +54,8 @@ public static class CliApp
             "backup" => BackupCommand.Run(homePath, rest, stdout, stderr),
             "queue" => QueueCommand.Run(homePath, rest, stdout, stderr),
             "repair" => RepairCommand.Run(homePath, rest, stdout, stderr),
+            "export" => ExportCommand.Run(homePath, rest, stdout, stderr),
+            "import" => ImportCommand.Run(homePath, rest, stdout, stderr),
             _ => Usage(stderr),
         };
     }
@@ -97,6 +99,8 @@ public static class CliApp
         writer.WriteLine("  backup <take|list|prune|restore|replay|import>  snapshot the store, or put the facts back");
         writer.WriteLine("  queue <status|compact>             report the file-touched edit queue, or fold it down");
         writer.WriteLine("  repair [--apply]                   rebuild derived state — the lexical index, denormalized paths — never facts");
+        writer.WriteLine("  export [--path <prefix>] [--out <file>]  write facts as a portable JSONL bundle (stdout by default)");
+        writer.WriteLine("  import <file> [--apply]            add a bundle's facts; never rewrites or closes what the store already has");
         writer.WriteLine();
         writer.WriteLine("queue options:");
         writer.WriteLine("  compact [--apply]                  keep the newest entry per file and delete the rest");
