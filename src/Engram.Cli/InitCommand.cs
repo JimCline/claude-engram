@@ -20,6 +20,7 @@ internal static class InitCommand
         var endpoint = Value(rest, "--endpoint");
         var dimensions = Value(rest, "--dim");
         var apiKeyVariable = Value(rest, "--api-key-env");
+        var memoryPrecedence = Value(rest, "--memory-precedence");
 
         var home = EngramHome.ResolveFromProcess(homePath);
         var results = EngramInitializer.Initialize(home);
@@ -27,6 +28,34 @@ internal static class InitCommand
         foreach (var result in results)
         {
             stdout.WriteLine(result.Created ? result.Path : $"{result.Path} already exists");
+        }
+
+        // Ahead of the embedding branch below, and not inside it: memory precedence has nothing to
+        // do with embeddings, and the early return for "no embedding work asked for" would
+        // otherwise swallow it whenever this is the only flag given.
+        if (memoryPrecedence is not null)
+        {
+            if (!MemorySettings.TryParse(memoryPrecedence, out var precedence))
+            {
+                stderr.WriteLine($"error: --memory-precedence must be one of "
+                    + $"{string.Join(", ", MemorySettings.Names)}, not '{memoryPrecedence}'.");
+                return 1;
+            }
+
+            stdout.WriteLine();
+            var landed = ConfigWriter.Apply(
+                home,
+                MemorySettings.Section,
+                [(MemorySettings.Key, ConfigEditor.Quote(MemorySettings.ToText(precedence)))],
+                force,
+                DateTimeOffset.UtcNow,
+                stdout,
+                stderr);
+
+            if (landed != 0)
+            {
+                return landed;
+            }
         }
 
         if (!withEmbeddings && provider is null)
@@ -128,7 +157,8 @@ internal static class InitCommand
 
     private static readonly string[] Switches = ["--with-embeddings", "--force"];
 
-    private static readonly string[] Settings = ["--provider", "--model", "--endpoint", "--dim", "--api-key-env"];
+    private static readonly string[] Settings =
+        ["--provider", "--model", "--endpoint", "--dim", "--api-key-env", "--memory-precedence"];
 
     private static bool Understood(string[] args)
     {

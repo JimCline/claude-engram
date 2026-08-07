@@ -21,18 +21,28 @@ public static class PrimerBuilder
     private static readonly string[] PreferredScopeOrder = ["user", "project", "code", "session"];
 
     /// <summary>
-    /// The primer delivered at session start. Carries only what a static tool description
-    /// cannot: how much is stored right now, and what it covers. The standing guidance —
-    /// recall before exploring, remember what you learn, digest before the end — lives in
-    /// the tool descriptions instead, because those persist for the whole session while
-    /// this channel is ordinary context and is summarized away by compaction (D15).
-    /// Returns an empty string when there is nothing stored and so nothing to report.
+    /// The primer delivered at session start. Carries what a static tool description cannot:
+    /// how much is stored right now, what it covers, and the one claim that has to vary per
+    /// install — where this agent's durable memory lives (<see cref="MemorySettings"/>). The
+    /// rest of the standing guidance — recall before exploring, remember what you learn,
+    /// digest before the end — lives in the tool descriptions instead, because those persist
+    /// for the whole session while this channel is ordinary context and is summarized away by
+    /// compaction (D15).
     /// </summary>
-    public static string Build(IReadOnlyList<CannedFact> facts)
+    /// <remarks>
+    /// The precedence line goes first because <see cref="TryAppendLine"/> drops whatever does
+    /// not fit the budget, and of the three things here it is the only one whose absence
+    /// changes what the agent does. It is also why an empty store no longer produces an empty
+    /// primer: a fresh install with nothing recorded is precisely the session where a
+    /// competing memory system wins by default, so it is the session that most needs telling.
+    /// Returns an empty string only when there is nothing stored and precedence is off.
+    /// </remarks>
+    public static string Build(IReadOnlyList<CannedFact> facts, MemoryPrecedence precedence)
     {
         var lines = new List<string>();
         var tokens = 0;
 
+        TryAppendLine(lines, ref tokens, MemorySettings.PrimerLine(precedence));
         TryAppendLine(lines, ref tokens, CoverageLine(facts));
 
         AppendExamples(lines, ref tokens, TopFacts(facts, MaxExampleFacts));
@@ -45,11 +55,17 @@ public static class PrimerBuilder
     /// context is spent on its task, and what it needs is the instruction and the shape
     /// of what is already known, not a demonstration.
     /// </summary>
-    public static string BuildForSubagent(IReadOnlyList<CannedFact> facts)
+    /// <remarks>
+    /// It repeats the precedence line rather than relying on the parent's, because SessionStart
+    /// never fires for a subagent — whatever the parent was told about where memory lives reaches
+    /// the child only if the child is told the same thing through this path.
+    /// </remarks>
+    public static string BuildForSubagent(IReadOnlyList<CannedFact> facts, MemoryPrecedence precedence)
     {
         var lines = new List<string> { SubagentInstruction };
         var tokens = TokenEstimator.Estimate(SubagentInstruction);
 
+        TryAppendLine(lines, ref tokens, MemorySettings.PrimerLine(precedence));
         TryAppendLine(lines, ref tokens, CoverageLine(facts));
 
         return string.Join('\n', lines);

@@ -63,6 +63,16 @@ none of it has a PowerShell counterpart. The TODOs, in the order they should pro
    daemon's fds through `/bin/sh` to `/dev/null` precisely so a piped caller's `ReadToEnd` does not
    block forever, and the ps1 harness would hit exactly that if the Windows path does not.
 
+10. **Memory precedence (D51, 2026-08-07).** `install.sh` gained `--memory-precedence`
+    (`engram-first` | `engram-only` | `off`) and, in ask-each-step mode, a three-way prompt
+    reading from `/dev/tty`. `install.ps1` has neither. The lighter half of this ports for free:
+    the **default arrives in the shipped config**, so a PowerShell install already lands
+    `engram-first` with no step at all — what is missing is only the ability to choose otherwise
+    during install, and `engram init --memory-precedence <value>` covers that by hand meanwhile.
+    The prompt is the part needing real care: it is the first non-yes/no question either
+    installer asks, so the PowerShell port cannot reuse the `ask_step` shape and needs its own
+    default-on-empty-input behaviour proven at a terminal.
+
 Two constraints on the port, both from measured history:
 
 - The **tri-state falsification** is part of each optional step's definition, not

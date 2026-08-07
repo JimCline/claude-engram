@@ -119,6 +119,7 @@ public static class Diagnostics
         Try(checks, "store", list => list.Add(CheckStore(home, connection)));
         Try(checks, "server", list => list.Add(CheckServer(home, lifecycle, executablePath)));
         Try(checks, "claude code", list => list.Add(CheckClaudeCode(claudeSettingsPath ?? home.ClaudeSettingsPath)));
+        Try(checks, "memory", list => list.Add(CheckMemory(config)));
         Try(checks, "embedding", list => CheckEmbedding(home, embedding, environment, reachOut, client, list));
         Try(checks, "vector index", list => list.Add(CheckIndex(home, connection, embedding)));
         Try(checks, "metal", list => CheckMetal(home, embedding, list));
@@ -133,6 +134,39 @@ public static class Diagnostics
         }
 
         return new DiagnosticReport(checks);
+    }
+
+    /// <summary>What the primer tells the agent about where its durable memory lives.</summary>
+    /// <remarks>
+    /// <c>off</c> is a supported answer and reports as such rather than as a fault (D37) — an
+    /// agent with no competing memory system needs nothing said. A value that will not parse is a
+    /// warning rather than broken: recall, capture and the primer all still work, and the only
+    /// consequence is that the line says what the default says instead of what was typed.
+    /// </remarks>
+    private static Diagnosis CheckMemory(ConfigFile config)
+    {
+        var settings = MemorySettings.Read(config);
+
+        if (settings.Problems.Count > 0)
+        {
+            return new Diagnosis(
+                "memory",
+                DiagnosisState.Warn,
+                settings.Problems[0],
+                $"engram init --memory-precedence {string.Join('|', MemorySettings.Names)}");
+        }
+
+        return settings.Precedence switch
+        {
+            MemoryPrecedence.Off => new Diagnosis(
+                "memory",
+                DiagnosisState.Off,
+                "precedence off — the primer says nothing about which memory store to prefer"),
+            _ => new Diagnosis(
+                "memory",
+                DiagnosisState.Ok,
+                $"precedence {MemorySettings.ToText(settings.Precedence)}"),
+        };
     }
 
     /// <summary>

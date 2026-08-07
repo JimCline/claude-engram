@@ -82,15 +82,24 @@ public sealed class EngramMcpTools
     }
 
     [McpServerTool(Name = "engram_remember")]
+    // Opening on durability and on the trigger is the whole point of this wording. It previously
+    // opened "Save a durable note to this session's working memory", which reads as scratch space,
+    // and it never named a trigger at all — so against a memory system whose instructions fire on
+    // the literal words "remember this", it lost every race it was in, correctly. The competing
+    // system is not necessarily Claude Code's file-based memory; it is whatever the agent was told
+    // about somewhere Engram cannot see, which is why the claim is stated here rather than assumed.
+    // How Engram ranks against such a system is a per-install preference and lives in the primer
+    // instead (MemorySettings) — a [Description] is a compile-time constant and cannot vary (D51).
     [Description(
-        "Save a durable note to this session's working memory — state you would otherwise have to keep " +
-        "repeating in context, and would lose to compaction or to a subagent returning an incomplete " +
-        "report. Call it whenever you learn something worth keeping for the rest of this session: a " +
-        "decision, a constraint, a partial result, a dead end already ruled out. If you are a subagent, " +
-        "pass your own name in `agent` so the note is attributed to whichever worker learned it. " +
+        "Engram's durable memory, and where anything worth keeping goes even when another memory " +
+        "system is available. Call it when the user asks you to remember or save something, and " +
+        "whenever you learn something durable: a decision, a constraint, a partial result, a dead end " +
+        "already ruled out — state you would otherwise repeat in context and would lose to compaction. " +
         "`engram_recall` ranks these above long-term memory for the rest of this session, and they stay " +
-        "recallable in later sessions too — so this is worth calling for anything that would still be true " +
-        "next week, not only for what you need in the next ten minutes.")]
+        "recallable in later ones, so this is for anything still true next week rather than only the " +
+        "next ten minutes. Subagents pass their own name in `agent`. When restating something the user " +
+        "just said, pass the bracketed id of its automatic capture in `supersedes` so the rewrite " +
+        "replaces it rather than duplicating it.")]
     public static string Remember(
         EngramHome home,
         McpSessionId session,

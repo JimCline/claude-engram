@@ -32,7 +32,7 @@ Check memory BEFORE reading files or exploring the repo. Searches Engram's store
   Maximum tokens to spend on the response. Defaults to 500.
 
 tool: engram_remember
-Save a durable note to this session's working memory — state you would otherwise have to keep repeating in context, and would lose to compaction or to a subagent returning an incomplete report. Call it whenever you learn something worth keeping for the rest of this session: a decision, a constraint, a partial result, a dead end already ruled out. If you are a subagent, pass your own name in `agent` so the note is attributed to whichever worker learned it. `engram_recall` ranks these above long-term memory for the rest of this session, and they stay recallable in later sessions too — so this is worth calling for anything that would still be true next week, not only for what you need in the next ten minutes.
+Engram's durable memory, and where anything worth keeping goes even when another memory system is available. Call it when the user asks you to remember or save something, and whenever you learn something durable: a decision, a constraint, a partial result, a dead end already ruled out — state you would otherwise repeat in context and would lose to compaction. `engram_recall` ranks these above long-term memory for the rest of this session, and they stay recallable in later ones, so this is for anything still true next week rather than only the next ten minutes. Subagents pass their own name in `agent`. When restating something the user just said, pass the bracketed id of its automatic capture in `supersedes` so the rewrite replaces it rather than duplicating it.
   param: statement
   The fact to remember, as a short, self-contained statement.
   param: subject

@@ -55,7 +55,7 @@ shipped but nothing has yet been leaned on it.
 
 Licensed under [Apache-2.0](LICENSE).
 
-Start with the implementation plan — it records fifty decisions (D1–D50) resolving
+Start with the implementation plan — it records fifty-one decisions (D1–D51) resolving
 questions the spec left open, the places where the spec contradicts itself, and for each
 one the argument or measurement that settled it. `CLAUDE.md` holds the invariants that are
 easy to break by accident, most of which were paid for by breaking them.
@@ -127,6 +127,16 @@ it stopped. This matters most on a *re*install: replacing the binary requires st
 the daemon serving the old one, so before this step existed an upgrade ended with the
 server down and the summary still reporting success.
 
+An agent often arrives already carrying another memory system, described somewhere Engram
+cannot see — Claude Code's own file-based memory is the usual one, and its instructions fire
+on the literal words *"remember this."* Engram used to make no competing claim at all, so it
+lost that race, correctly. It now says which store wins, through one line in the session
+primer: `engram-first` (the default — Engram is primary for reads and writes, the other store
+still exists), `engram-only`, or `off` to say nothing. The default arrives with the shipped
+config, so a piped install gets it without answering anything; `--memory-precedence` pins it,
+and asking per step offers the three choices. Change it later with
+`engram init --memory-precedence <value>`, and `engram doctor` reports which one is in force.
+
 Embeddings are the one step that stays interactive in both modes, because provider and
 model are real tradeoffs — disk, download size, memory, languages — and the picker
 explains them (with arrow-key menus at a real terminal). Pin the answers with the
@@ -162,6 +172,7 @@ the Linux path.
 | `--no-tree-sitter` | Skip compiling the tree-sitter grammars into `~/.engram/lib`. |
 | `--no-sqlite-vec` | Skip fetching the sqlite-vec vector-search extension. |
 | `--no-start` | Leave the server stopped at the end. Start it later with `engram start`. |
+| `--memory-precedence P` | What the primer says about preferring Engram over another memory system: `engram-first` (default), `engram-only`, `off`. |
 | `--no-embeddings` | Skip the embedding step entirely; recall stays lexical. |
 | `--embedding-provider P` | Answer the provider question without a terminal: `none`, `local`, `ollama`, `openai-compat`, `openai`. |
 | `--embedding-model M` | Which local model (see `engram model list`), or what an endpoint calls its model. |

@@ -1,7 +1,7 @@
 # Engram — working rules
 
 Read `docs/engram-implementation-plan.md` before any non-trivial change. It holds
-fifty decisions (D1–D50) that resolve questions the spec left open, and each one was
+fifty-one decisions (D1–D51) that resolve questions the spec left open, and each one was
 reached by argument or measurement, not preference. `docs/engram-schema.sql` is the authority for
 database shape.
 
@@ -360,6 +360,27 @@ load-bearing half (D46).
 that answers them was written — cold start, not retrieval failure. No recorded query has yet missed
 a fact that existed when it was asked, so D18 still gates M4 shut. Check `valid_from` against the
 telemetry timestamp before reading any miss as a retrieval failure (D44).
+
+**Where memory lives is claimed in two channels, and neither may take the other's job.** An agent
+usually arrives carrying a second memory system described somewhere Engram cannot see, in
+instructions that are longer and fire on the literal words *remember this*. Engram made no competing
+claim at all until D51, and the only place it ever stated the write rule was the *subagent* primer —
+which reads as extending a baseline that was never established. The fix is split by whether something
+is a preference. `engram_remember`'s description opens on durability and names the trigger; that is
+unconditional, ships to everyone, and must keep both properties, because a rule with no trigger loses
+to one that has a trigger regardless of which is more correct. Whether another store is *subordinate*
+is a preference — those files are the user's — so it is `[memory] precedence` and rides the primer.
+Do not migrate either way: a `[Description]` is a compile-time constant and cannot vary per install,
+and the primer is ordinary context that decays between compactions, so the trigger cannot live there
+either. `SessionStart` matches `startup|resume|clear|compact`, so the line is re-injected wherever
+context was reset; `BuildForSubagent` repeats it rather than assuming the parent's, since
+`SessionStart` never fires for a subagent. Three details are load-bearing: the line goes **first**,
+because `TryAppendLine` drops what overruns the budget and this is the only line whose absence changes
+behaviour; an empty store therefore emits a primer unless precedence is `off`, since a store with
+nothing in it is exactly the session where the other system wins uncontested; and the D15 guard
+forbidding tool names in primer guidance carries **one** exemption, subtracted by exact string rather
+than by pattern, so every other way guidance could drift back still fails. Nothing about the model's
+actual preference is measured yet — the channels exist, adoption is a D18/D43 question (D51).
 
 ## Build constraints
 

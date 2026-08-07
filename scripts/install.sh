@@ -29,6 +29,9 @@ Usage: scripts/install.sh [options]
   --embedding-api-key-env VAR
                        Environment variable holding the endpoint's API key
   --no-embeddings      Skip embedding setup entirely
+  --memory-precedence P
+                       What the session primer says about preferring Engram over another
+                       memory system: engram-first (default), engram-only, or off
   --grant-permissions  Allow Claude Code to call Engram's memory tools without prompting
   --no-grant-permissions
                        Never grant them, and do not ask
@@ -72,6 +75,7 @@ embedding_model=""
 embedding_endpoint=""
 embedding_dim=""
 embedding_api_key_env=""
+memory_precedence=""
 # ask | yes | no. "ask" only ever asks a terminal; a non-interactive run declines, because
 # silence from a pipe is not consent to edit somebody's settings file.
 grant_permissions=ask
@@ -204,6 +208,14 @@ while [ $# -gt 0 ]; do
         --no-embeddings)
             no_embeddings=true
             shift
+            ;;
+        --memory-precedence)
+            if [ $# -lt 2 ]; then
+                echo "error: --memory-precedence requires a value" >&2
+                exit 2
+            fi
+            memory_precedence="$2"
+            shift 2
             ;;
         --grant-permissions)
             grant_permissions=yes
@@ -956,6 +968,53 @@ elif [ -t 0 ] && [ -r /dev/tty ]; then
     fi
 fi
 
+# --- 8c. Memory precedence ---
+
+# unchanged | set | failed. Unlike every other optional step there is nothing to install
+# here: the shipped config already says engram-first, so a run that asks nothing still
+# lands the default and this step exists only to say something else. That is also why
+# "everything" mode does not prompt — taking the defaults is already the answer, and a
+# question whose recommended reply changes nothing is a question not worth asking.
+memory_result=unchanged
+if [ -n "$memory_precedence" ]; then
+    if ! $apply; then
+        would "set memory precedence: engram init --memory-precedence $memory_precedence"
+    else
+        step "Memory"
+        # Same set -e shape as the other optional steps: a rejected value must not abort an
+        # install that has already put the binary, the PATH entry and the home in place.
+        if "$target" init --memory-precedence "$memory_precedence"; then
+            memory_result=set
+        else
+            memory_result=failed
+            say "could not set memory precedence; do it yourself with:"
+            say "  engram init --memory-precedence $memory_precedence"
+        fi
+    fi
+elif $apply && [ "$install_mode" = each ] && [ -t 0 ] && [ -r /dev/tty ]; then
+    step "Memory"
+    say "Agents often arrive carrying another memory system, described somewhere Engram"
+    say "cannot see. This is what the session primer says about which one wins:"
+    say "  1) engram-first  Engram is primary; the other store still exists   (default)"
+    say "  2) engram-only   Engram is the only durable store"
+    say "  3) off           say nothing; Engram competes on its tool descriptions alone"
+    printf '  Which? [1] '
+    memory_answer=""
+    read -r memory_answer < /dev/tty || true
+    case "$memory_answer" in
+        2) memory_precedence=engram-only ;;
+        3) memory_precedence=off ;;
+        *) memory_precedence=engram-first ;;
+    esac
+    if "$target" init --memory-precedence "$memory_precedence"; then
+        memory_result=set
+    else
+        memory_result=failed
+        say "could not set memory precedence; do it yourself with:"
+        say "  engram init --memory-precedence $memory_precedence"
+    fi
+fi
+
 # --- 9. Claude Code plugin ---
 
 # installed | no-claude | failed. Only read when the step runs.
@@ -1209,6 +1268,17 @@ if $apply; then
     else
         echo "  Vector search (sqlite-vec): skipped"
     fi
+    case "$memory_result" in
+        set)
+            echo "  Memory precedence: $memory_precedence"
+            ;;
+        failed)
+            echo "  Memory precedence: NOT set (init reported an error above); run: engram init --memory-precedence $memory_precedence"
+            ;;
+        *)
+            echo "  Memory precedence: engram-first (the shipped default)"
+            ;;
+    esac
     case "$embedding_result" in
         configured)
             echo "  Embeddings: configured (details above)"

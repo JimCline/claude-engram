@@ -1,6 +1,6 @@
 # Engram — progress snapshot
 
-**As of 2026-08-07.** Working tree clean, 50 decisions (D1–D50). M3's tier 0 shipped overnight
+**As of 2026-08-07.** Working tree clean, 51 decisions (D1–D51). M3's tier 0 shipped overnight
 on an explicit user override of D6's gate; tier 1 (D47) and grammar v2 (D48) followed.
 
 This is a handoff, not an authority. `CLAUDE.md` holds the invariants,
@@ -14,7 +14,7 @@ disagree, they win and this file is stale.
 
 1. `CLAUDE.md` — the invariants that are easy to break by accident. All of them were paid
    for by a real defect.
-2. `docs/engram-implementation-plan.md` — D1–D50. Skim the headings; read in full any
+2. `docs/engram-implementation-plan.md` — D1–D51. Skim the headings; read in full any
    decision you are about to touch.
 3. This file — for what is in flight and what the last session learned the hard way.
 
@@ -572,12 +572,56 @@ three that do start one take a private port through `ENGRAM_PORT` (new:
 and stop it in a `finally`. Full installer suite after the change: 40 passed, 0 failed, and
 the machine's `engram serve` count unchanged across the run.
 
+### Engram now says where memory lives, because the other system already did (D51)
+
+Jim, with feedback from a live session: the model was asked to remember something, wrote it to
+Claude Code's file-based memory, and reached Engram only as an afterthought. The model was
+right. Claude Code's memory block is long, specific, and fires on the literal words *"remember
+this."* Engram's answer at that moment was `engram_remember`'s description, which opened *"Save
+a durable note to this session's working memory"* — scratch space on its face — and named no
+trigger at all.
+
+Two causes the report did not reach. The standing guidance said to search Engram *"if the answer
+is not already in context or in the project's `memory/` directory"* — which ranks the other store
+first on **reads** too, in writing. And the `UserPromptSubmit` hook had already captured the
+statement before the model did anything, so writing to both systems produced *three* copies of one
+fact, not two. The only place Engram ever stated the write rule was the subagent primer, which
+reads as extending a baseline that was never established anywhere.
+
+The fix splits on whether something is a preference. Rewriting the tool description to open on
+durability and name the trigger is not one — it corrects an under-specified description and ships
+to everyone. Declaring another memory system subordinate is: those files are the user's and Engram
+did not put them there. So that half is `[memory] precedence` (`off | engram-first | engram-only`,
+default engram-first), delivered through the primer, because `[Description]` is a compile-time
+constant and cannot vary per install. The honest limit is recorded rather than buried: the primer
+is re-injected on `startup|resume|clear|compact` but decays between them, while the system prompt
+never does.
+
+The measurement went the useful way. The added config read is **below this machine's noise floor** —
+the shipped build alone spans p50 14.33–16.97 ms across four runs, and the build without the read
+measured 17.73 ms, inside that spread — so no cost is claimed in either direction. The rewritten
+description blew the tool-surface budget (3961 chars against 3800, `engram_remember` alone at 1013
+against a next-largest of 405) and was cut to fit rather than the ceiling being raised; it now ends
+up shorter than the wording it replaced.
+
+Eight falsifications, all checksummed. One no-opped on the first attempt: commenting out
+`precedence = "engram-first"` left `# precedence = "engram-first"`, which still satisfied the
+`Assert.Contains`. Chasing that found a real weakness — the same test asserted on an installer
+summary line printed from a catch-all branch that reads nothing, so it would have claimed
+`engram-first` whatever the config said. It now checks the config the install produced and runs a
+hook against it.
+
 ---
 
 ## Verified vs. not
 
 | claim | status |
 |---|---|
+| the primer states where durable memory lives, and a subagent gets it too | measured — 9 e2e guards on the published binary; falsified 8 ways including the hook ignoring config |
+| the D15 rule against tool names in primer guidance still holds | measured — one exact-string exemption, re-falsified afterwards by drifting generic guidance back in |
+| the config read costs the primer hooks nothing | **below the noise floor** — shipped build spans p50 14.33–16.97 ms across runs; no-read build 17.73 ms, inside it |
+| the model now actually prefers Engram in a live session | **not measured** — the channels are in place; adoption is a D18/D43 question and needs telemetry over time |
+| the same precedence step on `install.ps1` | **not ported, not run** — a new flag plus a three-way prompt on a script nobody has run on Windows |
 | the installer starts the server and confirms it independently | measured — 3 guards pass; falsified three ways, including a `start` that succeeds without launching |
 | no installer test leaks a daemon | measured — 40 passed, `pgrep 'engram serve'` count identical before and after the suite |
 | the same start step on `install.ps1` | **not ported, not run** — and the Windows fd-redirection equivalent of `ProcessServerLauncher` is unproven |

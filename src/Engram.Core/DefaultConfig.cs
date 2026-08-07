@@ -110,6 +110,23 @@ public static class DefaultConfig
         # Code is not a root: a codebase belongs to a project, so it lands at
         # /projects/<name>/code/<repo>/… beside that project's decisions (D27).
 
+        [memory]
+        # Whether the session primer states that Engram outranks any other memory system this
+        # agent has. Agents often arrive carrying one — Claude Code's own file-based memory is
+        # the common case — described somewhere Engram cannot see, in instructions that are
+        # longer, more specific, and fire on the literal words "remember this". Engram loses
+        # that race by default and should: until this existed it made no claim about writing
+        # anywhere the top-level agent could read it.
+        #
+        #   off           say nothing; Engram competes on its tool descriptions alone
+        #   engram-first  Engram is primary for reads and writes; the other store still exists
+        #   engram-only   Engram is the only durable store; the other one is not written to
+        #
+        # engram-first is the default because whatever is in another store is the user's and
+        # Engram did not put it there. Correcting the ranking takes nothing away; declaring
+        # that store closed is a decision only its owner should make.
+        precedence = "engram-first"
+
         [primer]
         max_tokens = 300
         """;

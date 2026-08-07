@@ -2801,6 +2801,71 @@ to forward, and they stop the server in a `finally` so a failed assertion cannot
 **Not ported to `install.ps1`,** for D49's reason exactly: it is another step that acts unasked,
 on a script nobody has run on Windows.
 
+### D51 — Engram says where memory lives, because the system it competes with already does
+
+Reported from a live session: asked to remember something, the model wrote to Claude Code's
+file-based memory and only reached Engram as an afterthought. That was the correct reading of the
+instructions it had, and the diagnosis matters more than the fix.
+
+**The claim was missing, not merely weaker.** Claude Code's memory block is long, specific, and
+fires on a literal trigger — *if the user explicitly asks you to remember something, save it
+immediately.* Engram's answer, at the moment of "save this", was: `engram_remember`'s description,
+which opened *"Save a durable note to this session's working memory"* — scratch space, on its face —
+and named no trigger at all. Nothing anywhere told a top-level agent that Engram outranked anything.
+The only place the write instruction existed was `PrimerBuilder.SubagentInstruction`, which reads as
+extending a baseline to subagents; the baseline it extends was never stated. Two further causes were
+found while checking: the standing guidance in `~/.claude/CLAUDE.md` said to search Engram *"if the
+answer is not already in context or in the project's `memory/` directory"* — ranking the other store
+first on reads too, in writing — and the `UserPromptSubmit` hook had **already captured** the
+statement before the model acted, so the model's double-write produced three copies of one fact.
+
+**The fix splits by whether something is a preference.** Rewriting `engram_remember`'s description
+to open on durability and to name the trigger is not a preference — it corrects an under-specified
+description, and it ships to everyone unconditionally. Declaring somebody else's memory system
+subordinate *is* a preference: the files in it are the user's and Engram did not put them there. So
+that half is `[memory] precedence` — `off | engram-first | engram-only`, defaulting to
+**engram-first**, which corrects the ranking without silently disabling a system in use.
+
+**The primer carries the configurable half because nothing else can.** Tool descriptions are
+`[Description]` attributes — compile-time constants, identical for every install — so a per-user
+setting cannot reach them. `SessionStart` matches `startup|resume|clear|compact`, so the primer is
+re-injected at every point where context was reset, including after each compaction. That is the
+honest limit of the approach and is recorded rather than hidden: between compactions the line is
+ordinary context and decays, while the system prompt never does. `BuildForSubagent` repeats the line
+rather than assuming the parent's, because `SessionStart` never fires for a subagent.
+
+**Consequences that cost time and are not guessable.** The line goes **first**, because
+`TryAppendLine` drops whatever overruns the budget and this is the only line whose absence changes
+what the agent does. An empty store therefore no longer yields an empty primer — a fresh install
+with nothing recorded is precisely the session where a competing system wins uncontested, so it is
+the session that most needs telling; the empty case survives only under `off`, which `HookCommand`
+still relies on. The D15 guard forbidding tool names in primer guidance had to gain **one** exemption,
+subtracted by exact string rather than by pattern, and it was re-falsified afterwards to confirm it
+still fails when generic guidance drifts back. `EmbeddingSetup.Apply` was extracted to `ConfigWriter`
+rather than copied, since a second implementation of D33's conflict rule would diverge the first time
+either was tuned.
+
+**Measured.** The added config read is **below this machine's noise floor**: the shipped build alone
+spans p50 14.33 / 15.43 / 16.97 / 15.79 ms across four runs of n=40, and a build with the read removed
+measured 17.73 ms — inside that spread. No cost is claimed in either direction. `file-touched` is
+untouched at p50 9.57 ms and never opens the config. The rewritten description initially blew
+`McpToolSurfaceBudgetTests` — 3961 chars against a 3800 ceiling, `engram_remember` alone at 1013 when
+the next largest tool is 405 — and was tightened to fit rather than the ceiling being raised; the final
+wording is shorter than the one it replaced.
+
+**Falsified.** Five unit breaks (no line; line emitted after the coverage line; line emitted when
+configured off; subagent path dropping it; generic guidance drifting back) and three end-to-end breaks
+(hook ignoring the config; shipped config losing the default; installer ignoring the flag), each
+checksummed across the edit because a falsification that silently no-ops looks exactly like success.
+The first attempt at one e2e break **did** no-op: commenting out `precedence = "engram-first"` left
+`# precedence = "engram-first"`, which still satisfied the `Assert.Contains`. That exposed a real
+weakness — the test had also been asserting on an installer summary line printed from a catch-all
+branch that reads nothing, so it would have said `engram-first` whatever the config held. The
+assertion now checks the config the install produced and then runs a hook against it.
+
+**Not ported to `install.ps1`** (item 10 in the parity memo). The `--memory-precedence` flag and the
+three-way prompt are both new interactive surface on a script nobody has run on Windows.
+
 ## PreCompact cannot inject context
 
 Spec §10.1 assumes `PreCompact` can "inject one instruction" the same way `SessionStart`

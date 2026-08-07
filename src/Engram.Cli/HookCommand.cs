@@ -200,11 +200,29 @@ internal static class HookCommand
             LongTermFactCount: facts.Count,
             TokensReturned: TokenEstimator.Estimate(primer));
 
+    /// <summary>What the primer should say about where this agent's durable memory lives.</summary>
+    /// <remarks>
+    /// A misconfigured value must not cost a session its primer, so a config that will not parse
+    /// falls back to the default rather than throwing — <see cref="MemorySettings.Read"/> already
+    /// reports the problem through <c>doctor</c>, which is where a person will look for it.
+    /// </remarks>
+    private static MemoryPrecedence Precedence(EngramHome home)
+    {
+        try
+        {
+            return MemorySettings.Read(ConfigFile.Load(home.ConfigPath)).Precedence;
+        }
+        catch
+        {
+            return MemorySettings.DefaultPrecedence;
+        }
+    }
+
     private static int RunSessionStart(EngramHome home, TextWriter stdout, HookStdinInput? payload)
     {
         var sessionId = ResolveSessionId(payload);
         var facts = LongTermFacts(home);
-        var primer = PrimerBuilder.Build(facts);
+        var primer = PrimerBuilder.Build(facts, Precedence(home));
 
         try
         {
@@ -254,7 +272,7 @@ internal static class HookCommand
     private static int RunSubagentStart(EngramHome home, TextWriter stdout, HookStdinInput? payload)
     {
         var facts = LongTermFacts(home);
-        var primer = PrimerBuilder.BuildForSubagent(facts);
+        var primer = PrimerBuilder.BuildForSubagent(facts, Precedence(home));
 
         try
         {
