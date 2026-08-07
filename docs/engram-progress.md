@@ -1,6 +1,7 @@
 # Engram — progress snapshot
 
-**As of 2026-08-06.** Working tree clean, 46 decisions (D1–D46) — D28 and D42 amended, none added.
+**As of 2026-08-07.** Working tree clean, 46 decisions (D1–D46). M3's tier 0 shipped overnight
+on an explicit user override of D6's gate.
 
 This is a handoff, not an authority. `CLAUDE.md` holds the invariants,
 `docs/engram-implementation-plan.md` holds the decisions and their reasoning, and
@@ -66,6 +67,62 @@ home under test.
 ---
 
 ## What landed recently
+
+### `21708a4`…`2f4c38c` — M3 tier 0: the code index, gate to shipped in four commits
+
+The D6 gate was overridden by explicit user instruction, not by telemetry — the gate itself
+never fired (see "Open work" below for what that means now). What exists:
+
+- **`docs/engram-path-grammar.md`** is the versioned addressing authority, grammar v1:
+  `/projects/<project>/code/<repo>/<rel/path>#<fragment>`. `CodePaths` implements it;
+  file paths keep their case and are never slugged, fragments are slugged headings or
+  verbatim top-level symbol names. No overload grammar in v1 — that is v2's problem, and
+  re-keying is what D2's adopt/merge exists for.
+- **`LanguageRegistry`** is one static row per language (D24: AOT means no discovery), each
+  row carrying its own conformance fixture. The suite iterates the registry, so adding a
+  language is one row and zero harness edits — the same shape as the game-registry rule, and
+  a source lint (`CodeAnalyzer_CarriesNoLanguageIdLiterals`) holds `CodeAnalyzer` free of
+  per-language `if`s. Rows today: csharp, typescript, javascript, markdown, plus a `Text`
+  catch-all. All tier 0 — regex declarations, lead-comment impressions, sorted `imports`.
+- **`CodeIndexer`** is the incremental pipeline: `file_state` rows keyed by content identity,
+  clean tracked files by git blob sha, dirty/untracked by SHA-256. Renames pair by unique
+  sha and move the subtree (`FactStore.MoveSubtree` — substr matching, not LIKE, because
+  filenames contain `%`), leaving a path alias so old addresses still resolve. One
+  `BEGIN IMMEDIATE` transaction per file. `schema_meta['code_index_version']` records
+  grammar×analyzer; a bump forces full re-analysis. Non-regenerable facts on code paths are
+  never touched — agent testimony outranks tier 0 (D19).
+- **`SpoolQueue`** finally consumes `file-touched`'s queue: peek without delete, consume
+  only after the commit that made an entry redundant, other repos' entries stay queued
+  (D41). A parsed entry with no path escalates to a full scan.
+- **Wiring**: `engram index [path] --apply --drain --full --auto`, dry-run by default.
+  `--auto` is what the session-start maintenance child runs, and the whole policy lives in
+  the child like `--if-due`: config gate (`[indexing] auto_index_on_session_start`, default
+  off), store must exist, target must be a git checkout. Every refusal is silent exit 0.
+  `doctor` gets a per-repo row via the indexer's own identity resolution.
+
+**Two bugs only the published binary could show** — 449 integration tests were green while
+both lived, which is tier 3's whole argument:
+
+- **Symlinks**: the hook spools the spelling the tool used (`/tmp/…`), git canonicalises the
+  root (`/private/tmp/…`), and the drained entry was left behind as "another repo's edit" —
+  a permanent queue leak on macOS. .NET has no realpath; `PathCanonicalizer` walks
+  components and **recurses on link targets**, because the first version returned the
+  target unwalked and its own prefix (`/var`) still contained links — it failed its own
+  test before it passed it.
+- **Staged blobs**: `git ls-files -s` reports the *staged* blob, so an unstaged edit — the
+  state every file is in when `file-touched` has just fired — read as unchanged. `git
+  status --porcelain -z` names dirty and untracked files, which fall through to content
+  hash. Distilled into `UnstagedEdit_InARealCheckout_IsStillDetected`.
+
+Measured end-to-end on the published binary: edit → `hook file-touched` → `index --drain
+--apply` = 1 file considered, 1 analyzed, 1 fact written, queue 1 consumed 0 left; the
+rerun writes 0. Falsified before trusting: the language-literal lint went red on a planted
+`"csharp"`, the `--auto` config gate went red with its condition deleted.
+
+**The live instance does not auto-index yet.** Session start still runs the previously
+installed binary, and the config gate defaults off. Turning it on is a reinstall
+(`install.sh` or plugin update) plus `auto_index_on_session_start = true` under
+`[indexing]` — deliberately not done unbidden.
 
 ### D42 amended: a start time you compute is not a start time
 
@@ -239,24 +296,26 @@ assertion red; the natives copy disabled → round-trip red; a syntax error in
 
 ## Open work, ranked
 
-### 1. M3 (code graph) is gated shut — do not start it without re-reading D6
+### 1. M3's deep tiers — the sidecar and tree-sitter are what remain
 
-Going to read the gate found there was almost nothing to read. On the live instance:
+Tier 0 shipped (above) on an explicit user instruction, which is worth recording precisely:
+D6's gate never *fired* — the telemetry that was supposed to open it (code-structure recall
+misses) still reads zero recalls of that shape, ever. The gate was overridden, not met, and
+the same telemetry now measures whether the index earns its keep: code facts exist, so a
+code-structure recall can finally hit or miss something.
 
-| | ever | Aug 5 | Aug 6 |
-|---|---|---|---|
-| `session-start` | 54 | 33 | 20 |
-| `subagent-start` | 336 | 81 | 255 |
-| `remember` | 28 | 23 | 5 |
-| `recall` | **7** | 7 | **0** |
+What remains, in the order the plan argues for:
 
-All 7 recalls were personal/project questions — plugin conventions, a movie, a weekend
-outing, permissions, a son's favourite game. **Zero code-structure queries.** The server
-was up and reachable throughout; Aug 6 had MCP tool calls, just no recalls.
-
-The plan now says the gate is **unread, not failed**. Reading 7 events as evidence
-*against* code-structure questions would repeat D44's mistake in the other direction.
-D46 makes the gate answerable going forward; it recovers nothing retroactive.
+- **Roslyn sidecar (tier 2, D1)** — separate process, never opens the store, returns
+  entities/facts for the core to write. First real exercise of D2's adopt/merge if it
+  re-keys deep symbols. The packaging question is undesigned: Roslyn cannot AOT-link, so
+  the sidecar is either framework-dependent (requires a runtime the installer does not
+  guarantee at runtime) or self-contained (~80 MB beside a 22 MB binary). Decide that on
+  paper before writing code.
+- **tree-sitter (tier 1, D24)** — real grammars for the languages regex is faking.
+- **Overload grammar v2 (D27)** — nested types, overloads, member fragments. A grammar
+  bump re-keys, which is adopt/merge's job, and `code_index_version` already forces the
+  re-read.
 
 ### 2. The adoption question itself — 28 writes against 7 reads
 
@@ -266,11 +325,12 @@ concluding anything: the primer reaches every session without a tool call, so re
 undercounts delivery by construction — which is exactly what D46 was written to fix. Give
 it some accumulation before drawing a line through it.
 
-### 3. `SpoolReader.Drain` has no production caller
+### 3. `SpoolReader.Drain` itself is now dead weight
 
-`file-touched` writes and nothing reads. The live queue is at ~219 entries. `SpoolCompactor`
-(D41) bounds the growth, so this is not urgent — the missing consumer *is* the M3-shaped
-hole, and `doctor` says so out loud in `Diagnostics.cs:632`.
+The queue has its consumer — `SpoolQueue`, which peeks without deleting and consumes only
+after commit. `Drain`, which deletes before its caller acts, still has no production
+caller and now never should have one: anything reaching for it wants `SpoolQueue`. Worth
+demoting to test-support or deleting once nothing in the tests leans on it.
 
 ### 4. Score mass in `coverage` (D44, deliberately left open)
 

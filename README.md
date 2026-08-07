@@ -32,6 +32,7 @@ memory tool writes to it — `engram_digest` was the last that did not.
 | [`docs/engram-spec.md`](docs/engram-spec.md) | Design specification, Rev D |
 | [`docs/engram-implementation-plan.md`](docs/engram-implementation-plan.md) | Locked decisions, spec errata, milestones, testing strategy |
 | [`docs/engram-schema.sql`](docs/engram-schema.sql) | Canonical M1 database schema |
+| [`docs/engram-path-grammar.md`](docs/engram-path-grammar.md) | How code entities are addressed — versioned, v1 |
 | [`docs/engram-design.html`](docs/engram-design.html) | Visual design sheet |
 
 Start with the implementation plan — it records twenty-eight decisions (D1–D28) resolving
@@ -273,6 +274,39 @@ attributed to it, so "which worker learned this" survives the worker.
 Recording the same statement twice in one session records it once — a note is addressed by
 its own text — while two different sessions reaching the same conclusion keep both, because
 they are two observations rather than one repeated.
+
+### Remembering the shape of the code
+
+`engram index [path]` turns a git checkout into code facts: a one-line impression of what
+each file is for, each top-level declaration, each file's imports, and a section entry per
+markdown heading. Entities are addressed by a versioned path grammar
+([`docs/engram-path-grammar.md`](docs/engram-path-grammar.md)) —
+`/projects/<project>/code/<repo>/<path>#<fragment>` — so a recall about "the retry logic"
+can land on a symbol, not just a filename. Like everything that changes the store, it is
+dry-run by default; `--apply` writes.
+
+Indexing is incremental, and change detection never consults mtime: clean tracked files
+compare by git's own blob sha, dirty and untracked files by content hash — the second half
+matters because `git ls-files -s` reports the *staged* blob, and an unstaged edit is the
+state a file is in when a hook has just seen it change. Renames keep their entity ids and
+leave an alias behind, so a fact attached to a file survives the file moving. The indexer
+writes only what it can regenerate: a fact an agent recorded about the code outranks
+anything tier-0 analysis produces, and is never superseded by it.
+
+The `file-touched` hook queues each edit; `engram index --drain` consumes the queue —
+only the entries this repo can act on, after the re-read has committed, so another repo's
+edits stay queued and a crash loses nothing. Session start runs
+`index --drain --apply --auto` in the same detached maintenance child as backups and queue
+compaction. `--auto` declines silently unless `[indexing] auto_index_on_session_start =
+true` is set, a store already exists, and the directory actually is a git checkout — a
+shell that happens to start in `$HOME` must not index `$HOME`.
+
+Today's analyzers are tier 0 of D24: managed code in-core, regex-shaped, no external
+dependencies. Deeper tiers — tree-sitter grammars, a Roslyn sidecar for C# — slot into the
+same language registry without changing what tier 0 already wrote, because the grammar
+version and analyzer version are recorded in the store and a bump forces re-analysis.
+`engram doctor` reports the index per registered repo: how many files, into which project
+path, how stale.
 
 ### Slash commands
 
