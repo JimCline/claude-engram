@@ -11,6 +11,45 @@ public class InstallerRoundTripTests
         OperatingSystem.IsMacOS() ? "libe_sqlite3.dylib" : "libe_sqlite3.so";
 
     [Fact]
+    public void Install_WithRoslynDir_CarriesTheSidecar_AndUninstallRemovesExactlyIt()
+    {
+        Assert.SkipUnless(EndToEndBinary.Path is not null, EndToEndBinary.SkipReason);
+
+        using var home = new InstallerTestHome();
+        var roslynDir = Path.Combine(home.Root, "roslyn-publish");
+        Directory.CreateDirectory(roslynDir);
+        var stub = Path.Combine(roslynDir, "engram-roslyn");
+        File.WriteAllText(stub, "#!/bin/sh\nexit 0\n");
+#pragma warning disable CA1416 // engram only ships for macOS/Linux RIDs; this test never runs on Windows.
+        File.SetUnixFileMode(stub, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+#pragma warning restore CA1416
+        File.WriteAllText(Path.Combine(roslynDir, "engram-roslyn.dll"), "managed payload");
+
+        var dry = RunScript("install.sh", home.Root, "--binary", EndToEndBinary.Path!, "--prefix", home.Prefix, "--roslyn-dir", roslynDir);
+        Assert.True(dry.ExitCode == 0, $"dry run failed: {dry.Stderr}");
+        Assert.Contains("would: install engram-roslyn", dry.Stdout, StringComparison.Ordinal);
+        Assert.False(Directory.Exists(Path.Combine(home.Prefix, "roslyn")), "a dry run must install nothing");
+
+        var install = RunScript("install.sh", home.Root, "--apply", "--binary", EndToEndBinary.Path!, "--prefix", home.Prefix, "--roslyn-dir", roslynDir);
+        Assert.True(install.ExitCode == 0, $"install failed: {install.Stderr}");
+        Assert.Contains("Tier-2 C# analysis: engram-roslyn installed", install.Stdout, StringComparison.Ordinal);
+
+        var installedSidecar = Path.Combine(home.Prefix, "roslyn", "engram-roslyn");
+        Assert.True(File.Exists(installedSidecar), "sidecar should exist after install");
+        Assert.True(File.Exists(Path.Combine(home.Prefix, "roslyn", ".engram-manifest")), "install must record what it copied");
+
+        // A file the install did not record is not the uninstaller's to remove.
+        var foreign = Path.Combine(home.Prefix, "roslyn", "not-ours.txt");
+        File.WriteAllText(foreign, "someone else's");
+
+        var uninstall = RunScript("uninstall.sh", home.Root, "--apply", "--prefix", home.Prefix);
+        Assert.True(uninstall.ExitCode == 0, $"uninstall failed: {uninstall.Stderr}");
+        Assert.False(File.Exists(installedSidecar), "sidecar should be gone after uninstall");
+        Assert.False(File.Exists(Path.Combine(home.Prefix, "roslyn", "engram-roslyn.dll")), "recorded files should be gone after uninstall");
+        Assert.True(File.Exists(foreign), "an unrecorded file must survive uninstall");
+    }
+
+    [Fact]
     public void Install_Apply_Twice_Then_Uninstall_RoundTrips()
     {
         Assert.SkipUnless(EndToEndBinary.Path is not null, EndToEndBinary.SkipReason);

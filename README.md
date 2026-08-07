@@ -308,8 +308,11 @@ shell that happens to start in `$HOME` must not index `$HOME`.
 
 The default analyzers are tier 0 of D24: managed code in-core, regex-shaped, no external
 dependencies. C# has tier 2: `engram-roslyn`, a separate Roslyn process (D1 keeps Roslyn
-out of the core binary) that the indexer batch-feeds over stdin/stdout when the sidecar
-sits beside the `engram` executable, or wherever `ENGRAM_ROSLYN_SIDECAR` points. It
+out of the core binary) that the indexer batch-feeds over stdin/stdout. `install.sh`
+builds and installs it automatically into `roslyn/` under the install prefix (with
+`--binary`, pass `--roslyn-dir` to ship a prebuilt one); the indexer finds it there,
+beside the executable, or wherever `ENGRAM_ROSLYN_SIDECAR` points, and `engram doctor`'s
+`code analysis` row says which tier this machine actually has. It
 replaces symbol and import facts with syntax-tree-accurate ones — nested types stop
 masquerading as top-level — while keeping tier 0's file impression, and it formats the
 imports fact byte-identically to tier 0, so swapping tiers rewrites nothing that did not

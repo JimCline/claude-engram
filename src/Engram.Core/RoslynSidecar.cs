@@ -26,9 +26,12 @@ public static class RoslynSidecar
     /// <summary>
     /// The sidecar binary, or null for "this machine indexes C# at tier 0". The env var
     /// wins so tests and unusual installs can say exactly which binary; otherwise it
-    /// lives beside the executable, like the natives do.
+    /// lives beside the executable, or in <c>roslyn/</c> beside it — install.sh publishes
+    /// it there so the framework-dependent dependency closure stays out of the bin
+    /// directory. An override that points at nothing means no sidecar, never a fallback:
+    /// a broken explicit configuration should not silently become a different one.
     /// </summary>
-    public static string? Locate(Func<string, string?> environment)
+    public static string? Locate(Func<string, string?> environment, string? baseDirectory = null)
     {
         ArgumentNullException.ThrowIfNull(environment);
 
@@ -37,11 +40,17 @@ public static class RoslynSidecar
             return File.Exists(overridePath) ? overridePath : null;
         }
 
-        var beside = Path.Combine(
-            AppContext.BaseDirectory,
-            OperatingSystem.IsWindows() ? "engram-roslyn.exe" : "engram-roslyn");
+        var root = baseDirectory ?? AppContext.BaseDirectory;
+        var name = OperatingSystem.IsWindows() ? "engram-roslyn.exe" : "engram-roslyn";
 
-        return File.Exists(beside) ? beside : null;
+        var beside = Path.Combine(root, name);
+        if (File.Exists(beside))
+        {
+            return beside;
+        }
+
+        var installed = Path.Combine(root, "roslyn", name);
+        return File.Exists(installed) ? installed : null;
     }
 
     /// <summary>

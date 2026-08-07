@@ -7,6 +7,9 @@ Usage: scripts/install.sh [options]
   --apply              Actually perform the installation (default is a dry run)
   --prefix DIR         Install directory (default: $HOME/.local/bin)
   --binary PATH        Install this prebuilt binary instead of building one
+  --roslyn-dir DIR     With --binary: install this prebuilt engram-roslyn publish
+                       directory as the tier-2 C# analyzer (built from source, the
+                       analyzer ships automatically)
   --sdk-dir DIR        Where a bootstrapped .NET SDK lives (default: <repo>/.dotnet)
   --dotnet-install PATH
                        Use this local copy of Microsoft's dotnet-install.sh instead of
@@ -26,6 +29,7 @@ EOF
 apply=false
 prefix="$HOME/.local/bin"
 binary_override=""
+roslyn_override=""
 sdk_dir=""
 dotnet_install_override=""
 no_path=false
@@ -54,6 +58,14 @@ while [ $# -gt 0 ]; do
                 exit 1
             fi
             binary_override="$2"
+            shift 2
+            ;;
+        --roslyn-dir)
+            if [ $# -lt 2 ]; then
+                echo "error: --roslyn-dir requires a value" >&2
+                exit 1
+            fi
+            roslyn_override="$2"
             shift 2
             ;;
         --sdk-dir)
@@ -200,7 +212,13 @@ install_path_block() {
         rel_end_line=$(tail -n "+$start_line" "$rc_file" | grep -nxF '# <<< engram <<<' | head -1 | cut -d: -f1)
         end_line=$((start_line + rel_end_line - 1))
 
-        head -n "$((start_line - 1))" "$rc_file" > "$tmp"
+        # A block that starts at line 1 means this installer created the file; BSD head
+        # rejects -n 0, so an empty prefix is written as truncation, not as head.
+        if [ "$start_line" -gt 1 ]; then
+            head -n "$((start_line - 1))" "$rc_file" > "$tmp"
+        else
+            : > "$tmp"
+        fi
         printf '%s\n' "$block" >> "$tmp"
         tail -n "+$((end_line + 1))" "$rc_file" >> "$tmp"
     elif [ -f "$rc_file" ]; then
@@ -381,15 +399,31 @@ elif $apply; then
         exit 1
     fi
 
+    # The tier-2 C# analyzer, published framework-dependent (D45's size lesson does not
+    # apply — it is a separate process, so its 16 MB never touches hook latency), no RID
+    # because framework-dependent output is portable and the SDK building this is the
+    # superset runtime it needs.
+    say "Building engram-roslyn into $staging_dir/roslyn ..."
+    DOTNET_NOLOGO=1 \
+    "$dotnet_cmd" publish "$repo_root/src/Engram.Sidecar.Roslyn" \
+        -c Release \
+        -o "$staging_dir/roslyn"
+    if [ ! -x "$staging_dir/roslyn/engram-roslyn" ]; then
+        echo "error: expected published sidecar not found at $staging_dir/roslyn/engram-roslyn" >&2
+        exit 1
+    fi
+
     size_before=$(du -sh "$staging_dir" | cut -f1)
     say "Removing debug symbols from $staging_dir ..."
     find "$staging_dir" -maxdepth 1 -type f -name '*.pdb' -delete
     find "$staging_dir" -maxdepth 1 -type d -name '*.dSYM' -exec rm -rf {} +
+    find "$staging_dir/roslyn" -type f -name '*.pdb' -delete
     size_after=$(du -sh "$staging_dir" | cut -f1)
     say "Staging size before symbol cleanup: $size_before"
     say "Staging size after symbol cleanup:  $size_after"
 else
     would "$dotnet_cmd publish $repo_root/src/Engram.Cli -c Release -r $rid -o <temp staging dir>"
+    would "$dotnet_cmd publish $repo_root/src/Engram.Sidecar.Roslyn -c Release -o <temp staging dir>/roslyn"
     would "remove .pdb files and .dSYM directories from the staging dir"
     binary_path="<built binary>"
 fi
@@ -416,6 +450,25 @@ if [ -n "$rid" ]; then
     natives_source="$(dirname "$binary_path")/runtimes/$rid/native"
 fi
 natives_target="$prefix/runtimes"
+
+# The tier-2 C# analyzer, optional at every stage: built from source it always ships;
+# with --binary it ships only when --roslyn-dir names a prebuilt publish of it, because
+# a prebuilt engram says nothing about where its analyzer might be. Installing nothing
+# is not an error — the binary indexes C# at tier 0 and doctor says so.
+roslyn_target="$prefix/roslyn"
+if [ -n "$roslyn_override" ]; then
+    if [ ! -x "$roslyn_override/engram-roslyn" ]; then
+        echo "error: --roslyn-dir has no executable engram-roslyn in it: $roslyn_override" >&2
+        exit 1
+    fi
+    roslyn_source="$roslyn_override"
+elif [ -n "$binary_override" ]; then
+    roslyn_source=""
+elif $apply; then
+    roslyn_source="$staging_dir/roslyn"
+else
+    roslyn_source="<built engram-roslyn>"
+fi
 
 # Shared shape with uninstall.sh: removes only what a previous install recorded, then
 # prunes directories that emptying left behind.
@@ -479,6 +532,17 @@ if $apply; then
         say "Installed $natives_target/$rid/native ($(wc -l < "$natives_target/.engram-manifest" | tr -d ' ') files, recorded for uninstall)"
     fi
 
+    if [ -n "$roslyn_source" ]; then
+        # Same manifest discipline as runtimes/: record every file copied, remove exactly
+        # that list next time, never claim a file somebody else put under roslyn/.
+        remove_manifest_files "$roslyn_target"
+        mkdir -p "$roslyn_target"
+        cp -R "$roslyn_source/." "$roslyn_target/"
+        chmod 755 "$roslyn_target/engram-roslyn"
+        (cd "$roslyn_target" && find . -type f ! -name '.engram-manifest' | sed 's|^\./||') > "$roslyn_target/.engram-manifest"
+        say "Installed $roslyn_target ($(wc -l < "$roslyn_target/.engram-manifest" | tr -d ' ') files, recorded for uninstall)"
+    fi
+
     # cp rewrites $target in place; on macOS this succeeds even if a daemon
     # is still running from that path, so its pages would change underneath
     # it. Install to a sibling file and mv over the destination instead — mv
@@ -510,6 +574,9 @@ else
     fi
     if [ -n "$natives_source" ] && [ -d "$natives_source" ]; then
         would "install runtimes/$rid/native (llama.cpp) to $natives_target, recording a manifest for uninstall"
+    fi
+    if [ -n "$roslyn_source" ]; then
+        would "install engram-roslyn (tier-2 C# analyzer) to $roslyn_target, recording a manifest for uninstall"
     fi
     would "install binary to $target (mode 755, via atomic replace)"
     would "run the staged binary from $prefix against a throwaway ENGRAM_HOME, and abort the install if it cannot open a database"
@@ -746,6 +813,11 @@ if $apply; then
         echo "    $path_advice"
     else
         echo "  PATH: $prefix was already on \$PATH; nothing changed"
+    fi
+    if [ -n "$roslyn_source" ]; then
+        echo "  Tier-2 C# analysis: engram-roslyn installed to $roslyn_target"
+    else
+        echo "  Tier-2 C# analysis: not installed (prebuilt binary without --roslyn-dir); C# indexes at tier 0"
     fi
     if $with_plugin; then
         case "$plugin_result" in

@@ -167,10 +167,20 @@ Three things the plan promised in M1 and never got, built the same night as M3:
   actually fixes on day one: tier 0's 0–4-space indent window reads a nested type in a
   file-scoped namespace as top-level; Roslyn sees the nesting and writes nothing there.
 
+- **Sidecar deployment** — `install.sh` publishes `engram-roslyn` framework-dependent and
+  installs it into `roslyn/` under the prefix with the same manifest discipline as the
+  llama natives: record every file, remove exactly that list, never claim a foreign one
+  (held by a test that plants an unrecorded file and asserts uninstall leaves it). With
+  `--binary`, `--roslyn-dir` ships a prebuilt sidecar the same way `--binary` ships the
+  binary; without it, nothing installs and the summary says C# stays at tier 0. `doctor`
+  grew a `code analysis` row — presence only, never a launch: absent is Ok ("tier 0
+  only"), because Off is a configuration, and the one Broken state is an
+  `ENGRAM_ROSLYN_SIDECAR` that points at nothing (D37). The Windows installers
+  (install.ps1/uninstall.ps1) do not carry the sidecar yet — recorded here, not hidden.
+
 Still absent after tonight, in plan order: tree-sitter, the salience writer (M5, and
 deliberately blind until there is a retrieval benchmark to tune against), `compact` for
-the fact store, D5, and the installer wiring that puts `engram-roslyn` beside the binary
-— until that lands, a production install still reads C# at tier 0.
+the fact store, D5, and sidecar parity for the PowerShell installers.
 
 ### D42 amended: a start time you compute is not a start time
 
@@ -354,11 +364,6 @@ code-structure recall can finally hit or miss something.
 
 What remains, in the order the plan argues for:
 
-- **Sidecar deployment** — `engram-roslyn` builds, tests, and merges (above), but
-  `install.sh` does not yet place it beside the binary, so the slice is inert in
-  production. The locator is already done: `ENGRAM_ROSLYN_SIDECAR` overrides, else
-  beside the executable — the same layout the test ProjectReference produces for free.
-  `doctor` should learn to report the sidecar's presence when this lands.
 - **tree-sitter (tier 1, D24)** — real grammars for the languages regex is faking.
 - **Overload grammar v2 (D27)** — nested types, overloads, member fragments. A grammar
   bump re-keys, which is adopt/merge's job, and `code_index_version` already forces the

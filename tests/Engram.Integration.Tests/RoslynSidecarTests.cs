@@ -229,6 +229,55 @@ public class RoslynSidecarTests
         Assert.DoesNotContain(facts, f => f.SubjectPath == innerPath);
     }
 
+    [Fact]
+    public void Locate_FindsTheInstalledLayout_AndPrefersTheFileBesideTheBinary()
+    {
+        var root = Directory.CreateTempSubdirectory("engram-locate-").FullName;
+        try
+        {
+            Assert.Null(RoslynSidecar.Locate(_ => null, root));
+
+            var name = OperatingSystem.IsWindows() ? "engram-roslyn.exe" : "engram-roslyn";
+            Directory.CreateDirectory(Path.Combine(root, "roslyn"));
+            var installed = Path.Combine(root, "roslyn", name);
+            File.WriteAllText(installed, "stub");
+            Assert.Equal(installed, RoslynSidecar.Locate(_ => null, root));
+
+            // Beside the binary outranks the installed layout: the closer placement is
+            // the more deliberate one.
+            var beside = Path.Combine(root, name);
+            File.WriteAllText(beside, "stub");
+            Assert.Equal(beside, RoslynSidecar.Locate(_ => null, root));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Doctor_CodeAnalysisRow_TreatsAbsenceAsAChoiceAndALyingOverrideAsAFault()
+    {
+        var tierTwo = Diagnostics.CheckRoslyn(_ => SidecarBinary());
+        Assert.Equal(DiagnosisState.Ok, tierTwo.State);
+        Assert.Contains("tier 2", tierTwo.Detail, StringComparison.Ordinal);
+
+        var lying = Diagnostics.CheckRoslyn(_ => Path.Combine(Path.GetTempPath(), "no-such-sidecar"));
+        Assert.Equal(DiagnosisState.Broken, lying.State);
+
+        var empty = Directory.CreateTempSubdirectory("engram-doctor-").FullName;
+        try
+        {
+            var tierZero = Diagnostics.CheckRoslyn(_ => null, empty);
+            Assert.Equal(DiagnosisState.Ok, tierZero.State);
+            Assert.Contains("tier 0", tierZero.Detail, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Directory.Delete(empty, recursive: true);
+        }
+    }
+
     private static SidecarAnalysis Analyze(string filePath, string content)
     {
         var results = RoslynSidecar.Analyze(

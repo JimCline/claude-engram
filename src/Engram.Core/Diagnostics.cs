@@ -124,6 +124,7 @@ public static class Diagnostics
         Try(checks, "metal", list => CheckMetal(home, embedding, list));
         Try(checks, "backups", list => list.Add(CheckBackups(home, connection, config)));
         Try(checks, "edit queue", list => list.Add(CheckQueue(home)));
+        Try(checks, "code analysis", list => list.Add(CheckRoslyn(environment)));
 
         if (repoRoot is not null)
         {
@@ -131,6 +132,35 @@ public static class Diagnostics
         }
 
         return new DiagnosticReport(checks);
+    }
+
+    /// <summary>
+    /// Presence only, never a launch — running the sidecar to ask about it would need the
+    /// runtime whose absence is one of the answers. Absent is a supported configuration
+    /// (C# indexes at tier 0), so it reports Ok; the one Broken state is an override that
+    /// points at nothing, because an explicit configuration that lies is a fault and a
+    /// silent fallback would hide it (D37). Public for the same reason Corroborated is:
+    /// the tier-0 branch needs a base directory no test process can supply through Run.
+    /// </summary>
+    public static Diagnosis CheckRoslyn(Func<string, string?> environment, string? baseDirectory = null)
+    {
+        if (environment(RoslynSidecar.EnvironmentOverride) is { Length: > 0 } overridePath
+            && !File.Exists(overridePath))
+        {
+            return new Diagnosis(
+                "code analysis",
+                DiagnosisState.Broken,
+                $"{RoslynSidecar.EnvironmentOverride} points at {overridePath}, which is not there",
+                "unset it, or point it at an engram-roslyn binary");
+        }
+
+        var sidecar = RoslynSidecar.Locate(environment, baseDirectory);
+        return sidecar is null
+            ? new Diagnosis(
+                "code analysis",
+                DiagnosisState.Ok,
+                "tier 0 only — engram-roslyn is not installed, so C# indexes without Roslyn")
+            : new Diagnosis("code analysis", DiagnosisState.Ok, $"tier 2: {sidecar}");
     }
 
     private static void Try(List<Diagnosis> checks, string name, Action<List<Diagnosis>> check)

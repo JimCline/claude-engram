@@ -94,7 +94,13 @@ strip_path_block() {
         fi
     fi
 
-    head -n "$((cut_from - 1))" "$rc_file" > "$tmp"
+    # A block that starts at line 1 means install.sh created this file; BSD head rejects
+    # -n 0, so an empty prefix is written as truncation, not as head.
+    if [ "$cut_from" -gt 1 ]; then
+        head -n "$((cut_from - 1))" "$rc_file" > "$tmp"
+    else
+        : > "$tmp"
+    fi
     tail -n "+$((end_line + 1))" "$rc_file" >> "$tmp"
 
     mv "$tmp" "$rc_file"
@@ -217,6 +223,29 @@ if [ -f "$natives_manifest" ]; then
     fi
 elif [ -d "$natives_root" ]; then
     say "Not touching $natives_root: no engram manifest there, so nothing in it is provably ours."
+fi
+
+# --- Remove the tier-2 analyzer the install recorded ---
+
+roslyn_root="$prefix/roslyn"
+roslyn_manifest="$roslyn_root/.engram-manifest"
+
+if [ -f "$roslyn_manifest" ]; then
+    if $apply; then
+        while IFS= read -r rel; do
+            case "$rel" in
+                ""|*..*|/*) continue ;;
+            esac
+            rm -f "$roslyn_root/$rel"
+        done < "$roslyn_manifest"
+        rm -f "$roslyn_manifest"
+        [ -d "$roslyn_root" ] && find "$roslyn_root" -type d -empty -delete 2>/dev/null || true
+        say "Removed engram-roslyn as listed in the install manifest from $roslyn_root"
+    else
+        would "remove the $(wc -l < "$roslyn_manifest" | tr -d ' ') engram-roslyn files listed in $roslyn_manifest, then prune emptied directories"
+    fi
+elif [ -d "$roslyn_root" ]; then
+    say "Not touching $roslyn_root: no engram manifest there, so nothing in it is provably ours."
 fi
 
 # --- Remove the PATH symlink, if we created one ---
