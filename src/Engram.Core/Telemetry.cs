@@ -8,6 +8,9 @@ public static class TelemetryEventKind
     public const string Recall = "recall";
     public const string Remember = "remember";
     public const string Digest = "digest";
+    public const string Browse = "browse";
+    public const string Expand = "expand";
+    public const string Revise = "revise";
     public const string SessionStart = "session-start";
     public const string ServerStart = "server-start";
     public const string SessionOpen = "session-open";

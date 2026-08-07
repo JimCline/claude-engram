@@ -52,6 +52,11 @@ public static class ClaudePermissions
         "mcp__plugin_engram_engram__engram_remember",
         "mcp__plugin_engram_engram__engram_digest",
         "mcp__plugin_engram_engram__engram_status",
+
+        // Reads, like recall. engram_revise and engram_forget stay ungranted on purpose:
+        // both close a belief, and closing one should cost a confirmation prompt.
+        "mcp__plugin_engram_engram__engram_browse",
+        "mcp__plugin_engram_engram__engram_expand",
     ];
 
     public static PermissionGrantPlan PlanGrant(string settingsPath)

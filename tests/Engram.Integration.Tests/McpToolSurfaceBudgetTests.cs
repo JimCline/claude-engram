@@ -12,12 +12,14 @@ namespace Engram.Integration.Tests;
 /// </summary>
 public class McpToolSurfaceBudgetTests
 {
-    // Measured 2,399 characters across the four tools on 2026-08-05. The headroom is for
-    // ordinary wording changes; raising this number is a deliberate edit that needs a
-    // reason in the commit message, not a knob to turn when a description outgrows it.
-    private const int MaxDefinitionChars = 2600;
+    // Measured 3,663 characters across seven tools on 2026-08-07, when browse, expand and
+    // revise joined (spec §9) at a deliberately lean 1,088 combined — the situational
+    // tools must not dilute recall's pitch, which is the funnel that matters. The headroom
+    // is for ordinary wording changes; raising this number is a deliberate edit that needs
+    // a reason in the commit message, not a knob to turn when a description outgrows it.
+    private const int MaxDefinitionChars = 3800;
 
-    private const int ExpectedToolCount = 4;
+    private const int ExpectedToolCount = 7;
 
     [Fact]
     public void ToolDefinitions_StayUnderCharacterCeiling()

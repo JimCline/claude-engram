@@ -290,4 +290,286 @@ public sealed class EngramMcpTools
 
         return storedNote + summaryNote + blankNote + overflowNote + failureNote;
     }
+
+    [McpServerTool(Name = "engram_browse")]
+    [Description(
+        "List what memory holds under a path — children, fact counts, and the top facts at that node. " +
+        "A table of contents, not a search: engram_recall finds facts by content, this shows how an " +
+        "area is organised. Paths look like /people/jim or /projects/acme.")]
+    public static string Browse(
+        EngramHome home,
+        McpSessionId session,
+        McpHomeState homeState,
+        [Description("The memory path to list, e.g. /projects/acme.")] string path,
+        [Description("Levels of children to show, 1-3. Defaults to 1.")] int? depth = null)
+    {
+        using var connection = EngramDatabase.OpenInitialized(home);
+        var node = MemoryBrowser.Browse(connection, path, depth ?? 1);
+
+        if (homeState.Initialized)
+        {
+            Telemetry.Append(home, new TelemetryRecord(
+                Timestamp: DateTime.UtcNow.ToString("o"),
+                SessionId: session.Value,
+                Kind: TelemetryEventKind.Browse,
+                Query: path));
+        }
+
+        if (node is null)
+        {
+            return $"Nothing in memory under {path}. Browse lists structure that exists; "
+                + "engram_recall searches by content and does not need a path.";
+        }
+
+        var builder = new System.Text.StringBuilder();
+        builder.Append(node.Path)
+            .Append(" — ")
+            .Append(CountText(node.FactsHere, "fact"))
+            .Append(" here, ")
+            .Append(node.FactsUnder)
+            .Append(" under it\n");
+
+        foreach (var fact in MemoryBrowser.TopFacts(connection, node.Path, 3))
+        {
+            builder.Append("  [")
+                .Append(FactCatalog.HandleFor(fact.Id))
+                .Append("] ")
+                .Append(fact.Predicate)
+                .Append(": ")
+                .Append(fact.Body)
+                .Append('\n');
+        }
+
+        AppendChildren(builder, node, indent: "  ");
+        return builder.ToString().TrimEnd('\n');
+    }
+
+    [McpServerTool(Name = "engram_expand")]
+    [Description(
+        "The full story behind one fact handle: its supersession history, related facts on the same " +
+        "subject, its evidence, or where it was learned. Call it when a fact engram_recall returned " +
+        "needs scrutiny before you rely on it.")]
+    public static string Expand(
+        EngramHome home,
+        McpSessionId session,
+        McpHomeState homeState,
+        [Description("The bracketed fact id, e.g. \"f42\".")] string id,
+        [Description("One of: history, related, evidence, source.")] string view)
+    {
+        if (!FactCatalog.TryParseHandle(id, out var factId))
+        {
+            return $"'{id}' is not a fact handle; they look like 'f42'.";
+        }
+
+        using var connection = EngramDatabase.OpenInitialized(home);
+        var fact = FactStore.ReadById(connection, factId);
+        if (fact is null)
+        {
+            return $"No fact with id '{id}' — call engram_recall to find handles.";
+        }
+
+        if (homeState.Initialized)
+        {
+            Telemetry.Append(home, new TelemetryRecord(
+                Timestamp: DateTime.UtcNow.ToString("o"),
+                SessionId: session.Value,
+                Kind: TelemetryEventKind.Expand,
+                Query: view));
+        }
+
+        return view.Trim().ToLowerInvariant() switch
+        {
+            "history" => ExpandHistory(connection, fact),
+            "related" => ExpandRelated(connection, fact),
+            "evidence" => ExpandEvidence(fact),
+            "source" => ExpandSource(connection, fact),
+            _ => $"Unknown view '{view}'. The views are history, related, evidence, and source.",
+        };
+    }
+
+    [McpServerTool(Name = "engram_revise")]
+    [Description(
+        "Replace a stored belief with a corrected statement, recording why. The old fact is closed, " +
+        "never erased, and the new one takes its place in recall. Use it when the user or fresh " +
+        "evidence contradicts something stored; engram_forget retracts without a replacement.")]
+    public static string Revise(
+        EngramHome home,
+        McpSessionId session,
+        McpHomeState homeState,
+        [Description("The bracketed id of the fact to revise, e.g. \"f42\".")] string fact_id,
+        [Description("The corrected statement, short and self-contained.")] string statement,
+        [Description("Why the belief changed.")] string reason,
+        [Description("Where the correction came from — a file, PR, or the user's words.")] string? evidence = null)
+    {
+        if (!homeState.Initialized)
+        {
+            return "Engram home is not initialised (run 'engram init'); nothing was revised.";
+        }
+
+        if (!FactCatalog.TryParseHandle(fact_id, out var factId))
+        {
+            return $"'{fact_id}' is not a fact handle; they look like 'f42'. Nothing was revised.";
+        }
+
+        if (string.IsNullOrWhiteSpace(statement) || string.IsNullOrWhiteSpace(reason))
+        {
+            return "Revision needs both a corrected statement and a reason. Nothing was revised.";
+        }
+
+        using var connection = EngramDatabase.OpenInitialized(home);
+        var target = FactStore.ReadById(connection, factId);
+        if (target is null)
+        {
+            return $"No fact with id '{fact_id}'. Nothing was revised.";
+        }
+
+        if (target.ValidTo is not null)
+        {
+            return $"[{fact_id}] is already closed; revising it would rewrite history rather than "
+                + "correct a belief. Call engram_recall to find the live fact that replaced it.";
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        var sessionId = SessionStore.EnsureSession(connection, null, session.Value, now);
+
+        // The store's own collision rule does the revision: one live fact per
+        // (subject, predicate), so remembering the correction closes the incumbent and
+        // records the reason on the supersession row.
+        var result = FactStore.Remember(
+            connection,
+            new FactWrite(
+                target.SubjectPath,
+                "concept",
+                target.Predicate,
+                statement.Trim(),
+                target.Scope,
+                "stated",
+                evidence,
+                Regenerable: false,
+                SessionId: sessionId),
+            now,
+            reason.Trim());
+
+        Telemetry.Append(home, new TelemetryRecord(
+            Timestamp: DateTime.UtcNow.ToString("o"),
+            SessionId: session.Value,
+            Kind: TelemetryEventKind.Revise));
+
+        var moved = result.SupersededFactId is { } replaced && replaced != factId
+            ? $" (The live belief had moved; [{FactCatalog.HandleFor(replaced)}] is what was replaced.)"
+            : string.Empty;
+
+        return $"[{FactCatalog.HandleFor(result.FactId)}] revised [{fact_id}]: \"{statement.Trim()}\". "
+            + "The reason is recorded on the supersession, and the old fact stays closed rather than erased."
+            + moved;
+    }
+
+    private static void AppendChildren(System.Text.StringBuilder builder, BrowseNode node, string indent)
+    {
+        foreach (var child in node.Children)
+        {
+            builder.Append(indent)
+                .Append(child.Name)
+                .Append(" — ")
+                .Append(CountText(child.FactsHere + child.FactsUnder, "fact"))
+                .Append('\n');
+
+            AppendChildren(builder, child, indent + "  ");
+        }
+
+        if (node.ChildrenOmitted > 0)
+        {
+            builder.Append(indent).Append("…and ").Append(node.ChildrenOmitted).Append(" more\n");
+        }
+    }
+
+    private static string ExpandHistory(SqliteConnection connection, StoredFact fact)
+    {
+        var chain = FactStore.History(connection, fact.SubjectPath, fact.Predicate);
+        var reasons = MemoryBrowser.Reasons(
+            connection,
+            chain.Where(f => f.ValidTo is not null).Select(f => f.Id));
+
+        var builder = new System.Text.StringBuilder();
+        builder.Append("History of ").Append(fact.SubjectPath).Append(' ').Append(fact.Predicate)
+            .Append(" — ").Append(CountText(chain.Count, "version")).Append(":\n");
+
+        foreach (var entry in chain)
+        {
+            builder.Append("  [").Append(FactCatalog.HandleFor(entry.Id)).Append("] \"")
+                .Append(entry.Body).Append("\" (").Append(Day(entry.ValidFrom))
+                .Append(", ").Append(entry.LearnedVia).Append(')');
+
+            if (entry.ValidTo is { } closed)
+            {
+                builder.Append(" — closed ").Append(Day(closed));
+                if (reasons.TryGetValue(entry.Id, out var why))
+                {
+                    builder.Append(": ").Append(why);
+                }
+            }
+
+            builder.Append('\n');
+        }
+
+        return builder.ToString().TrimEnd('\n');
+    }
+
+    private static string ExpandRelated(SqliteConnection connection, StoredFact fact)
+    {
+        var related = FactStore.ReadSubtree(connection, fact.SubjectPath)
+            .Where(f => f.Id != fact.Id && f.ValidTo is null)
+            .Take(8)
+            .ToList();
+
+        if (related.Count == 0)
+        {
+            return $"Nothing else is recorded about {fact.SubjectPath}. engram_browse on a parent "
+                + "path shows the wider neighbourhood.";
+        }
+
+        var builder = new System.Text.StringBuilder();
+        builder.Append("Also recorded about ").Append(fact.SubjectPath).Append(":\n");
+        foreach (var entry in related)
+        {
+            builder.Append("  [").Append(FactCatalog.HandleFor(entry.Id)).Append("] ")
+                .Append(entry.SubjectPath == fact.SubjectPath
+                    ? entry.Predicate
+                    : entry.SubjectPath[fact.SubjectPath.Length..].TrimStart('/', '#') + " " + entry.Predicate)
+                .Append(": ").Append(entry.Body).Append('\n');
+        }
+
+        return builder.ToString().TrimEnd('\n');
+    }
+
+    private static string ExpandEvidence(StoredFact fact)
+    {
+        var evidence = string.IsNullOrWhiteSpace(fact.Evidence)
+            ? "No evidence was recorded with this fact."
+            : $"Evidence: {fact.Evidence}";
+
+        var regenerable = fact.Regenerable
+            ? " It is regenerable — the indexer can recompute it from source, and 'engram index' refreshes it."
+            : " It is not regenerable: it exists only because it was recorded, and nothing can recompute it.";
+
+        return $"[{FactCatalog.HandleFor(fact.Id)}] {evidence} Learned via '{fact.LearnedVia}', "
+            + $"recorded {Day(fact.CreatedAt)}.{regenerable}";
+    }
+
+    private static string ExpandSource(SqliteConnection connection, StoredFact fact)
+    {
+        var sitting = MemoryBrowser.Sitting(connection, fact.Id);
+        var origin = sitting is { } s
+            ? $"recorded in session {s.ExternalId} (started {Day(s.StartedAt)})"
+            : "recorded outside any tracked session — seeded, indexed, or written by the CLI";
+
+        return $"[{FactCatalog.HandleFor(fact.Id)}] was {origin}, learned via '{fact.LearnedVia}' "
+            + $"on {Day(fact.CreatedAt)}."
+            + (fact.ValidTo is { } closed ? $" It was closed {Day(closed)}." : " It is currently believed.");
+    }
+
+    private static string Day(long unixSeconds) =>
+        DateTimeOffset.FromUnixTimeSeconds(unixSeconds).ToString("yyyy-MM-dd");
+
+    private static string CountText(int n, string noun) => n == 1 ? $"1 {noun}" : $"{n} {noun}s";
 }

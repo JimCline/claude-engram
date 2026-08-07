@@ -1,9 +1,23 @@
+tool: engram_browse
+List what memory holds under a path — children, fact counts, and the top facts at that node. A table of contents, not a search: engram_recall finds facts by content, this shows how an area is organised. Paths look like /people/jim or /projects/acme.
+  param: path
+  The memory path to list, e.g. /projects/acme.
+  param: depth
+  Levels of children to show, 1-3. Defaults to 1.
+
 tool: engram_digest
 Flush the durable learnings from this session in one call, before context is compacted or the session ends. Accepts up to 25 short learnings plus an optional summary. Each is stored as a session note — recallable in later sessions too — and comes back with an id you can pass to engram_forget. Re-sending one already stored creates no duplicate, so calling this at compaction and again at the end is safe.
   param: learnings
   Up to 25 short, self-contained facts learned this session.
   param: session_summary
   A one- or two-sentence summary of the session.
+
+tool: engram_expand
+The full story behind one fact handle: its supersession history, related facts on the same subject, its evidence, or where it was learned. Call it when a fact engram_recall returned needs scrutiny before you rely on it.
+  param: id
+  The bracketed fact id, e.g. "f42".
+  param: view
+  One of: history, related, evidence, source.
 
 tool: engram_forget
 Retract a stored fact by its bracketed id (e.g. "f42"). Use it whenever the user says something stored is wrong, private, or no longer true, and to clear a session note that turned out to be mistaken. Retracted facts stop appearing in recall immediately, and stay retracted — nothing re-seeds them. Call engram_recall first if you need to find the id.
@@ -29,4 +43,15 @@ Save a durable note to this session's working memory — state you would otherwi
   Your own name, if you are a subagent recording this fact rather than the main agent.
   param: supersedes
   The bracketed id of a raw user-statement capture this restates, e.g. "f42". Closes that capture so the rewritten version replaces it instead of duplicating it.
+
+tool: engram_revise
+Replace a stored belief with a corrected statement, recording why. The old fact is closed, never erased, and the new one takes its place in recall. Use it when the user or fresh evidence contradicts something stored; engram_forget retracts without a replacement.
+  param: fact_id
+  The bracketed id of the fact to revise, e.g. "f42".
+  param: statement
+  The corrected statement, short and self-contained.
+  param: reason
+  Why the belief changed.
+  param: evidence
+  Where the correction came from — a file, PR, or the user's words.
 
