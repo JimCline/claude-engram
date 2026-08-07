@@ -232,6 +232,26 @@ reported red for a choice the user made is one people stop reading. Every check 
 wrapper that turns a throwing check into one broken row, because the state most likely to make a
 check throw is the state someone is running doctor in (D37).
 
+**The Metal tensor path is recorded by whoever loaded, never inferred by whoever asks.** ggml-metal
+compiles its shaders at runtime and takes their language version from the SDK stamped in the *main
+executable*, so the capability belongs to the process that loaded llama.cpp rather than to the binary
+running `doctor`. Measured as a controlled pair on one M5 Pro — same weights, same
+`libggml-metal.dylib`, same machine: `out/engram` at `sdk 26.5` records `has tensor = true`, and the
+`dotnet` host at `sdk 15.5` records `false`. The half-speed path is therefore live, and it is what
+`dotnet run` and `dotnet test` get rather than anything a user gets, which is a second instance of
+the rule tier 3 already encodes. So `LocalRuntime` writes `metal.json` after a load and doctor only
+reads it: inferring from doctor's own SDK field would answer for the wrong process — two binaries
+legitimately serve one home (D42) — and would copy ggml's gating policy into a second implementation
+that drifts on upgrade (D36). Three details cost real time and none are guessable. llama.cpp prints
+**`has tensor`, with a space**, so grepping the plan's `has_tensor` finds nothing and proves nothing.
+**`GPU name:` is not the GPU name** — it answers `MTL0`, a device index; the hardware is only on
+`ggml_metal_init: picking default device:`, and the M5 gate keyed to the obvious line could never
+match Apple silicon, so the warning could never fire. And the capture is **first-64-wins rather than
+a ring**, because `ggml_metal_init` repeats on every context creation and a ring would evict the
+capability line in a long-lived server. The warning is gated on the recorded device name, not on the
+capability alone: a GPU with no tensor cores reports the API disabled too, and reporting that as a
+fault would red an M2 for hardware it never had (D28).
+
 **A rebuild waits for the server to stop.** `EmbeddingBacklog` is the one owner of vector
 production, and a running server holds the embedder it built at *its* startup — so
 `embed --rebuild` refuses while it is up rather than racing it. Losing that race is not a slow

@@ -1,6 +1,6 @@
 # Engram — progress snapshot
 
-**As of 2026-08-06.** `main` @ `e322643`, working tree clean, 46 decisions (D1–D46).
+**As of 2026-08-06.** Working tree clean, 46 decisions (D1–D46) — D28 amended, none added.
 
 This is a handoff, not an authority. `CLAUDE.md` holds the invariants,
 `docs/engram-implementation-plan.md` holds the decisions and their reasoning, and
@@ -40,8 +40,12 @@ dotnet publish src/Engram.Cli -c Release -r linux-x64 -p:EngramGpu=cuda12
 
 | | Core | Integration | EndToEnd | total |
 |---|---|---|---|---|
-| no weights (the CI shape) | 336 | 410 (63 skipped) | 104 | **850** |
-| with weights | 336 | 416 (57 skipped) | 104 | **856** |
+| no weights (the CI shape) | 336 | 426 (64 skipped) | 104 | **866** |
+| with weights | 336 | 432 (58 skipped) | 104 | **872** |
+
+The with-weights row depends on *which* models are installed, not just that some are. A home
+holding only MiniLM skips the two-model test as well, which is why that row can show one more
+skip than a home holding Nomic too.
 
 `ENGRAM_TEST_MODEL_HOME` un-skips 6 real-weights tests. Point it at an Engram home whose
 `models/` holds a GGUF:
@@ -57,7 +61,36 @@ home under test.
 
 ---
 
-## What landed in the last two commits
+## What landed recently
+
+### D28's Metal check: the loader records, `doctor` reads
+
+`has_tensor` was prescribed in D28 and never built, because the sentence as written was
+unimplementable: it put the check "in `doctor`, where the hardware and the actual `has_tensor`
+result are both known", and doctor cannot know that result without loading the weights D35 and
+D37 forbid it from loading. So the check is split — `LocalRuntime` writes `metal.json` after a
+load, `doctor` only reads it — and D28's sentence is amended rather than left as a trap for
+whoever implemented it next.
+
+**The mechanism is now measured, not just described.** Same M5 Pro, same MiniLM GGUF, same
+`libggml-metal.dylib`, differing only in which Mach-O is the main executable:
+
+| loader | SDK field | `has tensor` |
+|---|---|---|
+| `out/engram` (Apple's linker, this machine) | 26.5 | **true** |
+| `dotnet` host (Microsoft, prebuilt) | 15.5 | **false** |
+
+So the half-speed path D28 protects against is live — and it is what `dotnet run` and
+`dotnet test` get, never what users get. Three things worth knowing before touching this:
+
+- **The plan's spelling was wrong.** llama.cpp prints `has tensor`, with a space. Grepping for
+  the documented `has_tensor` finds nothing and proves nothing.
+- **`GPU name:` is not the GPU name.** It answers `MTL0`, a device index. The hardware appears
+  only on `ggml_metal_init: picking default device:`. The M5 gate keyed to the obvious line
+  could never match Apple silicon, so the warning could never fire — a guard that cannot fail.
+- **First-wins, not a ring.** `ggml_metal_init` repeats on every context creation, so a ring
+  would evict the `has tensor` line in a long-lived server. Measured: one load records 24 lines,
+  a process that loaded repeatedly fills the 64 cap.
 
 ### `6d3ba89` — D45: llama.cpp is linked, not launched
 
@@ -103,6 +136,11 @@ happened.
 | CUDA *packaging* | measured — real `linux-x64 -p:EngramGpu=cuda12` build, output inspected |
 | CUDA *execution* | **not measured** — no NVIDIA device here |
 | pooling values per model | **argued from architecture, never benchmarked** |
+| the SDK field decides the Metal tensor path | measured — controlled pair on one M5 Pro, `sdk 26.5` → on, `sdk 15.5` → off |
+| the shipped binary gets the fast path | measured — `out/engram` records `has tensor = true` through Engram's own code |
+| the metal Warn branch, end to end | measured — the published binary renders it from a record the JIT host wrote, provenance line and all |
+| that Warn alone never fails the exit code | tested, not observed — `Warn` is not `Broken`; no home here has metal as its only non-ok row |
+| the Warn on hardware that natively lost the path | **not measured** — no such machine available; the JIT host is the only way to produce `false` here |
 | D6's gate on M3 | **unread** — see below |
 | D18's gate on M4 | **unmet**, and the adoption fraction is not computable (D43) |
 
@@ -150,7 +188,6 @@ input. D44's reasoning for leaving it: one unmeasured knob is a rule, two are a 
 
 ### 5. Smaller
 
-- Re-measure spike E with a `has_tensor` assertion — cheap now that weights load in-process.
 - D27's open sub-question.
 - `docs/engram-spec.md:62` "not a Sage replacement" — flagged, unresolved.
 - Nested-git-checkout edge case in the scanner.
@@ -162,6 +199,14 @@ input. D44's reasoning for leaving it: one unmeasured knob is a rule, two are a 
 - **Set `ENGRAM_HOME` before running `./out/engram` by hand.** The three test guards protect
   test code, not your shell. A verification command without it writes to the real `~/.engram`.
   This has already happened once.
+- **`init --with-embeddings` is a picker, and it no-ops when stdin is not a terminal.** It says so
+  and prints the non-interactive forms (`init --provider local --model …`), but a script that
+  checks only the exit code sees 0 and concludes it installed something. It did not.
+- **Mac is the only hardware here.** Linux, Windows and CUDA paths are guarded by construction
+  rather than by testing — the metal row is gated on macOS-arm64 and the record is never written
+  when no `ggml_metal` line appears — so anything claiming to work off this machine is an argument,
+  not a measurement. The JIT host is the one genuine second configuration available: it really does
+  lose the tensor path, which is what makes the Warn branch reachable at all.
 - **Prove a guard can fail.** Two guards this session looked green while proving nothing —
   the paraphrase test survived a deliberate pooling break, and an early AOT publish passed
   only because nothing referenced the assembly yet. Break the thing, watch the test fail,

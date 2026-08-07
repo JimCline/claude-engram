@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using Engram.Core;
 using LLama.Native;
 
@@ -205,6 +206,46 @@ public sealed class LocalRuntimeTests
         // Not merely the right shape. A null embedder returning zeros would pass every assertion
         // above, and would rank identically against every query forever.
         Assert.Contains(vectors[0]!, component => component != 0f);
+    }
+
+    /// <summary>
+    /// What ggml-metal reported reaches the record a load leaves behind (D28).
+    /// </summary>
+    /// <remarks>
+    /// Deliberately does not assert that the tensor path is <i>on</i>. Measured on one M5 Pro, that
+    /// value follows the SDK stamped in the main executable rather than the hardware: this suite
+    /// runs under the <c>dotnet</c> host, stamped <c>sdk 15.5</c>, and observes <c>false</c>, while
+    /// the published binary is stamped <c>sdk 26.5</c> and observes <c>true</c> from the same weights
+    /// on the same machine in the same minute. Asserting either value would pin this to whichever
+    /// host happened to run it — and the gap between them is the reason the record exists at all.
+    /// What is invariant is that the observation is made, parses, and lands.
+    /// </remarks>
+    [Fact]
+    public void RealWeights_RecordWhatGgmlMetalReported()
+    {
+        var home = RequireRealWeights(Mini);
+        using var runtime = new LocalRuntime(home);
+
+        // Gated on the platform, never on the sink's own output: skipping when no lines were
+        // captured would let deleting the capture turn this green instead of red.
+        Assert.SkipUnless(
+            OperatingSystem.IsMacOS() && RuntimeInformation.ProcessArchitecture == Architecture.Arm64,
+            "ggml-metal only reports on macOS arm64.");
+
+        // The model home outlives the run, so a record left by a previous one would let this pass
+        // while observing nothing. Measured: without this, deleting the capture entirely still left
+        // the test green.
+        File.Delete(home.MetalRecordPath);
+
+        var opened = runtime.Open(Mini.Id);
+        Assert.True(opened.Open, opened.Reason);
+
+        var record = MetalRecord.Read(home);
+
+        Assert.NotNull(record);
+        Assert.All(record.Lines, line => Assert.StartsWith("ggml_metal", line, StringComparison.Ordinal));
+        Assert.NotNull(record.HasTensor);
+        Assert.NotNull(record.Gpu);
     }
 
     /// <summary>

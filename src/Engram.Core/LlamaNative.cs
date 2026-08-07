@@ -35,14 +35,22 @@ namespace Engram.Core;
 /// JSON that Claude Code parses and <c>probe --json</c> asserts an empty stderr in an end-to-end
 /// test. But when a GGUF will not load, the managed exception says little while llama.cpp's log
 /// says exactly what is wrong. So errors and warnings are kept, bounded, and handed to whoever
-/// reports the failure; the tensor inventory below them is dropped.</para>
+/// reports the failure.</para>
+///
+/// <para><b>The <c>ggml_metal</c> lines are kept separately, whatever their level.</b> They carry
+/// the one thing D28 needs reported and nothing else can observe — whether ggml-metal compiled the
+/// tensor path — and they arrive at <c>Info</c>, below the errors-and-warnings ring. Both sinks are
+/// in memory and neither is ever printed, so the empty-stderr guarantee is untouched: it comes from
+/// a callback existing at all, not from what the callback decides to keep.</para>
 /// </remarks>
 public static class LlamaNative
 {
     private const int Keep = 8;
+    private const int MetalKeep = 64;
 
     private static readonly Lock Gate = new();
     private static readonly Queue<string> Recent = new();
+    private static readonly List<string> MetalInit = [];
     private static bool prepared;
 
     /// <summary>Routes llama.cpp's log once per process. Safe to call repeatedly.</summary>
@@ -86,17 +94,44 @@ public static class LlamaNative
         }
     }
 
+    /// <summary>What ggml-metal said about this device while initialising, in the order it said it.</summary>
+    /// <remarks>
+    /// Empty on every machine without a Metal backend, which is what stops a record from being
+    /// written on Linux, Windows and CUDA hosts. The device initialises once per process, so this
+    /// is a stable snapshot rather than a queue, and swapping models later re-reports nothing.
+    /// </remarks>
+    public static IReadOnlyList<string> MetalInitLines()
+    {
+        lock (Gate)
+        {
+            return [.. MetalInit];
+        }
+    }
+
     private static void Record(LLamaLogLevel level, string message)
     {
-        // Named rather than compared, because the levels are not ordered the way the comparison
-        // wants: Error sorts above Warning, and Continue sorts above both while meaning None.
-        if (level is not (LLamaLogLevel.Warning or LLamaLogLevel.Error))
+        var trimmed = message.Trim();
+        if (trimmed.Length == 0)
         {
             return;
         }
 
-        var trimmed = message.Trim();
-        if (trimmed.Length == 0)
+        if (DescribesMetalDevice(trimmed))
+        {
+            lock (Gate)
+            {
+                // First N win rather than a ring: the device inventory prints once, early, and
+                // rotation would let later chatter evict the lines this exists to keep.
+                if (MetalInit.Count < MetalKeep)
+                {
+                    MetalInit.Add(trimmed);
+                }
+            }
+        }
+
+        // Named rather than compared, because the levels are not ordered the way the comparison
+        // wants: Error sorts above Warning, and Continue sorts above both while meaning None.
+        if (level is not (LLamaLogLevel.Warning or LLamaLogLevel.Error))
         {
             return;
         }
@@ -110,4 +145,19 @@ public static class LlamaNative
             }
         }
     }
+
+    /// <summary>
+    /// Whether a log line describes the Metal device, as opposed to the model running on it.
+    /// </summary>
+    /// <remarks>
+    /// The two exclusions are what keeps <see cref="MetalKeep"/> a safe bound: they are emitted
+    /// per compiled kernel and per allocated buffer, so they scale with the model, while
+    /// everything kept here scales with the device. Measured on MiniLM, the capability lines and
+    /// the device name sit 280 lines apart with that chatter in between — a bigger model would
+    /// push the device name past any fixed cap that counted it.
+    /// </remarks>
+    private static bool DescribesMetalDevice(string line) =>
+        line.StartsWith("ggml_metal", StringComparison.Ordinal)
+        && !line.StartsWith("ggml_metal_library_compile_pipeline", StringComparison.Ordinal)
+        && !line.StartsWith("ggml_metal_log_allocated_size", StringComparison.Ordinal);
 }

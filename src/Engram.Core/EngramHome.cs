@@ -37,6 +37,17 @@ public sealed class EngramHome
     public string BackupDir { get; }
 
     /// <summary>
+    /// What ggml-metal reported about this machine at the last local model load (D28).
+    /// </summary>
+    /// <remarks>
+    /// Derived state (D8): any load regenerates it whole, so deleting it costs nothing and
+    /// <c>repair</c> and <c>compact</c> have no business in it. It exists because the fact it
+    /// carries belongs to the process that loaded llama.cpp rather than to the binary asking,
+    /// and <c>doctor</c> may not find it out for itself — finding out means loading the weights.
+    /// </remarks>
+    public string MetalRecordPath { get; }
+
+    /// <summary>
     /// Which MCP tool permissions we granted in Claude Code's settings, so the uninstaller can
     /// take back exactly those and nothing the user wrote themselves.
     /// </summary>
@@ -60,6 +71,7 @@ public sealed class EngramHome
         ReportDir = Path.Combine(root, "report");
         LibDir = Path.Combine(root, "lib");
         BackupDir = Path.Combine(root, "backups");
+        MetalRecordPath = Path.Combine(root, "metal.json");
         GrantedPermissionsPath = Path.Combine(root, "granted-permissions.json");
         ClaudeSettingsPath = Path.Combine(userProfileDirectory, ".claude", "settings.json");
     }

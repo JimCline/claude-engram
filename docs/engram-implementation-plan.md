@@ -1487,15 +1487,39 @@ rather than how it got there:
 **Performance on Apple Silicon must not be silently lost.** §1.5 records the mechanism:
 `ggml-metal` compiles its shaders at runtime, and the shader language version defaults to the
 SDK recorded in the *main executable*, so an executable linked against an old SDK quietly runs
-the pre-tensor path at roughly half speed on an M5. Under D28 this mostly solves itself — the
-binary is linked by Apple's linker on the user's own machine, `out/engram` measured
-`sdk 26.5`, and an M5 implies macOS 26 anyway, so the machines that would benefit are the
-machines that already have a current SDK. **What does not follow is a build-time assertion.**
-Failing a build because its SDK field is below 26 would punish someone on an M2 and macOS 14
-who has no tensor cores to lose. The check belongs at runtime, in `doctor`, where the hardware
-and the actual `has_tensor` result are both known — report the Metal tensor path as on or off
-and, when it is off on hardware that supports it, name updating the toolchain and rebuilding
-as the fix. Rewriting the SDK field with `vtool` is rejected: it makes the binary claim an SDK
+the pre-tensor path at roughly half speed on an M5. Under D28 this solves itself for the
+artifact users get — the binary is linked by Apple's linker on the user's own machine — and
+**not for the one developers run.** Measured 2026-08-06 as a controlled pair: same M5 Pro, same
+MiniLM GGUF, same `libggml-metal.dylib`, differing only in which Mach-O is the main executable.
+`out/engram`, stamped `sdk 26.5`, records `has tensor = true`. The `dotnet` host, prebuilt by
+Microsoft and stamped `sdk 15.5`, records `false`, logging `error compiling source` on the way.
+So the half-speed path is live rather than hypothetical, and it is exactly what `dotnet run` and
+`dotnet test` get — a second instance of the rule tier 3 already encodes, that the JIT build
+proves nothing about what ships.
+
+**What does not follow is a build-time assertion.** Failing a build because its SDK field is
+below 26 would punish someone on an M2 and macOS 14 who has no tensor cores to lose. The check
+belongs at runtime, split so `doctor` stays a reader (D37): whoever loads the model records what
+ggml-metal reported, and doctor reports from that record. D45's log capture keeps the
+`ggml_metal` device lines — they arrive at `Info`, below the errors-and-warnings ring, and are
+held in memory only, so the empty-stderr guarantee is untouched — and `LocalRuntime` writes them,
+with the parsed capability and device name, to `metal.json` after a successful load. Before the
+first local load doctor says "not yet observed", which is honest and costs nothing: the tensor
+path has no performance to lose until something loads, so the window in which doctor is blind and
+the window in which the answer does not matter are the same window.
+
+Doctor must not infer the answer from its own binary's SDK field instead. The capability belongs
+to the process that loaded, and two engram binaries legitimately serve one home (D42) — a
+rebuilt-but-not-restarted server really is still running the old shaders, which the record
+describes correctly and an inference would not. It would also copy ggml's gating policy, which
+drifts under LLamaSharp upgrades, into a second implementation (D36).
+
+The warning is gated on the recorded device name and not on the capability alone, because a GPU
+without tensor cores reports the API disabled too — warning on that alone would red an M2 for
+hardware it never had. The name is read from `ggml_metal_init: picking default device:`, never
+from `GPU name:`, which answers `MTL0`: a check keyed to the obvious-looking line could never
+match Apple silicon, and so could never fire. Rewriting the SDK field with `vtool` is rejected:
+it makes the binary claim an SDK
 it was not built against, and on an older macOS that could push the main shader compile past
 what the OS supports, turning a performance problem into a broken one.
 

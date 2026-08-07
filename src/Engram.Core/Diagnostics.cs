@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Runtime.InteropServices;
 using Microsoft.Data.Sqlite;
 
 namespace Engram.Core;
@@ -120,6 +121,7 @@ public static class Diagnostics
         Try(checks, "claude code", list => list.Add(CheckClaudeCode(claudeSettingsPath ?? home.ClaudeSettingsPath)));
         Try(checks, "embedding", list => CheckEmbedding(home, embedding, environment, reachOut, client, list));
         Try(checks, "vector index", list => list.Add(CheckIndex(home, connection, embedding)));
+        Try(checks, "metal", list => CheckMetal(home, embedding, list));
         Try(checks, "backups", list => list.Add(CheckBackups(home, connection, config)));
         Try(checks, "edit queue", list => list.Add(CheckQueue(home)));
 
@@ -528,6 +530,86 @@ public static class Diagnostics
             ? new Diagnosis("vector index", DiagnosisState.Ok, detail)
             : new Diagnosis("vector index", DiagnosisState.Ok, $"{detail}, {pending} facts waiting to be embedded");
     }
+
+    /// <summary>The first Apple silicon generation with tensor cores to lose (D28).</summary>
+    private const int FirstTensorGeneration = 5;
+
+    /// <summary>
+    /// Whether ggml-metal compiled the tensor path, as seen by whoever last loaded a model here.
+    /// </summary>
+    /// <remarks>
+    /// <para>Adds no row at all off macOS-arm64, or when the provider is not local — deliberately not
+    /// <see cref="DiagnosisState.Off"/>, which claims the user chose something. There is no Metal
+    /// choice to make on a machine with no Metal, and the arm64 gate keeps an Intel Mac, where these
+    /// lines never appear, from sitting on "not yet observed" forever.</para>
+    ///
+    /// <para>Reads only. Why the observation cannot be made here is <see cref="MetalRecord"/>'s whole
+    /// reason to exist (D35, D37).</para>
+    /// </remarks>
+    private static void CheckMetal(EngramHome home, EmbeddingSettings settings, List<Diagnosis> checks)
+    {
+        if (settings.Provider != EmbeddingProvider.Local
+            || !OperatingSystem.IsMacOS()
+            || RuntimeInformation.ProcessArchitecture != Architecture.Arm64)
+        {
+            return;
+        }
+
+        if (MetalRecord.Read(home) is not { } record)
+        {
+            checks.Add(new Diagnosis(
+                "metal",
+                DiagnosisState.Warn,
+                "tensor path not yet observed",
+                "it is recorded the first time a local model loads"));
+            return;
+        }
+
+        var when = Observed(record.ObservedAt);
+
+        // Reported, never enforced — two engram binaries legitimately serve one home (D42).
+        var by = record.Loader is { Length: > 0 } loader && loader != Environment.ProcessPath
+            ? $", recorded by {loader}"
+            : string.Empty;
+
+        if (record.HasTensor is not { } tensor)
+        {
+            checks.Add(new Diagnosis(
+                "metal",
+                DiagnosisState.Ok,
+                $"this llama.cpp build reports no tensor capability{when}{by}"));
+            return;
+        }
+
+        var gpu = record.Gpu ?? "this GPU";
+
+        if (tensor)
+        {
+            checks.Add(new Diagnosis("metal", DiagnosisState.Ok, $"tensor path on — {gpu}{when}{by}"));
+            return;
+        }
+
+        if (record.AppleGeneration is >= FirstTensorGeneration)
+        {
+            checks.Add(new Diagnosis(
+                "metal",
+                DiagnosisState.Warn,
+                $"tensor path off on {gpu}{when}{by} — ggml-metal compiled the pre-tensor shaders, "
+                    + "roughly half speed",
+                "the executable that loaded it records an SDK older than 26; rebuild with current "
+                    + "Xcode or command line tools and load again (D28)"));
+            return;
+        }
+
+        // Hardware that never had tensor cores, or a device name that did not parse. Either way this
+        // stays quiet: a wrong reading should cost a report, never manufacture one.
+        checks.Add(new Diagnosis("metal", DiagnosisState.Ok, $"tensor path off — {gpu}{when}{by}"));
+    }
+
+    private static string Observed(string? stamp) =>
+        DateTimeOffset.TryParse(stamp, CultureInfo.InvariantCulture, out var at)
+            ? $", observed {at.UtcDateTime.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)}"
+            : string.Empty;
 
     private static Diagnosis CheckBackups(EngramHome home, SqliteConnection? connection, ConfigFile config)
     {

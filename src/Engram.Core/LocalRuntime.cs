@@ -91,6 +91,11 @@ public sealed class LocalRuntime : IDisposable
                 weights = LLamaWeights.LoadFromFile(parameters);
                 context = new LLamaEmbedder(weights, parameters);
 
+                // Before the dimension check rather than after it, because the Metal device has
+                // finished initialising by now and what it reported is true regardless of whether
+                // this particular model turns out to be the wrong shape.
+                MetalRecord.Write(home, LlamaNative.MetalInitLines());
+
                 if (context.EmbeddingSize != model.Dimensions)
                 {
                     // The registry is what built the vec0 table, so a model file disagreeing with
