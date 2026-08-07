@@ -484,6 +484,25 @@ surface list → the sidecar batch test on the planted private field. (A `if (fa
 does not survive warnings-as-errors — CS0162 fails the build before the test can go red;
 plant a realistic wrong edit instead.)
 
+### The uninstaller inventories, confirms, and keeps the backups
+
+Jim's directive, three parts. The script now leads with what is *actually installed* —
+binary, plugin, permissions, PATH entry, home, backups, each probed rather than assumed —
+and an interactive `--apply` collects a confirmation per found item before removing
+anything: `[Y/n]` for what an uninstaller exists to remove, `[y/N]` for the home, because
+uninstalling a program does not imply wanting the memory it kept gone (`--purge` flips
+that one question back to default-yes). And backups now survive a purge by default:
+`backups/` holds the plain-text journal that can restore the store into a fresh install
+(D32), so the old `--purge` deleted the recovery path along with the thing it recovers —
+a safety inversion. Deleting them takes an explicit yes at the prompt or
+`--remove-backups`. Piped runs keep the prior semantics exactly (standard items removed,
+home only with `--purge`), which is why every pre-existing round-trip test passed
+unchanged — a fresh install's `backups/` is empty, and an empty backups directory
+protects nothing, so it does not trigger the keep. Falsified: the keep branch forced
+off turned exactly the keeps-backups test red, restored. `uninstall.ps1` lags again;
+recorded in the parity memory file, where the keep-backups default is flagged as the
+load-bearing piece.
+
 ---
 
 ## Verified vs. not

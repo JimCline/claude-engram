@@ -143,10 +143,18 @@ there make `brew doctor` complain, and Homebrew may clobber them.
 Uninstalling is symmetric, and equally a dry run by default:
 
 ```
-scripts/uninstall.sh              # dry run
+scripts/uninstall.sh              # dry run — shows what is installed and what would go
 scripts/uninstall.sh --apply
-scripts/uninstall.sh --apply --purge   # ALSO deletes ~/.engram and all your memory
+scripts/uninstall.sh --apply --purge   # ALSO deletes ~/.engram — your memory store
 ```
+
+The uninstaller first looks at what is actually installed, and an interactive `--apply`
+confirms each item before removing anything — binary, plugin, permissions, PATH entry,
+and (with its own question, defaulting to no unless `--purge`) the home. Backups survive
+a purge by default: `~/.engram/backups` holds the plain-text journal that can restore
+the memory into a fresh install (`engram backup replay`), so deleting it requires either
+answering yes at the prompt or passing `--remove-backups`. A piped run takes the
+defaults without asking.
 
 **`--purge` is the only thing that will ever touch `~/.engram`.** Without it the memory
 store is left completely alone, and the summary says so explicitly.

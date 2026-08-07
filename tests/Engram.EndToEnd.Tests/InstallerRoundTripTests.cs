@@ -233,6 +233,10 @@ public class InstallerRoundTripTests
 
         Assert.True(Directory.Exists(engramHome), "a dry-run --purge must not delete the Engram home");
         Assert.True(File.Exists(home.BinaryPath), "a dry-run --purge must not remove the installed binary either");
+
+        // The dry run leads with what is actually installed, so the person reading it is
+        // deciding about their own machine, not about the script's assumptions.
+        Assert.Contains("your memory store", uninstall.Stdout, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -253,6 +257,58 @@ public class InstallerRoundTripTests
         Assert.True(uninstall.ExitCode == 0, $"uninstall --purge failed: {uninstall.Stderr}");
 
         Assert.False(Directory.Exists(engramHome), "--apply --purge should remove the Engram home entirely");
+    }
+
+    /// <summary>
+    /// Backups are the plain-text journal that can restore the memory a purge deletes, so
+    /// they survive the purge by default — kept is the answer nobody has to remember to
+    /// give, and a piped run cannot be asked.
+    /// </summary>
+    [Fact]
+    public void Uninstall_ApplyPurge_KeepsBackups_UnlessToldOtherwise()
+    {
+        Assert.SkipUnless(EndToEndBinary.Path is not null, EndToEndBinary.SkipReason);
+
+        using var home = new InstallerTestHome();
+        File.WriteAllText(home.ZshrcPath, SeedZshrc);
+
+        var install = RunScript("install.sh", home.Root, "--apply", "--binary", EndToEndBinary.Path!, "--prefix", home.Prefix, "--no-tree-sitter", "--no-sqlite-vec");
+        Assert.True(install.ExitCode == 0, $"install failed: {install.Stderr}");
+
+        var engramHome = Path.Combine(home.Root, ".engram");
+        var backups = Path.Combine(engramHome, "backups");
+        Directory.CreateDirectory(backups);
+        File.WriteAllText(Path.Combine(backups, "facts.jsonl"), "{\"fact\":1}\n");
+
+        var uninstall = RunScript("uninstall.sh", home.Root, "--apply", "--purge", "--prefix", home.Prefix);
+        Assert.True(uninstall.ExitCode == 0, $"uninstall --purge failed: {uninstall.Stderr}");
+
+        Assert.True(File.Exists(Path.Combine(backups, "facts.jsonl")), "a purge must keep the backups by default");
+        Assert.Contains("Backups kept:", uninstall.Stdout, StringComparison.Ordinal);
+
+        var survivors = Directory.GetFileSystemEntries(engramHome).Select(Path.GetFileName).ToList();
+        Assert.Equal(["backups"], survivors);
+    }
+
+    [Fact]
+    public void Uninstall_ApplyPurge_WithRemoveBackups_DeletesEverything()
+    {
+        Assert.SkipUnless(EndToEndBinary.Path is not null, EndToEndBinary.SkipReason);
+
+        using var home = new InstallerTestHome();
+        File.WriteAllText(home.ZshrcPath, SeedZshrc);
+
+        var install = RunScript("install.sh", home.Root, "--apply", "--binary", EndToEndBinary.Path!, "--prefix", home.Prefix, "--no-tree-sitter", "--no-sqlite-vec");
+        Assert.True(install.ExitCode == 0, $"install failed: {install.Stderr}");
+
+        var engramHome = Path.Combine(home.Root, ".engram");
+        Directory.CreateDirectory(Path.Combine(engramHome, "backups"));
+        File.WriteAllText(Path.Combine(engramHome, "backups", "facts.jsonl"), "{\"fact\":1}\n");
+
+        var uninstall = RunScript("uninstall.sh", home.Root, "--apply", "--purge", "--remove-backups", "--prefix", home.Prefix);
+        Assert.True(uninstall.ExitCode == 0, $"uninstall --purge --remove-backups failed: {uninstall.Stderr}");
+
+        Assert.False(Directory.Exists(engramHome), "--remove-backups removes the home whole, backups included");
     }
 
     [Fact]

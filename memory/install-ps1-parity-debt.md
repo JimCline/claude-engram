@@ -35,7 +35,12 @@ none of it has a PowerShell counterpart. The TODOs, in the order they should pro
    honoring `NO_COLOR`. (The binary's picker brings its own TUI; this item is only the
    installer's shell output.)
 7. **Uninstall symmetry** — whatever new steps land, `uninstall.ps1` keeps its dry-run
-   default and removes only what the installer created.
+   default and removes only what the installer created. `uninstall.sh` has since moved
+   further (2026-08-07): it inventories what is actually installed, an interactive
+   `--apply` confirms each item before removing anything, and **backups survive a purge
+   by default** (`--remove-backups` or an explicit yes deletes them) — the ps1 port
+   needs all three, and the keep-backups default is the load-bearing one, because
+   `backups/facts.jsonl` is the only thing that can restore a deleted store.
 
 Two constraints on the port, both from measured history:
 
