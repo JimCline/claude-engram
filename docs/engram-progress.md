@@ -403,6 +403,24 @@ What remains, in the order the plan argues for:
   bump re-keys, which is adopt/merge's job, and `code_index_version` already forces the
   re-read.
 
+The supply-chain half of tree-sitter — the question that consumed a whole session for
+llama.cpp — was probed and measured before anything was built. All of it holds on this
+machine, stock clang, no dependencies: the core library compiles from its amalgamated
+`lib/src/lib.c` to a 237 KB dylib in 1.3 s; the entire TypeScript grammar (`parser.c` +
+`scanner.c`) to a 1.46 MB dylib in 0.4 s. The exact D24 mechanism was then smoke-tested
+end to end from C#: `NativeLibrary.Load` on both dylibs, function pointers via
+`GetExport` (no binding package, nothing reflection-shaped, so AOT-safe by
+construction), the 32-byte by-value `TSNode` struct round-trips, and a TypeScript
+snippet parses to an S-expression carrying precisely tier 1's facts — import with
+source, exported class, method with typed parameters and return. Two details that cost
+a retry each, worth keeping: current tree-sitter renamed `ts_language_version` to
+`ts_language_abi_version` (grammar here answered ABI 14), and
+`ts_parser_set_language` returns false on an ABI mismatch — which is the graceful
+degrade hook: a stale grammar should drop the file to tier 0, never error. Still open,
+now with numbers: whether grammars compile at install time (needs a toolchain — Xcode
+CLT or gcc) or arrive prebuilt like the llama natives; note vec0.dylib takes a third
+path today, fetched on demand rather than shipped by install.sh.
+
 ### 2. The adoption question itself — 28 writes against 7 reads
 
 This is spec §1.2's stated cause of death ("every predecessor died because the LLM never
