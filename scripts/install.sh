@@ -16,6 +16,8 @@ Usage: scripts/install.sh [options]
                        downloading it (air-gapped machines)
   --no-path            Do not modify any shell startup file
   --with-plugin        Also register the Claude Code marketplace and install the plugin
+  --with-tree-sitter   Also compile the tree-sitter grammars for tier-1 TS/JS analysis
+                       (needs a C compiler and network access)
   --grant-permissions  Allow Claude Code to call Engram's memory tools without prompting
   --no-grant-permissions
                        Never grant them, and do not ask
@@ -34,6 +36,7 @@ sdk_dir=""
 dotnet_install_override=""
 no_path=false
 with_plugin=false
+with_tree_sitter=false
 # ask | yes | no. "ask" only ever asks a terminal; a non-interactive run declines, because
 # silence from a pipe is not consent to edit somebody's settings file.
 grant_permissions=ask
@@ -90,6 +93,10 @@ while [ $# -gt 0 ]; do
             ;;
         --with-plugin)
             with_plugin=true
+            shift
+            ;;
+        --with-tree-sitter)
+            with_tree_sitter=true
             shift
             ;;
         --grant-permissions)
@@ -753,6 +760,32 @@ if $with_plugin; then
     fi
 fi
 
+# --- 9b. --with-tree-sitter ---
+
+# installed | no-cc | failed. Only read when --with-tree-sitter was given. Same set -e
+# shape as the plugin step: by now the install proper is durable, so a failed optional
+# step reports through the summary instead of aborting it.
+tree_sitter_result=no-cc
+if $with_tree_sitter; then
+    if $apply; then
+        if command -v cc >/dev/null 2>&1; then
+            say "Compiling the tree-sitter core and grammars ..."
+            if "$script_dir/fetch-tree-sitter.sh"; then
+                tree_sitter_result=installed
+            else
+                tree_sitter_result=failed
+                say "the tree-sitter step failed; run it yourself to finish it:"
+                say "  $script_dir/fetch-tree-sitter.sh"
+            fi
+        else
+            say "cc is not on PATH; install a C compiler, then run:"
+            say "  $script_dir/fetch-tree-sitter.sh"
+        fi
+    else
+        would "compile the tree-sitter core and grammars via $script_dir/fetch-tree-sitter.sh"
+    fi
+fi
+
 # --- 10. MCP tool permissions ---
 
 # Without this, Claude Code asks before every engram_recall. That is not just friction: M0
@@ -829,6 +862,19 @@ if $apply; then
                 ;;
             failed)
                 echo "  Claude Code plugin: NOT installed (claude reported an error); run the commands printed above"
+                ;;
+        esac
+    fi
+    if $with_tree_sitter; then
+        case "$tree_sitter_result" in
+            installed)
+                echo "  Tier-1 TS/JS analysis: tree-sitter core and grammars compiled into place"
+                ;;
+            no-cc)
+                echo "  Tier-1 TS/JS analysis: NOT installed (no C compiler on PATH); run scripts/fetch-tree-sitter.sh after installing one"
+                ;;
+            failed)
+                echo "  Tier-1 TS/JS analysis: NOT installed (fetch or compile failed); run scripts/fetch-tree-sitter.sh to retry"
                 ;;
         esac
     fi

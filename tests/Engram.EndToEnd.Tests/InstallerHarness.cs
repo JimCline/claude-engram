@@ -184,6 +184,30 @@ internal sealed class InstallerTestHome : IDisposable
     }
 
     /// <summary>
+    /// Puts a stand-in <c>curl</c> on the sandboxed PATH that records its argv and fails.
+    /// </summary>
+    /// <remarks>
+    /// The tree-sitter step's first network call is curl, so a failing stub is how the
+    /// fetch-fails path is arranged without a network. The other failure branch — no C
+    /// compiler — cannot be arranged here at all: the pinned PATH includes /usr/bin, and
+    /// absence cannot be planted (the same constraint <see cref="StubDotnet"/> records).
+    /// Returns the argv log path; its absence proves nothing fetched.
+    /// </remarks>
+    public string StubCurl()
+    {
+        var bin = Path.Combine(Root, "bin");
+        Directory.CreateDirectory(bin);
+
+        var log = Path.Combine(Root, "curl-argv.log");
+        var script = Path.Combine(bin, "curl");
+        File.WriteAllText(
+            script,
+            "#!/bin/sh\necho \"$@\" >> " + Quote(log) + "\necho 'stub curl failing on purpose' >&2\nexit 22\n");
+        MarkExecutable(script);
+        return log;
+    }
+
+    /// <summary>
     /// Puts a stand-in <c>dotnet</c> on the sandboxed PATH that reports exactly these SDKs.
     /// </summary>
     /// <remarks>
