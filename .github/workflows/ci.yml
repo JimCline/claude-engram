@@ -31,6 +31,12 @@ jobs:
 
     runs-on: ${{ matrix.os }}
 
+    # A green job finishes in minutes; the default cap is six hours, and a private
+    # repo bills a hung Windows job double for the whole gap — measured at seven
+    # runs deep in one night. The blame-hang flags below name the wedged test;
+    # this bounds what not knowing costs.
+    timeout-minutes: 30
+
     defaults:
       run:
         # One shell everywhere, so the steps below are not three dialects of the same
@@ -61,8 +67,13 @@ jobs:
       - name: Build
         run: dotnet build -c Release
 
+      # A test that blocks forever otherwise reports nothing: the job dies at the
+      # runner's cap with an unflushed log, and the only fact recorded is that it
+      # hung somewhere. --blame-hang aborts the wedged test and prints its name,
+      # which is the difference between a verdict and a mystery. No dump — the
+      # name is the diagnostic, and nothing uploads artifacts to keep one.
       - name: Test
-        run: dotnet test -c Release --no-build
+        run: dotnet test -c Release --no-build --blame-hang --blame-hang-timeout 8m --blame-hang-dump-type none
         env:
           ENGRAM_VEC_EXTENSION: ${{ github.workspace }}/ci-home/lib/${{ matrix.vecext }}
 
@@ -76,6 +87,6 @@ jobs:
           ENGRAM_HOME="$PWD/ci-home" ./ci-out/${{ matrix.exe }} init
 
       - name: End-to-end tests
-        run: dotnet test tests/Engram.EndToEnd.Tests -c Release
+        run: dotnet test tests/Engram.EndToEnd.Tests -c Release --blame-hang --blame-hang-timeout 8m --blame-hang-dump-type none
         env:
           ENGRAM_TEST_BINARY: ${{ github.workspace }}/ci-out/${{ matrix.exe }}
