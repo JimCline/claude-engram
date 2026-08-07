@@ -53,6 +53,8 @@ shipped but nothing has yet been leaned on it.
 | [`docs/engram-design.html`](docs/engram-design.html) | Visual design sheet |
 | [`docs/engram-progress.md`](docs/engram-progress.md) | What landed recently, what is verified vs. merely argued, and the open work |
 
+Licensed under [Apache-2.0](LICENSE).
+
 Start with the implementation plan — it records forty-nine decisions (D1–D49) resolving
 questions the spec left open, the places where the spec contradicts itself, and for each
 one the argument or measurement that settled it. `CLAUDE.md` holds the invariants that are
@@ -199,7 +201,7 @@ from one you wrote.
 The repository itself is the marketplace:
 
 ```
-claude plugin marketplace add /Users/jimcline/git/repos/engram
+claude plugin marketplace add /path/to/claude-engram   # this repository's root
 claude plugin install engram@engram
 ```
 
@@ -240,7 +242,7 @@ running Claude Code 2.1.222**:
 To try the plugin for one session without registering anything:
 
 ```
-claude --plugin-dir /Users/jimcline/git/repos/engram/plugin
+claude --plugin-dir /path/to/claude-engram/plugin
 ```
 
 ### Letting the agent reach memory without a prompt
