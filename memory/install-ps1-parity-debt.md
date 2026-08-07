@@ -6,7 +6,7 @@ metadata:
 ---
 
 `install.ps1` froze at the shape `install.sh` had before the install-everything directive
-(2026-08-06). The sh installer moved twice since — commits `7423b12` and `3fa60c2` — and
+(2026-08-06). The sh installer moved twice since — commits `587ed0f` and `3852e4f` — and
 none of it has a PowerShell counterpart. The TODOs, in the order they should probably land:
 
 1. **Defaults flip.** Every optional component installs by default. One question up
@@ -25,7 +25,7 @@ none of it has a PowerShell counterpart. The TODOs, in the order they should pro
    own compile path (the binding already expects `<name>.dll` naming). This is the
    hard one — a C compiler on Windows means the VS Build Tools workload the README
    already requires for the binary build.
-5. **Embedding step** (sh section 8b, commit `3fa60c2`) — stays interactive in both
+5. **Embedding step** (sh section 8b, commit `3852e4f`) — stays interactive in both
    modes because provider/model are real tradeoffs; `-Embedding*` flags answer
    unattended runs, `-NoEmbeddings` skips; no flags and no terminal defers and the
    summary says `engram init --with-embeddings`. Drives the binary's own picker so the
@@ -58,7 +58,7 @@ Two constraints on the port, both from measured history:
   optional polish: plant the invocation outside its guard, watch exactly the
   step-fails e2e test go red, restore. It has caught the `set -e`-equivalent bug four
   times in sh (plugin, tree-sitter, sqlite-vec, embeddings).
-- The **17 installer-family Windows e2e failures** (measured on `9aa4751`'s CI run) are
+- The **17 installer-family Windows e2e failures** (measured on `2cdfb2e`'s CI run) are
   exactly the population this parity work revisits — they drive POSIX `install.sh`
   through `/bin/bash` and `File.SetUnixFileMode`. They want
   `Assert.SkipWhen(OperatingSystem.IsWindows(), …)` like `InstallerRoundTripTests`

@@ -3320,14 +3320,14 @@ implemented; D15–D18 are written but unbuilt.
 
 **A. Tool-surface work — small, independent, no spike needed**
 
-1. ~~**D15** — move the durable guidance out of `PrimerBuilder`~~ — **done** (`195bb9d`).
+1. ~~**D15** — move the durable guidance out of `PrimerBuilder`~~ — **done** (`1b97491`).
    It required no addition to the tool descriptions at all: the primer's instruction was
    already stated nearly phrase for phrase across `engram_recall`, `engram_remember`, and
    `engram_digest`, so the fix was deleting the duplicate from the channel that does not
    survive compaction. `SubagentInstruction` deliberately stays in the hook — durable but
    not *universal*, and a tool description is shared with a main agent that does not need
    telling its report is lossy. `HookCommand` now declines to emit an empty primer.
-2. ~~**D17** — ceiling on the tool surface~~ — **done** (`195bb9d`), measured at **2,399
+2. ~~**D17** — ceiling on the tool surface~~ — **done** (`1b97491`), measured at **2,399
    characters** across four tools, ceiling set to 2,600. Lives in
    `tests/Engram.Integration.Tests/` rather than tier 1, because only that project
    references `Engram.Cli`. Falsified before being kept: at a ceiling of 2,000 it fails

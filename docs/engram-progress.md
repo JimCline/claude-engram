@@ -14,7 +14,7 @@ disagree, they win and this file is stale.
 
 1. `CLAUDE.md` — the invariants that are easy to break by accident. All of them were paid
    for by a real defect.
-2. `docs/engram-implementation-plan.md` — D1–D46. Skim the headings; read in full any
+2. `docs/engram-implementation-plan.md` — D1–D49. Skim the headings; read in full any
    decision you are about to touch.
 3. This file — for what is in flight and what the last session learned the hard way.
 
@@ -77,7 +77,7 @@ home under test.
 
 ## What landed recently
 
-### `21708a4`…`2f4c38c` — M3 tier 0: the code index, gate to shipped in four commits
+### `1bdde52`…`fdc28bd` — M3 tier 0: the code index, gate to shipped in four commits
 
 The D6 gate was overridden by explicit user instruction, not by telemetry — the gate itself
 never fired (see "Open work" below for what that means now). What exists:
@@ -133,7 +133,7 @@ installed binary, and the config gate defaults off. Turning it on is a reinstall
 (`install.sh` or plugin update) plus `auto_index_on_session_start = true` under
 `[indexing]` — deliberately not done unbidden.
 
-### `93fe169`…`f545d2b` — the M1 stragglers closed in one sitting
+### `516e1a5`…`ee2fdc9` — the M1 stragglers closed in one sitting
 
 Three things the plan promised in M1 and never got, built the same night as M3:
 
@@ -296,7 +296,7 @@ So the half-speed path D28 protects against is live — and it is what `dotnet r
   would evict the `has tensor` line in a long-lived server. Measured: one load records 24 lines,
   a process that loaded repeatedly fills the 64 cap.
 
-### `6d3ba89` — D45: llama.cpp is linked, not launched
+### `c0dac71` — D45: llama.cpp is linked, not launched
 
 `provider = "local"` loads a GGUF into the Engram process through LLamaSharp.
 `LlamaServer.cs`, `LocalRuntime`'s child process and `[embedding] server_path` are gone.
@@ -320,7 +320,7 @@ Three traps worth knowing before touching this code:
   (D18). The paraphrase test is *not* a pooling guard — flipping MiniLM to `Last` leaves it
   passing. The suite proves the setting reaches llama.cpp, nothing more.
 
-### `e322643` — D46: the primer records what it delivered
+### `fc56beb` — D46: the primer records what it delivered
 
 `session-start` and `subagent-start` now write `long_term_fact_count` and
 `tokens_returned`. `fact_count` **stays null** on a primer record and has its own test:
@@ -369,7 +369,7 @@ assertion red; the natives copy disabled → round-trip red; a syntax error in
 
 ---
 
-### `772dd6c`…`b3188c8` — M3 tier 1: tree-sitter decided (D47) and landed in four commits
+### `f63e06d`…`5e3ce80` — M3 tier 1: tree-sitter decided (D47) and landed in four commits
 
 The supply question that consumed a whole session for llama.cpp was settled in one decision
 here because the probe had already measured everything D47 needed: grammars arrive as pinned,
@@ -640,11 +640,11 @@ was the alphabetically-first test paying the runner's cold-start on the first py
 `ReadPort`'s 30 s bound covered a warm start only, and its timeout branch was the one failure
 path that attached no diagnosis — now 120 s, and it kills the process then reports stderr.
 
-The verdict came in three acts. Every run after `b642bbc` **hung** in the Windows e2e step —
+The verdict came in three acts. Every run after `dd81ebb` **hung** in the Windows e2e step —
 2h55m and climbing where the runs before it failed in 3m24s, seven runs deep against a 6-hour
-default job timeout that a private repo bills double. Nothing in `b642bbc` can block; the pooling
+default job timeout that a private repo bills double. Nothing in `dd81ebb` can block; the pooling
 fix let Windows get past its fail-fast failures into something downstream that had always been
-waiting. `7b93374` added `timeout-minutes: 30` and `--blame-hang` so a wedged test aborts and
+waiting. `89692dd` added `timeout-minutes: 30` and `--blame-hang` so a wedged test aborts and
 prints its name, and the instrumented run decoded everything:
 
 - **Tiers 0–2 are fully green on Windows** — 369/369 core, 532 integration (25 environment
@@ -657,12 +657,12 @@ prints its name, and the instrumented run decoded everything:
 - **The hang was the harness, not the product.** Job cleanup listed two orphaned console hosts
   and no `engram.exe`: the crashed binary's conhost kept the redirected pipe open, and
   `EngramProcess` read both pipes to EOF *before* its 10-second `WaitForExit`, so the bound
-  guarded the wrong event — EOF on a pipe is not exit of a process. `9aa4751` drains the pipes
+  guarded the wrong event — EOF on a pipe is not exit of a process. `2cdfb2e` drains the pipes
   concurrently and gives the join its own 5-second bound; the guard test plants a stub that exits
   instantly leaving a backgrounded sleep holding stdout, and was proven red against the old body
   (blocks the sleep's full 30 s, then passes nothing).
 
-Current Windows state, measured on `9aa4751`'s run: the e2e suite completes in **1 minute** —
+Current Windows state, measured on `2cdfb2e`'s run: the e2e suite completes in **1 minute** —
 34 failed / 69 passed / 17 skipped of 120, every test named, no hang possible. The 34 are two
 populations: **17 installer-family** (POSIX `install.sh` driven through `/bin/bash` and
 `File.SetUnixFileMode` — these want the same `Assert.SkipWhen(OperatingSystem.IsWindows(), …)`
