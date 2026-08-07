@@ -7,9 +7,12 @@ internal static class EngramProcess
     public static (int ExitCode, string Stdout, string Stderr) Run(string home, params string[] args) =>
         RunWithStdin(home, stdin: null, args);
 
-    public static (int ExitCode, string Stdout, string Stderr) RunWithStdin(string home, string? stdin, params string[] args)
+    public static (int ExitCode, string Stdout, string Stderr) RunWithStdin(string home, string? stdin, params string[] args) =>
+        Execute(EndToEndBinary.Path!, home, stdin, args);
+
+    internal static (int ExitCode, string Stdout, string Stderr) Execute(string binary, string home, string? stdin, string[] args)
     {
-        var startInfo = new ProcessStartInfo(EndToEndBinary.Path!)
+        var startInfo = new ProcessStartInfo(binary)
         {
             RedirectStandardOutput = true,
             RedirectStandardError = true,
@@ -49,8 +52,15 @@ internal static class EngramProcess
         {
         }
 
-        var stdout = process.StandardOutput.ReadToEnd();
-        var stderr = process.StandardError.ReadToEnd();
+        // Drain both pipes concurrently while the bounded wait runs. Reading on this
+        // thread first would trade one deadlock for another: a full pipe blocks the
+        // child (GitFileLister documents that half), but ReadToEnd blocks until the
+        // pipe's WRITE end closes, and that is not the same event as the child
+        // exiting. Windows CI measured the gap — a crashed binary left its console
+        // host holding the redirected handle, EOF never came, and the 10-second
+        // bound below was never reached. Seven runs burned to the job cap on it.
+        var stdoutTask = process.StandardOutput.ReadToEndAsync();
+        var stderrTask = process.StandardError.ReadToEndAsync();
 
         if (!process.WaitForExit(10_000))
         {
@@ -58,6 +68,15 @@ internal static class EngramProcess
             throw new TimeoutException("engram process did not exit within 10 seconds.");
         }
 
-        return (process.ExitCode, stdout, stderr);
+        // The process is gone; the readers may not be done — or may never finish, if
+        // something it spawned inherited the pipe and outlived it. A bounded join is
+        // what keeps one wedged invocation from hanging the whole suite.
+        if (!Task.WaitAll([stdoutTask, stderrTask], 5_000))
+        {
+            throw new TimeoutException(
+                "engram exited but its output pipes never closed — something it spawned still holds them.");
+        }
+
+        return (process.ExitCode, stdoutTask.Result, stderrTask.Result);
     }
 }
