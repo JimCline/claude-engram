@@ -210,6 +210,53 @@ public class TreeSitterTests
         Assert.Contains("refused at offset", downgrade);
     }
 
+    /// <summary>
+    /// The doctor row answers from file existence alone (D37): absence is a choice, a
+    /// lying override is a fault, and the state only the doctor can see — core installed,
+    /// grammar missing — warns, because at index time that gap is a silent tier-0 downgrade.
+    /// </summary>
+    [Fact]
+    public void Doctor_TreeSitterRow_TreatsAbsenceAsAChoice_AndAHalfInstallAsAWarning()
+    {
+        using var sandbox = new SandboxHome();
+        var home = sandbox.Home;
+
+        var tierZero = Diagnostics.CheckTreeSitter(_ => null, home);
+        Assert.Equal(DiagnosisState.Ok, tierZero.State);
+        Assert.Contains("tier 0", tierZero.Detail, StringComparison.Ordinal);
+
+        Directory.CreateDirectory(home.LibDir);
+        File.WriteAllText(Path.Combine(home.LibDir, TreeSitter.CoreLibraryFile), "stand-in");
+        var half = Diagnostics.CheckTreeSitter(_ => null, home);
+        Assert.Equal(DiagnosisState.Warn, half.State);
+        Assert.Contains(TreeSitter.GrammarLibraryFile("typescript"), half.Detail, StringComparison.Ordinal);
+
+        foreach (var grammar in LanguageRegistry.All
+            .Where(l => l.Grammars is not null)
+            .SelectMany(l => l.Grammars!))
+        {
+            File.WriteAllText(
+                Path.Combine(home.LibDir, TreeSitter.GrammarLibraryFile(grammar.Library)),
+                "stand-in");
+        }
+
+        var tierOne = Diagnostics.CheckTreeSitter(_ => null, home);
+        Assert.Equal(DiagnosisState.Ok, tierOne.State);
+        Assert.Contains("tier 1", tierOne.Detail, StringComparison.Ordinal);
+
+        var empty = Directory.CreateTempSubdirectory("engram-ts-doctor-");
+        try
+        {
+            var lying = Diagnostics.CheckTreeSitter(_ => empty.FullName, home);
+            Assert.Equal(DiagnosisState.Broken, lying.State);
+            Assert.Contains(TreeSitter.EnvironmentOverride, lying.Detail, StringComparison.Ordinal);
+        }
+        finally
+        {
+            empty.Delete(recursive: true);
+        }
+    }
+
     private static LanguageDefinition TypeScript() =>
         LanguageRegistry.All.Single(l => l.Id == "typescript");
 }

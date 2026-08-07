@@ -17,7 +17,7 @@ namespace Engram.EndToEnd.Tests;
 public class DoctorCommandTests
 {
     private static readonly string[] ExpectedChecks =
-        ["home", "store", "server", "claude code", "embedding", "vector index", "backups", "edit queue", "code analysis"];
+        ["home", "store", "server", "claude code", "embedding", "vector index", "backups", "edit queue", "code analysis", "tree-sitter"];
 
     [Fact]
     public void Doctor_OnAnInitialisedHome_ExitsZeroAndReportsEveryCheck()

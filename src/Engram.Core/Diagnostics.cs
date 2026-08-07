@@ -125,6 +125,7 @@ public static class Diagnostics
         Try(checks, "backups", list => list.Add(CheckBackups(home, connection, config)));
         Try(checks, "edit queue", list => list.Add(CheckQueue(home)));
         Try(checks, "code analysis", list => list.Add(CheckRoslyn(environment)));
+        Try(checks, "tree-sitter", list => list.Add(CheckTreeSitter(environment, home)));
 
         if (repoRoot is not null)
         {
@@ -161,6 +162,54 @@ public static class Diagnostics
                 DiagnosisState.Ok,
                 "tier 0 only — engram-roslyn is not installed, so C# indexes without Roslyn")
             : new Diagnosis("code analysis", DiagnosisState.Ok, $"tier 2: {sidecar}");
+    }
+
+    /// <summary>
+    /// Presence only, never a load — the sidecar row's rule (D37), and here it is cheaper
+    /// to break: asking dlopen "is this installed" pays for a native library staying
+    /// resident in the doctor's process. Absent is a supported configuration (TS/JS index
+    /// at tier 0, reported Ok); an override that points at nothing is Broken for the same
+    /// reason the sidecar's is; and a core with a registry-named grammar missing beside it
+    /// warns, because a half-finished install looks exactly like a working one at index
+    /// time — the affected language just quietly takes tier 0.
+    /// </summary>
+    public static Diagnosis CheckTreeSitter(Func<string, string?> environment, EngramHome home)
+    {
+        if (environment(TreeSitter.EnvironmentOverride) is { Length: > 0 } overridePath
+            && !File.Exists(Path.Combine(overridePath, TreeSitter.CoreLibraryFile)))
+        {
+            return new Diagnosis(
+                "tree-sitter",
+                DiagnosisState.Broken,
+                $"{TreeSitter.EnvironmentOverride} points at {overridePath}, which has no {TreeSitter.CoreLibraryFile}",
+                "unset it, or point it at a directory holding the compiled grammars");
+        }
+
+        var directory = TreeSitter.Locate(environment, home);
+        if (directory is null)
+        {
+            return new Diagnosis(
+                "tree-sitter",
+                DiagnosisState.Ok,
+                "tier 0 only — the grammars are not installed, so TypeScript and JavaScript index without them");
+        }
+
+        var missing = LanguageRegistry.All
+            .Where(language => language.Grammars is not null)
+            .SelectMany(language => language.Grammars!)
+            .Select(grammar => TreeSitter.GrammarLibraryFile(grammar.Library))
+            .Distinct(StringComparer.Ordinal)
+            .Where(file => !File.Exists(Path.Combine(directory, file)))
+            .Order(StringComparer.Ordinal)
+            .ToList();
+
+        return missing.Count == 0
+            ? new Diagnosis("tree-sitter", DiagnosisState.Ok, $"tier 1: {directory}")
+            : new Diagnosis(
+                "tree-sitter",
+                DiagnosisState.Warn,
+                $"tier 1 core is installed but {string.Join(", ", missing)} {(missing.Count == 1 ? "is" : "are")} not — the languages they parse take tier 0",
+                "re-run scripts/fetch-tree-sitter.sh, or reinstall with --with-tree-sitter");
     }
 
     private static void Try(List<Diagnosis> checks, string name, Action<List<Diagnosis>> check)
