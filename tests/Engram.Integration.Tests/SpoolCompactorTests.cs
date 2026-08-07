@@ -29,6 +29,18 @@ public class SpoolCompactorTests
 
     private static int Count(string queueDir) => Directory.GetFiles(queueDir, "*.spool").Length;
 
+    /// <summary>What any consumer sees: files in name order, which is write order.</summary>
+    private static List<SpooledEdit> ReadInNameOrder(string queueDir)
+    {
+        var files = Directory.GetFiles(queueDir, "*.spool");
+        Array.Sort(files, StringComparer.Ordinal);
+
+        return files
+            .Select(file => SpoolReader.Parse(File.ReadAllText(file)))
+            .OfType<SpooledEdit>()
+            .ToList();
+    }
+
     [Fact]
     public void BelowTheThreshold_ItReadsNothingAndDeletesNothing()
     {
@@ -188,7 +200,7 @@ public class SpoolCompactorTests
         Assert.Equal(2, Count(queue));
 
         // The newest two, not an arbitrary two.
-        var survivors = SpoolReader.Drain(queue).Select(edit => edit.Path).ToList();
+        var survivors = ReadInNameOrder(queue).Select(edit => edit.Path).ToList();
         Assert.Equal(new[] { "/repo/3.cs", "/repo/4.cs" }, survivors);
     }
 
@@ -236,10 +248,10 @@ public class SpoolCompactorTests
     /// Compaction must not break the reader that comes after it.
     /// </summary>
     /// <remarks>
-    /// It only deletes, never renames, so surviving names still lead with ticks and
-    /// <see cref="SpoolReader.Drain"/>'s lexicographic sort is still chronological. That is an
-    /// invariant worth asserting rather than trusting, because a future compactor tempted to
-    /// rewrite entries into one file would pass every other test here.
+    /// It only deletes, never renames, so surviving names still lead with ticks and a
+    /// name-ordered read is still chronological. That is an invariant worth asserting rather
+    /// than trusting, because a future compactor tempted to rewrite entries into one file
+    /// would pass every other test here.
     /// </remarks>
     [Fact]
     public void WhatSurvives_StillDrainsInChronologicalOrder()
@@ -254,7 +266,7 @@ public class SpoolCompactorTests
 
         SpoolCompactor.Compact(queue, apply: true, force: true);
 
-        var drained = SpoolReader.Drain(queue);
+        var drained = ReadInNameOrder(queue);
 
         Assert.Equal(new[] { At(2), At(5), At(9) }, drained.Select(edit => edit.At));
         Assert.Equal(new[] { "/repo/a.cs", "/repo/b.cs", "/repo/c.cs" }, drained.Select(edit => edit.Path));

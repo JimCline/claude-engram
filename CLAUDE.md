@@ -111,9 +111,9 @@ re-reads the file's current content, so three touches of one path carry exactly 
 does. Pruning by age would discard a path that is still dirty. Per path keep the **newest** (it means
 last touched); for entries with no path keep the **oldest**, because a bare timestamp is only ever a
 watermark and the earlier one is the safe reading. It **only deletes** — never renames, never
-rewrites — and that, not a lock, is why a compaction, a `Drain`, and a `file-touched` can run at
-once. Surviving names still lead with `DateTime.Ticks`, so `Drain`'s sort stays chronological; a
-compactor that rewrote entries into one file would pass every other test. Unreadable is not
+rewrites — and that, not a lock, is why a compaction, a consumer's read, and a `file-touched` can
+run at once. Surviving names still lead with `DateTime.Ticks`, so a name-ordered read stays
+chronological; a compactor that rewrote entries into one file would pass every other test. Unreadable is not
 unparseable: bytes that could not be obtained are left alone, because deleting on a transient
 `FileShare.None` collision destroys a good edit. Session start's detached child runs it with
 `--if-large`, in the same fork as `backup take --if-due` — `MaintenanceLauncher` owns both, and a

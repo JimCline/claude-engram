@@ -2,10 +2,10 @@ namespace Engram.Core;
 
 /// <summary>
 /// The indexer's view of the <c>file-touched</c> queue: read everything, consume only what
-/// this run actually indexed. <see cref="SpoolReader.Drain"/> deletes before its caller
-/// acts and takes every repo's entries with it; this consumer removes an entry only after
-/// the commit that made it redundant, and leaves other repos' entries queued — the queue
-/// is folded, never pruned (D41).
+/// this run actually indexed. A drain that deletes before its caller acts loses entries to
+/// any failure after the read, and takes every repo's entries with it; this consumer
+/// removes an entry only after the commit that made it redundant, and leaves other repos'
+/// entries queued — the queue is folded, never pruned (D41).
 /// </summary>
 public sealed class SpoolQueue
 {

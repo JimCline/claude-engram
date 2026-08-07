@@ -46,10 +46,10 @@ public sealed record SpoolCompaction(
 /// <para><b>It only ever deletes.</b> Nothing here writes or renames a spool file, which buys
 /// concurrency safety by construction rather than by a lock. Two compactions racing converge on the
 /// same directory. A <c>file-touched</c> running alongside creates a name no listing here contains,
-/// so its entry survives. A <see cref="SpoolReader.Drain"/> running alongside removes files this
-/// would have removed — harmless — or files it would have kept, which is not a loss because
-/// draining is consuming them. Surviving names still lead with <c>DateTime.Ticks</c>, so
-/// <c>Drain</c>'s sort stays chronological.</para>
+/// so its entry survives. A consumer draining alongside removes files this would have removed —
+/// harmless — or files it would have kept, which is not a loss because draining is consuming
+/// them. Surviving names still lead with <c>DateTime.Ticks</c>, so a name-ordered read stays
+/// chronological.</para>
 ///
 /// <para><b>A file it could not read is left alone.</b> Unreadable is not the same as unparseable:
 /// the writer holds <c>FileShare.None</c> while writing, so a compaction racing an edit can be

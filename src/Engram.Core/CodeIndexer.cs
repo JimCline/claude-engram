@@ -36,12 +36,12 @@ public sealed record IndexReport(
 /// code path is an agent's or the user's belief, and the indexer neither supersedes nor
 /// closes it: tier-0 extraction does not outrank testimony.</para>
 ///
-/// <para>It reads the spool with its own consumer rather than <see cref="SpoolReader.Drain"/>,
-/// because Drain deletes before the caller has acted and deletes entries for repos it is
-/// not indexing. Entries here are removed only after the work they describe has
-/// committed; entries for other repos stay queued (the queue is folded, never pruned —
-/// D41). A parsed entry with no path means "something changed, cannot say what", and
-/// escalates the run to a full scan.</para>
+/// <para>It reads the spool through <see cref="SpoolQueue"/>, never a drain-style consumer
+/// that deletes before the caller has acted or takes every repo's entries at once. Entries
+/// here are removed only after the work they describe has committed; entries for other
+/// repos stay queued (the queue is folded, never pruned — D41). A parsed entry with no
+/// path means "something changed, cannot say what", and escalates the run to a full
+/// scan.</para>
 /// </remarks>
 public static class CodeIndexer
 {

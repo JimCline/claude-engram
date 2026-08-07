@@ -12,67 +12,6 @@ public readonly record struct SpooledEdit(DateTimeOffset At, string? Path);
 public static class SpoolReader
 {
     /// <summary>
-    /// Reads every spooled edit in the order it was written, and removes what it read.
-    /// </summary>
-    /// <remarks>
-    /// <para>Ordered by file name, which is safe because the writer leads each name with
-    /// <c>DateTime.Ticks</c>: the sort is chronological for the same reason it is lexicographic.
-    /// </para>
-    ///
-    /// <para><b>Deletes before its caller has acted.</b> An entry is therefore lost if the
-    /// consumer fails after this returns, and the only recovery is a full rescan. That is
-    /// tolerable precisely because a rescan is always available — the spool is an optimisation
-    /// over walking the repo, never the sole record that a file changed — but a consumer that
-    /// cannot rescan must not be built on this method as it stands.</para>
-    /// </remarks>
-    public static IReadOnlyList<SpooledEdit> Drain(string queueDir)
-    {
-        if (!Directory.Exists(queueDir))
-        {
-            return [];
-        }
-
-        var files = Directory.GetFiles(queueDir, "*.spool");
-        Array.Sort(files, StringComparer.Ordinal);
-
-        var edits = new List<SpooledEdit>(files.Length);
-        foreach (var file in files)
-        {
-            string text;
-            try
-            {
-                text = File.ReadAllText(file);
-            }
-            catch (IOException)
-            {
-                continue;
-            }
-            catch (UnauthorizedAccessException)
-            {
-                continue;
-            }
-
-            if (Parse(text) is { } edit)
-            {
-                edits.Add(edit);
-            }
-
-            try
-            {
-                File.Delete(file);
-            }
-            catch (IOException)
-            {
-            }
-            catch (UnauthorizedAccessException)
-            {
-            }
-        }
-
-        return edits;
-    }
-
-    /// <summary>
     /// A timestamp on the first line, and optionally a path on the second.
     /// </summary>
     /// <remarks>

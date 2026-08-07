@@ -396,19 +396,12 @@ concluding anything: the primer reaches every session without a tool call, so re
 undercounts delivery by construction — which is exactly what D46 was written to fix. Give
 it some accumulation before drawing a line through it.
 
-### 3. `SpoolReader.Drain` itself is now dead weight
-
-The queue has its consumer — `SpoolQueue`, which peeks without deleting and consumes only
-after commit. `Drain`, which deletes before its caller acts, still has no production
-caller and now never should have one: anything reaching for it wants `SpoolQueue`. Worth
-demoting to test-support or deleting once nothing in the tests leans on it.
-
-### 4. Score mass in `coverage` (D44, deliberately left open)
+### 3. Score mass in `coverage` (D44, deliberately left open)
 
 `coverage` currently keys off lane agreement only. The spec names score mass as a second
 input. D44's reasoning for leaving it: one unmeasured knob is a rule, two are a preference.
 
-### 5. Windows CI fixes are in, awaiting the run that can verify them
+### 4. Windows CI fixes are in, awaiting the run that can verify them
 
 The red run decomposed into four clusters, all diagnosed by reading rather than reproducing —
 there is still no Windows machine here, so the next CI run is the verdict, not a formality:
@@ -447,7 +440,7 @@ was the alphabetically-first test paying the runner's cold-start on the first py
 `ReadPort`'s 30 s bound covered a warm start only, and its timeout branch was the one failure
 path that attached no diagnosis — now 120 s, and it kills the process then reports stderr.
 
-### 6. Smaller
+### 5. Smaller
 
 - D27's open sub-question.
 - `docs/engram-spec.md:62` "not a Sage replacement" — flagged, unresolved.
