@@ -1,0 +1,129 @@
+using Engram.Core;
+using Microsoft.Data.Sqlite;
+
+namespace Engram.Cli;
+
+/// <summary>
+/// Turns a repository's files into code facts. Dry-run by default, like everything that
+/// changes the store: the report is the same analysis that <c>--apply</c> performs,
+/// stopped before the writes.
+/// </summary>
+internal static class IndexCommand
+{
+    public static int Run(string? homePath, string[] rest, TextWriter stdout, TextWriter stderr)
+    {
+        var apply = false;
+        var drain = false;
+        var full = false;
+        string? target = null;
+
+        foreach (var argument in rest)
+        {
+            switch (argument)
+            {
+                case "--apply":
+                    apply = true;
+                    break;
+                case "--drain":
+                    drain = true;
+                    break;
+                case "--full":
+                    full = true;
+                    break;
+                default:
+                    if (argument.StartsWith('-') || target is not null)
+                    {
+                        stderr.WriteLine($"error: unexpected argument '{argument}'");
+                        return 1;
+                    }
+
+                    target = argument;
+                    break;
+            }
+        }
+
+        var root = Path.GetFullPath(target ?? Directory.GetCurrentDirectory());
+        if (!Directory.Exists(root))
+        {
+            stderr.WriteLine($"error: no directory at {root}");
+            return 1;
+        }
+
+        var home = EngramHome.ResolveFromProcess(homePath);
+        var config = ConfigFile.Load(home.ConfigPath);
+        var settings = IndexingSettings.Read(config);
+
+        foreach (var problem in settings.Problems)
+        {
+            stderr.WriteLine($"warning: {problem}");
+        }
+
+        if (!apply && !File.Exists(home.DatabasePath))
+        {
+            // Opening would create an empty database, and a dry run that leaves a file
+            // behind is not a dry run.
+            stderr.WriteLine($"error: no store at {home.DatabasePath} — run 'engram init' first");
+            return 1;
+        }
+
+        try
+        {
+            using var connection = apply
+                ? EngramDatabase.OpenInitialized(home)
+                : EngramDatabase.Open(home);
+
+            var report = CodeIndexer.Index(
+                connection,
+                home,
+                config,
+                settings,
+                new IndexOptions(root, apply, drain, full),
+                DateTimeOffset.UtcNow);
+
+            Print(report, stdout);
+            return 0;
+        }
+        catch (SqliteException e) when (e.Message.Contains("no such table", StringComparison.OrdinalIgnoreCase))
+        {
+            stderr.WriteLine("error: this store predates the code index tables. Re-run with --apply,");
+            stderr.WriteLine("which migrates after snapshotting, or run 'engram doctor' to see where it stands.");
+            return 1;
+        }
+    }
+
+    private static void Print(IndexReport report, TextWriter stdout)
+    {
+        stdout.WriteLine($"{report.Root} -> {report.RepoPath}");
+
+        var mode = report.FullScan ? "full scan" : "queue drain";
+        stdout.WriteLine($"  {mode}: {Count(report.FilesConsidered, "file")} considered, "
+            + $"{report.Analyzed} analyzed, {report.Unchanged} unchanged"
+            + (report.Renamed > 0 ? $", {report.Renamed} renamed" : string.Empty)
+            + (report.Deleted > 0 ? $", {report.Deleted} deleted" : string.Empty));
+
+        var verb = report.Applied ? string.Empty : "would be ";
+        stdout.WriteLine($"  facts: {report.FactsWritten} {verb}written, {report.FactsClosed} {verb}closed, "
+            + $"{report.FactsUnchanged} unchanged"
+            + (report.ProtectedSkipped > 0
+                ? $", {report.ProtectedSkipped} left alone (not the indexer's to supersede)"
+                : string.Empty));
+
+        if (report.QueueConsumed > 0 || report.QueueLeft > 0)
+        {
+            stdout.WriteLine($"  queue: {report.QueueConsumed} consumed, {report.QueueLeft} left for other repos");
+        }
+
+        foreach (var note in report.Notes)
+        {
+            stdout.WriteLine($"  {note}");
+        }
+
+        if (!report.Applied)
+        {
+            stdout.WriteLine();
+            stdout.WriteLine("Dry run only — nothing was written. Re-run with --apply to index.");
+        }
+    }
+
+    private static string Count(int n, string noun) => n == 1 ? $"1 {noun}" : $"{n} {noun}s";
+}

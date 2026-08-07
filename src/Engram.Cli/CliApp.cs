@@ -49,6 +49,7 @@ public static class CliApp
             "model" => ModelCommand.Run(homePath, rest, stdout, stderr),
             "embed" => EmbedCommand.Run(homePath, rest, stdout, stderr),
             "scan" => ScanCommand.Run(homePath, rest, stdout, stderr),
+            "index" => IndexCommand.Run(homePath, rest, stdout, stderr),
             "explain" => ExplainCommand.Run(homePath, rest, stdout, stderr),
             "backup" => BackupCommand.Run(homePath, rest, stdout, stderr),
             "queue" => QueueCommand.Run(homePath, rest, stdout, stderr),
@@ -90,6 +91,7 @@ public static class CliApp
         writer.WriteLine("  embed --probe [--use-it]           report the width, and optionally write it to the config");
         writer.WriteLine("  embed --rebuild [--apply]          re-embed every live fact; needed after a model change");
         writer.WriteLine("  scan [path] [options]              report what indexing would read there, and what it would skip");
+        writer.WriteLine("  index [path] [options]             turn a repo's files into code facts; incremental after the first run");
         writer.WriteLine("  explain <query> [options]          show why recall ranks what it ranks, and what it leaves out");
         writer.WriteLine("  backup <take|list|prune|restore|replay|import>  snapshot the store, or put the facts back");
         writer.WriteLine("  queue <status|compact>             report the file-touched edit queue, or fold it down");
@@ -113,6 +115,11 @@ public static class CliApp
         writer.WriteLine("scan options:");
         writer.WriteLine("  --skipped                          name every skipped file and why");
         writer.WriteLine("  --files                            name every file that would be indexed");
+        writer.WriteLine();
+        writer.WriteLine("index options (dry run unless --apply is given):");
+        writer.WriteLine("  --apply                            actually write the facts and consume the queue");
+        writer.WriteLine("  --drain                            index only what the file-touched queue names");
+        writer.WriteLine("  --full                             ignore what was indexed before and re-read everything");
         writer.WriteLine();
         writer.WriteLine("explain options:");
         writer.WriteLine("  --budget <n>                       token budget to test against (default 500)");

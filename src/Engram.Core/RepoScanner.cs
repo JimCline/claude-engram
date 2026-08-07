@@ -172,7 +172,7 @@ public sealed class GitFileLister : IFileLister
             .ToArray();
     }
 
-    private static string? Run(string workingDirectory, params string[] arguments)
+    internal static string? Run(string workingDirectory, params string[] arguments)
     {
         var info = new ProcessStartInfo("git")
         {

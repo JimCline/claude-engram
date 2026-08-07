@@ -128,9 +128,31 @@ public static class FactStore
     /// </summary>
     public static bool Forget(SqliteConnection connection, long factId, string reason, DateTimeOffset now)
     {
-        var timestamp = now.ToUnixTimeSeconds();
-
         using var transaction = EngramDatabase.BeginWrite(connection);
+
+        if (!Forget(connection, transaction, factId, reason, now))
+        {
+            transaction.Rollback();
+            return false;
+        }
+
+        transaction.Commit();
+        return true;
+    }
+
+    /// <summary>
+    /// Closes a fact inside a caller's transaction, for batches where the closes and the
+    /// writes must land together — the indexer closing what a file no longer says while
+    /// writing what it says now.
+    /// </summary>
+    public static bool Forget(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        long factId,
+        string reason,
+        DateTimeOffset now)
+    {
+        var timestamp = now.ToUnixTimeSeconds();
 
         var closed = Execute(
             connection,
@@ -141,7 +163,6 @@ public static class FactStore
 
         if (closed == 0)
         {
-            transaction.Rollback();
             return false;
         }
 
@@ -158,8 +179,68 @@ public static class FactStore
             ("$reason", reason),
             ("$now", timestamp));
 
-        transaction.Commit();
         return true;
+    }
+
+    /// <summary>
+    /// Renames a subtree: every entity and fact whose path is <paramref name="oldPrefix"/>
+    /// or hangs under it (via <c>/</c> or <c>#</c>) moves to <paramref name="newPrefix"/>,
+    /// and each old path is filed in <c>entity_alias</c>. Exactly one operation, per D2,
+    /// so there is one code path to test.
+    /// </summary>
+    /// <remarks>
+    /// <para>Identity is <c>entity.id</c>; this rewrites addressing metadata only, which is
+    /// the one mutation of <c>fact.path</c> the append-only rule allows. Closed facts move
+    /// too — history should read under the address its subject has now, and the
+    /// <c>fact_fts_repath</c> trigger keeps the index honest for the live ones.</para>
+    ///
+    /// <para>Throws on a path collision (<c>entity.path</c> is UNIQUE). The caller decides
+    /// whether a collision means "merge" or "do not move"; this operation never does,
+    /// because a silent merge is an identity decision and identity is not addressing.</para>
+    /// </remarks>
+    public static int MoveSubtree(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        string oldPrefix,
+        string newPrefix,
+        DateTimeOffset now)
+    {
+        var timestamp = now.ToUnixTimeSeconds();
+        var length = oldPrefix.Length;
+
+        // substr rather than LIKE: file names legally contain % and _, and escaping them
+        // in a pattern is a second implementation of "starts with".
+        const string subtree =
+            "substr(path, 1, $len) = $old AND (length(path) = $len OR substr(path, $len + 1, 1) IN ('/', '#'))";
+
+        Execute(
+            connection,
+            transaction,
+            $"""
+            INSERT OR IGNORE INTO entity_alias (entity_id, alias, kind, created_at)
+            SELECT id, path, 'path', $now FROM entity WHERE {subtree};
+            """,
+            ("$len", length),
+            ("$old", oldPrefix),
+            ("$now", timestamp));
+
+        var moved = Execute(
+            connection,
+            transaction,
+            $"UPDATE entity SET path = $new || substr(path, $len + 1) WHERE {subtree};",
+            ("$len", length),
+            ("$old", oldPrefix),
+            ("$new", newPrefix));
+
+        Execute(
+            connection,
+            transaction,
+            $"UPDATE fact SET path = $new || substr(path, $len + 1) WHERE {subtree};",
+            ("$len", length),
+            ("$old", oldPrefix),
+            ("$new", newPrefix));
+
+        return moved;
     }
 
     /// <summary>
