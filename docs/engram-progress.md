@@ -178,9 +178,28 @@ Three things the plan promised in M1 and never got, built the same night as M3:
   `ENGRAM_ROSLYN_SIDECAR` that points at nothing (D37). The Windows installers
   (install.ps1/uninstall.ps1) do not carry the sidecar yet — recorded here, not hidden.
 
+- **`compact` and schema v3** — the fact-store pruner, dry-run by default. Without
+  `--path` it prunes closed regenerable facts; with one it takes the whole regenerable
+  subtree — the detached-repo case — plus the code entities nothing references any more
+  and the `file_state`/`repo_registry` rows underneath. Clearing file state is the
+  load-bearing half: pruned facts with surviving blob hashes would make the next index
+  run see nothing changed and rewrite nothing, turning a temporary loss permanent, and
+  the test for it was proven able to fail by omitting exactly that delete. A regenerable
+  fact sharing a supersession edge with an authored fact is never pruned, in either
+  direction — revising a code fact into a belief makes the pair authored history.
+  Writing the first prune is what bumped the schema: the v2 delete trigger re-deleted an
+  FTS entry `fact_fts_close` had already removed, and FTS5 fails the statement with
+  "database disk image is malformed (11)" — measured in a scratch store before a line of
+  compact existed, so every closed fact was undeletable. The fix is `WHEN old.valid_to
+  IS NULL` on the trigger, shipped as migration v2→v3 with a downgrade fixture that
+  deletes a closed fact through a migrated store, and the sqlite_master byte-identity
+  guard now covers the second copy of that DDL in `RebuildFactFts`.
+
 Still absent after tonight, in plan order: tree-sitter, the salience writer (M5, and
-deliberately blind until there is a retrieval benchmark to tune against), `compact` for
-the fact store, D5, and sidecar parity for the PowerShell installers.
+deliberately blind until there is a retrieval benchmark to tune against), D5 — which is
+cut by decision rather than unbuilt (plan lines 236–252: no automated cross-predicate
+contradiction detection until real transcripts show conflicts the agent missed) — and
+sidecar parity for the PowerShell installers.
 
 ### D42 amended: a start time you compute is not a start time
 

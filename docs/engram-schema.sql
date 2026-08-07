@@ -277,7 +277,13 @@ CREATE TRIGGER fact_fts_close AFTER UPDATE OF valid_to ON fact
     VALUES ('delete', old.id, old.body, old.predicate, old.path);
 END;
 
-CREATE TRIGGER fact_fts_delete AFTER DELETE ON fact BEGIN
+-- Live rows only: fact_fts_close already un-indexed a closed fact, and FTS5
+-- refuses a second 'delete' for an entry the index no longer holds. Measured:
+-- without the WHEN clause, DELETE of a closed fact fails at the statement with
+-- "database disk image is malformed (11)" — which made every closed fact
+-- undeletable and would have broken `compact` on its first prune.
+CREATE TRIGGER fact_fts_delete AFTER DELETE ON fact
+  WHEN old.valid_to IS NULL BEGIN
   INSERT INTO fact_fts(fact_fts, rowid, body, predicate, path)
     VALUES ('delete', old.id, old.body, old.predicate, old.path);
 END;
@@ -319,7 +325,7 @@ CREATE UNIQUE INDEX ux_repo_identity ON repo_registry(identity);
 
 
 CREATE TABLE schema_meta (key TEXT PRIMARY KEY, value TEXT);
-INSERT INTO schema_meta(key, value) VALUES ('schema_version', '2');
+INSERT INTO schema_meta(key, value) VALUES ('schema_version', '3');
 
 
 -- ---------------------------------------------------------------------------

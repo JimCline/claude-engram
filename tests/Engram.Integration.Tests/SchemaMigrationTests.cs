@@ -5,7 +5,7 @@ namespace Engram.Integration.Tests;
 
 /// <summary>
 /// Every schema version bump ships with a test that opens a database written by the previous
-/// version and reads it correctly. This is that test for version 2.
+/// version and reads it correctly. These are those tests, one downgrade fixture per version.
 /// </summary>
 [Collection(SqlitePoolCollection.Name)]
 public class SchemaMigrationTests
@@ -52,6 +52,23 @@ public class SchemaMigrationTests
         UPDATE schema_meta SET value = '1' WHERE key = 'schema_version';
         """;
 
+    /// <summary>
+    /// The version 2 shape of the delete trigger: unconditional, so it re-deletes an entry
+    /// <c>fact_fts_close</c> already removed, and FTS5 answers the second 'delete' with
+    /// "database disk image is malformed".
+    /// </summary>
+    private const string Version2Fts =
+        """
+        DROP TRIGGER fact_fts_delete;
+
+        CREATE TRIGGER fact_fts_delete AFTER DELETE ON fact BEGIN
+          INSERT INTO fact_fts(fact_fts, rowid, body, predicate, path)
+            VALUES ('delete', old.id, old.body, old.predicate, old.path);
+        END;
+
+        UPDATE schema_meta SET value = '2' WHERE key = 'schema_version';
+        """;
+
     /// <summary>Builds a store at version 1 holding one fact, and closes it.</summary>
     private static long WriteVersion1Store(SandboxHome sandbox, string path, string body)
     {
@@ -65,6 +82,26 @@ public class SchemaMigrationTests
 
         Assert.Equal(1, EngramDatabase.ReadSchemaVersion(connection));
         return id;
+    }
+
+    /// <summary>Builds a store at version 2 holding one live fact and one closed one.</summary>
+    private static (long Live, long Closed) WriteVersion2Store(SandboxHome sandbox)
+    {
+        using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
+        Execute(connection, Version2Fts);
+
+        var live = FactStore.Remember(
+            connection,
+            new FactWrite("/knowledge/testing/kestrel", "note", "states", "It binds loopback only.", "project", "stated"),
+            T0).FactId;
+        var closed = FactStore.Remember(
+            connection,
+            new FactWrite("/knowledge/testing/nginx", "note", "states", "It fronts the kestrel.", "project", "stated"),
+            T0).FactId;
+        Execute(connection, $"UPDATE fact SET valid_to = '{T0:O}' WHERE id = {closed};");
+
+        Assert.Equal(2, EngramDatabase.ReadSchemaVersion(connection));
+        return (live, closed);
     }
 
     [Fact]
@@ -217,6 +254,39 @@ public class SchemaMigrationTests
         });
 
         Assert.Contains("9999", exception.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Version 3 exists for one statement: DELETE of a closed fact. Closing already removed it
+    /// from the index, the version 2 trigger deleted it a second time, and FTS5 fails the whole
+    /// statement with "database disk image is malformed" — so on version 2, `compact` would have
+    /// broken on its first prune.
+    /// </summary>
+    [Fact]
+    public void Migrating_AVersion2Store_MakesAClosedFactDeletable()
+    {
+        using var sandbox = new SandboxHome(initialize: false);
+        var (live, closed) = WriteVersion2Store(sandbox);
+
+        using var reopened = EngramDatabase.OpenInitialized(sandbox.Home);
+        Assert.Equal(EngramDatabase.SchemaVersion, EngramDatabase.ReadSchemaVersion(reopened));
+
+        Execute(reopened, $"DELETE FROM fact WHERE id = {closed};");
+
+        Assert.Equal(live, Assert.Single(FactStore.SearchRanked(reopened, "loopback", 10)).FactId);
+    }
+
+    [Fact]
+    public void AStoreMigratedFromVersion2_HasTheSameLexicalIndexAsAFreshOne()
+    {
+        using var migratedHome = new SandboxHome(initialize: false);
+        using var freshHome = new SandboxHome(initialize: false);
+        WriteVersion2Store(migratedHome);
+
+        using var migrated = EngramDatabase.OpenInitialized(migratedHome.Home);
+        using var fresh = EngramDatabase.OpenInitialized(freshHome.Home);
+
+        Assert.Equal(LexicalDdl(fresh), LexicalDdl(migrated));
     }
 
     private static List<string> LexicalDdl(SqliteConnection connection)

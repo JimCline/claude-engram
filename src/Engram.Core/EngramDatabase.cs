@@ -20,7 +20,7 @@ namespace Engram.Core;
 /// </remarks>
 public static class EngramDatabase
 {
-    public const int SchemaVersion = 2;
+    public const int SchemaVersion = 3;
 
     public const int BusyTimeoutMilliseconds = 5000;
 
@@ -248,10 +248,15 @@ public static class EngramDatabase
             return;
         }
 
-        if (from < 2)
+        if (from < 3)
         {
+            // Version 2 added path to fact_fts; version 3 gave fact_fts_delete its WHEN
+            // clause — a closed fact is already out of the index via fact_fts_close, and
+            // FTS5 answers the second 'delete' with "database disk image is malformed".
+            // Both changes are index shape only, so one rebuild lands the current form
+            // from either starting point.
             RebuildFactFts(connection);
-            WriteMeta(connection, null, "schema_version", "2");
+            WriteMeta(connection, null, "schema_version", "3");
         }
     }
 
@@ -303,7 +308,8 @@ public static class EngramDatabase
                 VALUES ('delete', old.id, old.body, old.predicate, old.path);
             END;
 
-            CREATE TRIGGER fact_fts_delete AFTER DELETE ON fact BEGIN
+            CREATE TRIGGER fact_fts_delete AFTER DELETE ON fact
+              WHEN old.valid_to IS NULL BEGIN
               INSERT INTO fact_fts(fact_fts, rowid, body, predicate, path)
                 VALUES ('delete', old.id, old.body, old.predicate, old.path);
             END;
