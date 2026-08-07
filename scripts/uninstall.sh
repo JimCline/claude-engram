@@ -192,6 +192,33 @@ if [ -f "$sidecar_target" ]; then
     fi
 fi
 
+# --- Remove the llama.cpp natives the install recorded ---
+
+# The named-exactly rule above, kept under a directory whose contents vary by platform:
+# install.sh writes runtimes/.engram-manifest listing every file it copied, and this
+# removes precisely that list. A file somebody else put under runtimes/ is not in the
+# manifest and survives, along with any directory that holding it keeps non-empty.
+natives_root="$prefix/runtimes"
+natives_manifest="$natives_root/.engram-manifest"
+
+if [ -f "$natives_manifest" ]; then
+    if $apply; then
+        while IFS= read -r rel; do
+            case "$rel" in
+                ""|*..*|/*) continue ;;
+            esac
+            rm -f "$natives_root/$rel"
+        done < "$natives_manifest"
+        rm -f "$natives_manifest"
+        [ -d "$natives_root" ] && find "$natives_root" -type d -empty -delete 2>/dev/null || true
+        say "Removed the llama.cpp natives listed in the install manifest from $natives_root"
+    else
+        would "remove the $(wc -l < "$natives_manifest" | tr -d ' ') llama.cpp native files listed in $natives_manifest, then prune emptied directories"
+    fi
+elif [ -d "$natives_root" ]; then
+    say "Not touching $natives_root: no engram manifest there, so nothing in it is provably ours."
+fi
+
 # --- Remove the PATH symlink, if we created one ---
 
 symlink_removed=false

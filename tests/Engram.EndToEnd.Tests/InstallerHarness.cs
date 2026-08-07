@@ -42,6 +42,68 @@ internal static class InstallerHarness
         // It is also what lets a test decide whether `claude` exists.
         startInfo.Environment["PATH"] = $"{home}/bin:/usr/bin:/bin";
 
+        return Run(startInfo, scriptName);
+    }
+
+    /// <summary>
+    /// Runs one of the PowerShell scripts under <c>pwsh</c>, with the same pinned
+    /// environment as <see cref="RunScript"/>. Callers gate on <see cref="PwshPath"/>.
+    /// </summary>
+    public static (int ExitCode, string Stdout, string Stderr) RunPwshScript(string scriptName, string home, params string[] args)
+    {
+        var scriptPath = Path.Combine(RepoRoot, "scripts", scriptName);
+
+        var startInfo = new ProcessStartInfo(PwshPath ?? throw new InvalidOperationException("pwsh is not available"))
+        {
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+        };
+        startInfo.ArgumentList.Add("-NoProfile");
+        startInfo.ArgumentList.Add("-File");
+        startInfo.ArgumentList.Add(scriptPath);
+        foreach (var arg in args)
+        {
+            startInfo.ArgumentList.Add(arg);
+        }
+
+        startInfo.Environment["HOME"] = home;
+        // The bash harness redirects the home by redirecting $HOME, which on Windows
+        // redirects nothing — the binary's default resolution asks the profile API. The
+        // ps1 scripts are therefore driven with ENGRAM_HOME pinned into the sandbox,
+        // because a test that lets `engram init` reach the runner's real %USERPROFILE%
+        // is touching the real instance no matter what it asserts.
+        startInfo.Environment["ENGRAM_HOME"] = Path.Combine(home, ".engram");
+
+        return Run(startInfo, scriptName);
+    }
+
+    /// <summary>Where <c>pwsh</c> lives, or null. Lazy: most tests never ask.</summary>
+    public static string? PwshPath { get; } = FindOnSystemPath(OperatingSystem.IsWindows() ? "pwsh.exe" : "pwsh");
+
+    public const string PwshSkipReason = "pwsh is not installed; skipping the PowerShell installer test.";
+
+    private static string? FindOnSystemPath(string fileName)
+    {
+        foreach (var dir in (Environment.GetEnvironmentVariable("PATH") ?? "").Split(Path.PathSeparator))
+        {
+            if (string.IsNullOrWhiteSpace(dir))
+            {
+                continue;
+            }
+
+            var candidate = Path.Combine(dir, fileName);
+            if (File.Exists(candidate))
+            {
+                return candidate;
+            }
+        }
+
+        return null;
+    }
+
+    private static (int ExitCode, string Stdout, string Stderr) Run(ProcessStartInfo startInfo, string scriptName)
+    {
         using var process = Process.Start(startInfo) ?? throw new InvalidOperationException($"failed to start {scriptName}");
         var stdout = process.StandardOutput.ReadToEnd();
         var stderr = process.StandardError.ReadToEnd();
@@ -119,6 +181,80 @@ internal sealed class InstallerTestHome : IDisposable
 #pragma warning restore CA1416
 
         return log;
+    }
+
+    /// <summary>
+    /// Puts a stand-in <c>dotnet</c> on the sandboxed PATH that reports exactly these SDKs.
+    /// </summary>
+    /// <remarks>
+    /// A stub rather than PATH surgery, because "no dotnet" cannot be arranged by
+    /// subtraction: the pinned PATH already includes <c>/usr/bin</c>, and Ubuntu images
+    /// ship <c>/usr/bin/dotnet</c>, so a test that relies on dotnet being absent is a
+    /// test that flips with the host. Planting one first on PATH is deterministic
+    /// everywhere. Anything but <c>--list-sdks</c> fails loudly, so a test whose script
+    /// reaches publish through the stub reports that, not a hang.
+    /// </remarks>
+    public void StubDotnet(params string[] sdkVersions)
+    {
+        var bin = Path.Combine(Root, "bin");
+        Directory.CreateDirectory(bin);
+
+        var lines = string.Join("\n", sdkVersions.Select(v => $"echo '{v} [/stub/sdk]'"));
+        var script = Path.Combine(bin, "dotnet");
+        File.WriteAllText(
+            script,
+            "#!/bin/sh\nif [ \"$1\" = \"--list-sdks\" ]; then\n" + lines + "\nexit 0\nfi\necho 'stub dotnet only answers --list-sdks' >&2\nexit 1\n");
+        MarkExecutable(script);
+    }
+
+    /// <summary>
+    /// A stand-in for Microsoft's <c>dotnet-install.sh</c>: records its argv, then plants a
+    /// fake 10.x dotnet in whatever <c>--install-dir</c> it was handed, whose <c>publish</c>
+    /// fails. Returns the argv log path.
+    /// </summary>
+    /// <remarks>
+    /// The fake's failing publish is the point: the bootstrap test proves the chain —
+    /// installer invoked with the right arguments, then the bootstrapped dotnet chosen
+    /// for the build — without a network, an SDK download, or a real publish.
+    /// </remarks>
+    public string StubDotnetInstall()
+    {
+        var log = Path.Combine(Root, "dotnet-install-argv.log");
+        var script = Path.Combine(Root, "stub-dotnet-install.sh");
+        File.WriteAllText(
+            script,
+            """
+            #!/bin/sh
+            echo "$@" >> LOGPATH
+            install_dir=""
+            while [ $# -gt 0 ]; do
+                if [ "$1" = "--install-dir" ]; then install_dir="$2"; shift 2; else shift; fi
+            done
+            [ -n "$install_dir" ] || { echo 'stub dotnet-install: no --install-dir' >&2; exit 1; }
+            mkdir -p "$install_dir"
+            cat > "$install_dir/dotnet" <<'FAKE'
+            #!/bin/sh
+            if [ "$1" = "--list-sdks" ]; then echo '10.0.100 [/stub/sdk]'; exit 0; fi
+            echo 'the bootstrapped stub dotnet cannot publish' >&2
+            exit 1
+            FAKE
+            chmod +x "$install_dir/dotnet"
+            """.Replace("LOGPATH", Quote(log), StringComparison.Ordinal) + "\n");
+        MarkExecutable(script);
+        return log;
+    }
+
+    public string StubDotnetInstallPath => Path.Combine(Root, "stub-dotnet-install.sh");
+
+    private static void MarkExecutable(string script)
+    {
+#pragma warning disable CA1416 // engram's shell installers only run on macOS/Linux; these tests never run on Windows.
+        File.SetUnixFileMode(
+            script,
+            UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute
+                | UnixFileMode.GroupRead | UnixFileMode.GroupExecute
+                | UnixFileMode.OtherRead | UnixFileMode.OtherExecute);
+#pragma warning restore CA1416
     }
 
     public void Dispose()

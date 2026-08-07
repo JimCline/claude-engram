@@ -7,18 +7,27 @@ Usage: scripts/install.sh [options]
   --apply              Actually perform the installation (default is a dry run)
   --prefix DIR         Install directory (default: $HOME/.local/bin)
   --binary PATH        Install this prebuilt binary instead of building one
+  --sdk-dir DIR        Where a bootstrapped .NET SDK lives (default: <repo>/.dotnet)
+  --dotnet-install PATH
+                       Use this local copy of Microsoft's dotnet-install.sh instead of
+                       downloading it (air-gapped machines)
   --no-path            Do not modify any shell startup file
   --with-plugin        Also register the Claude Code marketplace and install the plugin
   --grant-permissions  Allow Claude Code to call Engram's memory tools without prompting
   --no-grant-permissions
                        Never grant them, and do not ask
   -h, --help           Show usage
+
+No .NET SDK is required up front: when none of the right version is found, one is
+downloaded privately into the SDK directory, and nothing outside it is touched.
 EOF
 }
 
 apply=false
 prefix="$HOME/.local/bin"
 binary_override=""
+sdk_dir=""
+dotnet_install_override=""
 no_path=false
 with_plugin=false
 # ask | yes | no. "ask" only ever asks a terminal; a non-interactive run declines, because
@@ -45,6 +54,22 @@ while [ $# -gt 0 ]; do
                 exit 1
             fi
             binary_override="$2"
+            shift 2
+            ;;
+        --sdk-dir)
+            if [ $# -lt 2 ]; then
+                echo "error: --sdk-dir requires a value" >&2
+                exit 1
+            fi
+            sdk_dir="$2"
+            shift 2
+            ;;
+        --dotnet-install)
+            if [ $# -lt 2 ]; then
+                echo "error: --dotnet-install requires a value" >&2
+                exit 1
+            fi
+            dotnet_install_override="$2"
             shift 2
             ;;
         --no-path)
@@ -78,6 +103,13 @@ done
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 repo_root=$(cd "$script_dir/.." && pwd)
 target="$prefix/engram"
+if [ -z "$sdk_dir" ]; then
+    sdk_dir="$repo_root/.dotnet"
+fi
+if [ -n "$dotnet_install_override" ] && [ ! -f "$dotnet_install_override" ]; then
+    echo "error: --dotnet-install path not found: $dotnet_install_override" >&2
+    exit 1
+fi
 
 say() {
     echo "$@"
@@ -202,20 +234,93 @@ is_homebrew_prefix_dir() {
     return 1
 }
 
+# True when this dotnet can build this repo. Matched against the SDK list rather than
+# `--version`, which answers with whatever global.json or the newest install says and
+# proves nothing about 10.x being present.
+has_net10_sdk() {
+    "$1" --list-sdks 2>/dev/null | grep -q '^10\.'
+}
+
+download_to() {
+    local url="$1" dest="$2"
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsSL "$url" -o "$dest"
+    elif command -v wget >/dev/null 2>&1; then
+        wget -q "$url" -O "$dest"
+    else
+        echo "error: neither curl nor wget is available to download $url" >&2
+        return 1
+    fi
+}
+
+# AOT publish drives a platform linker that no SDK carries. Checked before the SDK is
+# resolved so a machine that would fail an hour of download-and-build hears about the
+# missing 30-second fix first. Fatal under --apply; a dry run reports and keeps going,
+# because its job is to show the whole plan.
+toolchain_problem() {
+    case "$(uname -s)" in
+        Darwin)
+            if ! xcode-select -p >/dev/null 2>&1 && ! command -v cc >/dev/null 2>&1; then
+                echo "the Xcode command line tools are not installed; run: xcode-select --install"
+            fi
+            ;;
+        Linux)
+            local missing=""
+            command -v clang >/dev/null 2>&1 || missing="clang"
+            [ -f /usr/include/zlib.h ] || missing="$missing zlib-headers"
+            if [ -n "$missing" ]; then
+                local fix="install clang and the zlib development headers with your package manager"
+                if command -v apt-get >/dev/null 2>&1; then
+                    fix="run: sudo apt-get install clang zlib1g-dev"
+                elif command -v dnf >/dev/null 2>&1; then
+                    fix="run: sudo dnf install clang zlib-devel"
+                elif command -v zypper >/dev/null 2>&1; then
+                    fix="run: sudo zypper install clang zlib-devel"
+                elif command -v pacman >/dev/null 2>&1; then
+                    fix="run: sudo pacman -S clang zlib"
+                fi
+                echo "building needs$( for m in $missing; do printf ' %s' "$m"; done ) — $fix"
+            fi
+            ;;
+    esac
+}
+
 # --- 1. Preflight ---
 
+dotnet_cmd=""
+bootstrap_sdk=false
+
 if [ -z "$binary_override" ]; then
-    if ! command -v dotnet >/dev/null 2>&1; then
-        echo "error: dotnet is not on PATH (needed to build; pass --binary to skip building)" >&2
-        exit 1
-    fi
     rid=$(detect_rid)
     say "Detected runtime identifier: $rid"
+
+    problem=$(toolchain_problem)
+    if [ -n "$problem" ]; then
+        if $apply; then
+            echo "error: $problem" >&2
+            exit 1
+        fi
+        say "warning: $problem (--apply will stop here until it is fixed)"
+    fi
+
+    if command -v dotnet >/dev/null 2>&1 && has_net10_sdk dotnet; then
+        dotnet_cmd=dotnet
+    elif [ -x "$sdk_dir/dotnet" ] && has_net10_sdk "$sdk_dir/dotnet"; then
+        dotnet_cmd="$sdk_dir/dotnet"
+        say "Using the .NET SDK previously bootstrapped into $sdk_dir"
+    else
+        bootstrap_sdk=true
+        dotnet_cmd="$sdk_dir/dotnet"
+    fi
 else
     if [ ! -f "$binary_override" ]; then
         echo "error: --binary path not found: $binary_override" >&2
         exit 1
     fi
+    # Only used to find runtimes/<rid>/native beside the binary. A platform this
+    # cannot name still installs — it just carries no llama natives, which is the
+    # sidecar rule: absent is not an error.
+    rid=$(detect_rid 2>/dev/null || true)
 fi
 
 # --- 2. Stop a running daemon before replacing the binary ---
@@ -229,7 +334,33 @@ if [ -x "$target" ]; then
     fi
 fi
 
-# --- 3. Build, unless --binary was given ---
+# --- 3. Bootstrap a .NET SDK, when no usable one exists ---
+
+# Private on purpose: --install-dir plus --no-path means nothing outside $sdk_dir is
+# created or edited, so there is nothing here for uninstall to undo and nothing that
+# can fight an SDK the user installs later — the PATH one wins the next run's
+# resolution the moment it exists.
+if [ -z "$binary_override" ] && $bootstrap_sdk; then
+    if $apply; then
+        say "No .NET 10 SDK found; installing one privately into $sdk_dir (a few hundred MB; PATH is not touched) ..."
+        if [ -n "$dotnet_install_override" ]; then
+            dotnet_install_script="$dotnet_install_override"
+        else
+            dotnet_install_script=$(mktemp)
+            trap 'rm -f "$dotnet_install_script"; cleanup' EXIT
+            download_to "https://dot.net/v1/dotnet-install.sh" "$dotnet_install_script"
+        fi
+        bash "$dotnet_install_script" --channel 10.0 --install-dir "$sdk_dir" --no-path
+        if ! has_net10_sdk "$dotnet_cmd"; then
+            echo "error: the SDK bootstrap finished but $dotnet_cmd reports no .NET 10 SDK" >&2
+            exit 1
+        fi
+    else
+        would "download dotnet-install.sh and install the .NET 10 SDK into $sdk_dir (private to that directory; no PATH changes)"
+    fi
+fi
+
+# --- 4. Build, unless --binary was given ---
 
 if [ -n "$binary_override" ]; then
     binary_path="$binary_override"
@@ -238,7 +369,8 @@ elif $apply; then
     staging_dir=$(mktemp -d)
     cleanup_dirs+=("$staging_dir")
     say "Building engram for $rid into $staging_dir ..."
-    dotnet publish "$repo_root/src/Engram.Cli" \
+    DOTNET_NOLOGO=1 \
+    "$dotnet_cmd" publish "$repo_root/src/Engram.Cli" \
         -c Release \
         -r "$rid" \
         -o "$staging_dir"
@@ -257,7 +389,7 @@ elif $apply; then
     say "Staging size before symbol cleanup: $size_before"
     say "Staging size after symbol cleanup:  $size_after"
 else
-    would "dotnet publish $repo_root/src/Engram.Cli -c Release -r $rid -o <temp staging dir>"
+    would "$dotnet_cmd publish $repo_root/src/Engram.Cli -c Release -r $rid -o <temp staging dir>"
     would "remove .pdb files and .dSYM directories from the staging dir"
     binary_path="<built binary>"
 fi
@@ -265,7 +397,7 @@ fi
 # The name is fixed rather than discovered by globbing the source directory: a bin
 # directory should receive exactly the files this installer meant to put there, and
 # uninstall has to be able to name what it removes. If the set ever grows, the
-# in-prefix verification in step 5 is what reports the omission.
+# in-prefix verification in step 6 is what reports the omission.
 case "$(uname -s)" in
     Darwin) sidecar_name="libe_sqlite3.dylib" ;;
     *) sidecar_name="libe_sqlite3.so" ;;
@@ -273,7 +405,34 @@ esac
 sidecar_source="$(dirname "$binary_path")/$sidecar_name"
 sidecar_target="$prefix/$sidecar_name"
 
-# --- 4. Verify the built binary runs before installing it ---
+# llama.cpp's natives are the one part of the publish that keeps its runtimes/ tree
+# (D45), and LLamaSharp finds them by that layout relative to the executable — so the
+# tree is replicated under the prefix exactly, nested CPU-variant directories and all.
+# The fixed-name rule above still holds through the manifest: install records every
+# file it copies, and uninstall removes exactly that list, so a foreign file that
+# ends up in runtimes/ is never collateral.
+natives_source=""
+if [ -n "$rid" ]; then
+    natives_source="$(dirname "$binary_path")/runtimes/$rid/native"
+fi
+natives_target="$prefix/runtimes"
+
+# Shared shape with uninstall.sh: removes only what a previous install recorded, then
+# prunes directories that emptying left behind.
+remove_manifest_files() {
+    local root="$1" rel
+    [ -f "$root/.engram-manifest" ] || return 0
+    while IFS= read -r rel; do
+        case "$rel" in
+            ""|*..*|/*) continue ;;
+        esac
+        rm -f "$root/$rel"
+    done < "$root/.engram-manifest"
+    rm -f "$root/.engram-manifest"
+    [ -d "$root" ] && find "$root" -type d -empty -delete 2>/dev/null || true
+}
+
+# --- 5. Verify the built binary runs before installing it ---
 
 # 'init' rather than 'home': home only prints paths, so it exits 0 on a binary that
 # cannot open a database at all. A check that never touches SQLite cannot notice the
@@ -290,7 +449,7 @@ else
     would "verify the binary runs (engram init) against a throwaway ENGRAM_HOME"
 fi
 
-# --- 5. Install ---
+# --- 6. Install ---
 
 if $apply; then
     mkdir -p "$prefix"
@@ -308,6 +467,16 @@ if $apply; then
         chmod 644 "$tmp_sidecar"
         mv "$tmp_sidecar" "$sidecar_target"
         say "Installed $sidecar_target"
+    fi
+
+    if [ -n "$natives_source" ] && [ -d "$natives_source" ]; then
+        # A reinstall clears what the previous install recorded before copying, so a
+        # native that stopped shipping does not linger and get loaded over its successor.
+        remove_manifest_files "$natives_target"
+        mkdir -p "$natives_target/$rid/native"
+        cp -R "$natives_source/." "$natives_target/$rid/native/"
+        (cd "$natives_target" && find "$rid/native" -type f) > "$natives_target/.engram-manifest"
+        say "Installed $natives_target/$rid/native ($(wc -l < "$natives_target/.engram-manifest" | tr -d ' ') files, recorded for uninstall)"
     fi
 
     # cp rewrites $target in place; on macOS this succeeds even if a daemon
@@ -339,11 +508,14 @@ else
     if [ -f "$sidecar_source" ]; then
         would "install $(basename "$sidecar_source") to $sidecar_target (mode 644, via atomic replace)"
     fi
+    if [ -n "$natives_source" ] && [ -d "$natives_source" ]; then
+        would "install runtimes/$rid/native (llama.cpp) to $natives_target, recording a manifest for uninstall"
+    fi
     would "install binary to $target (mode 755, via atomic replace)"
     would "run the staged binary from $prefix against a throwaway ENGRAM_HOME, and abort the install if it cannot open a database"
 fi
 
-# --- 6. PATH ---
+# --- 7. PATH ---
 
 path_changed=false
 path_backup=""
@@ -473,7 +645,7 @@ BLOCKEOF
     esac
 fi
 
-# --- 7. Initialise the home ---
+# --- 8. Initialise the home ---
 
 if $apply; then
     say "Initialising the Engram home ..."
@@ -482,7 +654,7 @@ else
     would "run $target init to initialise the Engram home (idempotent, will not overwrite an existing config)"
 fi
 
-# --- 8. --with-plugin ---
+# --- 9. --with-plugin ---
 
 # installed | no-claude | failed. Only read when --with-plugin was given.
 plugin_result=no-claude
@@ -514,7 +686,7 @@ if $with_plugin; then
     fi
 fi
 
-# --- 9. MCP tool permissions ---
+# --- 10. MCP tool permissions ---
 
 # Without this, Claude Code asks before every engram_recall. That is not just friction: M0
 # measures whether the model reaches for memory at all, and a dialog in front of each call
@@ -550,7 +722,7 @@ if [ "$grant_permissions" != no ]; then
     fi
 fi
 
-# --- 10. Summary ---
+# --- 11. Summary ---
 
 echo
 if $apply; then

@@ -85,11 +85,23 @@ scripts/install.sh --apply
 scripts/install.sh --apply --with-plugin   # also register the Claude Code plugin
 ```
 
+You do not need the .NET SDK: when no SDK 10 is found, the installer downloads one
+privately into `<repo>/.dotnet` (a few hundred MB, no `PATH` changes, nothing outside
+that directory) and builds with it. What you do need is a C compiler — the Xcode
+command line tools on macOS, `clang` and the zlib headers on Linux — and the installer
+checks for that first and prints the one command that fixes it.
+
+On Windows, `scripts/install.ps1` and `scripts/uninstall.ps1` are the same installers
+with the same defaults (dry run first, `-Apply` to act); building there needs the
+"Desktop development with C++" workload of Visual Studio Build Tools.
+
 | | |
 |---|---|
 | `--apply` | Actually do it. Without this it is a dry run. |
 | `--prefix DIR` | Install directory. Default `$HOME/.local/bin`. |
 | `--binary PATH` | Install an already-built binary instead of building one. |
+| `--sdk-dir DIR` | Where a bootstrapped SDK lives. Default `<repo>/.dotnet`. |
+| `--dotnet-install PATH` | Use a local copy of Microsoft's `dotnet-install.sh` instead of downloading it. |
 | `--no-path` | Do not put the binary on `PATH` by any means. |
 | `--with-plugin` | Also run the two `claude plugin` commands below. Optional: if `claude` is missing or those commands fail, the install still finishes and prints them for you to run. |
 | `--grant-permissions` | Allow the memory tools without prompting, instead of asking. |

@@ -170,6 +170,45 @@ on a recall it means facts returned to the model, and a primer returns a count l
 up to two example bodies. A nearby number in that field is how D43's phantom-outage bug
 happened.
 
+### The installers went soup-to-nuts
+
+Three gaps stood between `scripts/install.sh` and "someone can install this":
+
+- **It required a .NET 10 SDK and never said which version.** An SDK-8 machine passed
+  preflight ("dotnet is on PATH") and died inside publish. Resolution is now: PATH dotnet
+  with a `^10.` SDK, else a previously bootstrapped `<repo>/.dotnet`, else download
+  `dotnet-install.sh` and install one there — privately, `--no-path`, nothing outside that
+  directory. The toolchain check runs *before* the SDK resolution, because the missing
+  30-second fix (`xcode-select --install`, `apt-get install clang zlib1g-dev`) should be
+  heard before a few hundred MB of download. Tests drive the decision through a stub
+  `dotnet` (Ubuntu images ship `/usr/bin/dotnet`, so "no dotnet on PATH" is not a state a
+  test can arrange by subtraction) and a stub `dotnet-install.sh` that records its argv
+  and plants a fake 10.x dotnet whose publish fails — proving the chain without network.
+- **The llama natives did not survive the install.** They publish to
+  `runtimes/<rid>/native/` and the installer carried only the binary and `libe_sqlite3`,
+  so an installed binary on `provider = "local"` died at model load. Measured both ways on
+  a sandboxed real install: the installed binary embedded 46/46 facts through MiniLM from
+  the prefix; move `runtimes/` aside and the same command fails with *"No library was
+  loaded before calling native apis"* — the exact error every installed binary produced
+  before the fix. Install records a manifest of every file it copies; uninstall removes
+  exactly that list (a planted foreign file under `runtimes/` survives, and a test holds
+  that).
+- **There was no Windows installer.** `install.ps1`/`uninstall.ps1` are the same
+  installers with the same invariants; PATH is the user environment value with the
+  previous value backed up to a file, and the prefix defaults to
+  `$LOCALAPPDATA\Programs\engram`. A `-Help` run under `pwsh` parses the whole file, so
+  the parse gate runs on every OS in CI; the apply round-trip runs Windows-only, with
+  `-NoPath` because the runner's user PATH is real state with no sandbox to redirect it
+  into — the PATH edit ships proven only as a dry-run plan.
+
+The whole path was then walked for real on this machine: sandboxed `--apply` (real
+publish, 123 MB staging → 29 MB after symbol strip), `model install all-minilm-l6-v2`
+through the installed binary, `embed --rebuild --apply`, then `uninstall.sh --apply
+--purge` back to an empty bin. Falsified four ways before commit: the SDK grep broken →
+bootstrap planned despite a 10.x SDK; `--no-path` dropped from the bootstrap → argv
+assertion red; the natives copy disabled → round-trip red; a syntax error in
+`install.ps1` → the parse gate red naming the line.
+
 ---
 
 ## Verified vs. not
@@ -187,6 +226,9 @@ happened.
 | the metal Warn branch, end to end | measured — the published binary renders it from a record the JIT host wrote, provenance line and all |
 | that Warn alone never fails the exit code | tested, not observed — `Warn` is not `Broken`; no home here has metal as its only non-ok row |
 | the Warn on hardware that natively lost the path | **not measured** — no such machine available; the JIT host is the only way to produce `false` here |
+| embeddings from an *installed* prefix | measured — 46/46 facts through MiniLM from a sandboxed real install, and the counterfactual (runtimes/ moved aside) fails with the pre-fix error |
+| the Windows installers | **not measured** — parse-gated on every OS, apply round-trip is Windows CI's job |
+| the SDK bootstrap against the real dotnet-install.sh | **not measured** — the argv contract is tested through a stub; the real download path is exercised by humans |
 | the Linux server-identity fix | measured — full suite green on a linux-arm64 AOT build in a container, including the 3 tests that failed in CI |
 | that same fix on linux-**x64** | **not measured here** — Docker on Apple silicon serves arm64 and its `ld` will not link x86_64. The mechanism is procfs, not the instruction set, so CI is the check |
 | Windows anything | **not measured** — no machine, and this is why the fix leaves Windows on its existing code path |

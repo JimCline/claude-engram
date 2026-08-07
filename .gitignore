@@ -42,3 +42,6 @@ plugin/bin/
 
 # Written by the MCP description golden test on mismatch; never committed.
 *.golden.txt.actual
+
+# The .NET SDK install.sh bootstraps privately when the machine has none
+.dotnet/
