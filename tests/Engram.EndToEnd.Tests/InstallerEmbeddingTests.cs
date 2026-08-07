@@ -15,7 +15,7 @@ public class InstallerEmbeddingTests
         RunScript(
             "install.sh",
             home.Root,
-            ["--binary", EndToEndBinary.Path!, "--prefix", home.Prefix, "--no-plugin", "--no-tree-sitter", "--no-sqlite-vec", .. extra]);
+            ["--binary", EndToEndBinary.Path!, "--prefix", home.Prefix, "--no-start", "--no-plugin", "--no-tree-sitter", "--no-sqlite-vec", .. extra]);
 
     [Fact]
     public void DryRun_SaysItWouldAsk()

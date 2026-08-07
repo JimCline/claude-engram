@@ -14,7 +14,7 @@ public class InstallerTreeSitterTests
         RunScript(
             "install.sh",
             home.Root,
-            ["--binary", EndToEndBinary.Path!, "--prefix", home.Prefix, "--no-plugin", "--no-sqlite-vec", .. extra]);
+            ["--binary", EndToEndBinary.Path!, "--prefix", home.Prefix, "--no-start", "--no-plugin", "--no-sqlite-vec", .. extra]);
 
     [Fact]
     public void ByDefault_DryRun_PrintsTheStepAndFetchesNothing()

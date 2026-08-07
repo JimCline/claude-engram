@@ -2744,6 +2744,63 @@ asked, and no one has run the PowerShell installer on a Windows machine even onc
 does not catch an inverted conditional, and the failure it would catch late is a "dry run" that
 installs. It keeps `-Apply` and is tracked with the rest of the parity debt.
 
+### D50 — the installer starts the server, and proves it is running before it says so
+
+An install that ends with the server down looks finished and answers nothing. Nothing else starts
+it: session start spawns maintenance, not the server, so the first session after a fresh install
+finds memory unreachable until somebody types `engram start` — and the person most likely not to
+know that is the one who just installed for the first time.
+
+**The upgrade case is worse than the fresh one, and it is what makes this a defect rather than a
+convenience.** Section 2 stops the daemon serving the binary about to be replaced, which it must:
+`cp` over a running executable on macOS changes its pages underneath it. So before this step
+existed, a reinstall *actively left the server down* — it stopped one and started nothing, and the
+summary said the install succeeded. That is the same shape as D49's dry-run default: the script
+did what it was told and not what it was for.
+
+**Starting is not the claim; running is.** `start` health-checks before returning 0, but that is
+the launching process vouching for itself. The step therefore asks again through `status`, a
+separate process reading the pid file and start token and putting an HTTP health check — which by
+D42 is a different question, and is the one every later consumer actually asks: a hook, a Claude
+Code session, `doctor`. `StatusCommand` exits 0 only for `Running`, and that is what makes it
+usable as a predicate at all.
+
+**This is the one place where `Running` rather than `ServerIsAlive` is correct**, and the exception
+should not be "fixed". D42's rule binds callers deciding whether they may *act alone*, where a
+`Wedged` or `VersionMismatch` process is a live thing that can still race you. Here the question is
+whether the server came up healthy, and both of those answers mean it did not.
+
+**No polling loop, deliberately.** Given start's guarantee, a `status` that disagrees is news, not
+a race to wait out. A retry window would convert a deterministic failure into an intermittent one
+and would be fitted to hoped-for timing — the same argument that forbids a tolerance in D42's
+identity comparison.
+
+**Ordering is load bearing in both directions.** After section 8b, because a server holds the
+embedder it built at its own startup (D38), so starting earlier would pin it to the setting the
+user just moved away from. And last overall, with the tri-state `if` shape of 9/9b/9c, which
+matters more here than anywhere else: this is the final step before the summary, so an abort under
+`set -e` would take the whole report with it.
+
+**Three guards, each falsified.** Default-starts, `--no-start`-leaves-it-stopped, and
+dry-run-starts-nothing. Breaking the default to `false` reddens the first; making `--no-start` stop
+pinning reddens the second. The load-bearing one is the third break — replacing `start` with a
+command that succeeds without launching anything — because it is the only one that tests the
+*validation* rather than the start: with it, the step still runs and the summary correctly says
+`NOT running`. Two of the three falsifications silently no-opped on the first attempt, because the
+`perl` patterns contained `$target` and `$with_start` and perl interpolated them to empty before
+matching. Both reported green, which is exactly what a successful falsification also looks like;
+the fix was to compare the file's checksum across the edit and refuse to trust an unchanged one.
+
+**Every other installer test now passes `--no-start`.** Roughly thirty apply-mode call sites would
+otherwise each launch a real daemon on the default port, fighting each other and whatever server
+the developer running the suite already has up, and then have their sandbox home deleted from under
+them. The three tests that do start a server take a private port through `ENGRAM_PORT`, which
+needed `InstallerHarness.RunScriptWithEnvironment` because `install.sh` has no `--port` of its own
+to forward, and they stop the server in a `finally` so a failed assertion cannot leak one.
+
+**Not ported to `install.ps1`,** for D49's reason exactly: it is another step that acts unasked,
+on a script nobody has run on Windows.
+
 ## PreCompact cannot inject context
 
 Spec §10.1 assumes `PreCompact` can "inject one instruction" the same way `SessionStart`

@@ -15,7 +15,24 @@ internal static class InstallerHarness
 {
     public static string RepoRoot { get; } = FindRepoRoot();
 
-    public static (int ExitCode, string Stdout, string Stderr) RunScript(string scriptName, string home, params string[] args)
+    public static (int ExitCode, string Stdout, string Stderr) RunScript(string scriptName, string home, params string[] args) =>
+        RunScriptWithEnvironment(scriptName, home, null, args);
+
+    /// <summary>
+    /// <see cref="RunScript"/> with extra environment variables layered over the pinned set.
+    /// </summary>
+    /// <remarks>
+    /// For the one thing the sandbox cannot say through arguments: which port the installer's
+    /// server step binds. install.sh has no --port of its own to forward, so a test that lets the
+    /// step start a real server would take the default port — fighting every other such test and
+    /// whatever daemon the developer running the suite already has up. <c>ENGRAM_PORT</c> is the
+    /// way in, and a per-test port is what makes starting a real server safe to do at all.
+    /// </remarks>
+    public static (int ExitCode, string Stdout, string Stderr) RunScriptWithEnvironment(
+        string scriptName,
+        string home,
+        IReadOnlyDictionary<string, string>? extraEnvironment,
+        params string[] args)
     {
         var scriptPath = Path.Combine(RepoRoot, "scripts", scriptName);
 
@@ -41,6 +58,14 @@ internal static class InstallerHarness
         // /usr/local/bin, no matter what the host machine's PATH contains.
         // It is also what lets a test decide whether `claude` exists.
         startInfo.Environment["PATH"] = $"{home}/bin:/usr/bin:/bin";
+
+        if (extraEnvironment is not null)
+        {
+            foreach (var (key, value) in extraEnvironment)
+            {
+                startInfo.Environment[key] = value;
+            }
+        }
 
         return Run(startInfo, scriptName);
     }

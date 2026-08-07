@@ -52,6 +52,17 @@ none of it has a PowerShell counterpart. The TODOs, in the order they should pro
    once on Windows before it ships, both halves: no flag installs, `-DryRun` changes
    nothing. Bring the two guards over with it.
 
+9. **Starting the server at the end (D50, 2026-08-07).** `install.sh` now finishes by running
+   `engram start` and then confirming with `engram status` from a separate process, reporting
+   `Server: running` only when that second, independent check agrees; `--no-start` pins it off and
+   it joins the up-front "everything" question. `install.ps1` does none of this. The reason it
+   matters on Windows too is the reinstall case rather than the fresh one: the installer stops the
+   daemon before replacing the binary, so without a start step an upgrade *ends with the server
+   down* while the summary reports success. Bring the three guards with it, and note that the
+   Windows port has no `ProcessServerLauncher` equivalent proven — the POSIX launcher routes the
+   daemon's fds through `/bin/sh` to `/dev/null` precisely so a piped caller's `ReadToEnd` does not
+   block forever, and the ps1 harness would hit exactly that if the Windows path does not.
+
 Two constraints on the port, both from measured history:
 
 - The **tri-state falsification** is part of each optional step's definition, not

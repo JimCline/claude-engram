@@ -103,7 +103,7 @@ public class InstallerSoupToNutsTests
         using var home = new InstallerTestHome();
         File.WriteAllText(home.ZshrcPath, "# seeded\n");
 
-        var install = RunScript("install.sh", home.Root, "--apply", "--binary", EndToEndBinary.Path!, "--prefix", home.Prefix, "--no-tree-sitter", "--no-sqlite-vec");
+        var install = RunScript("install.sh", home.Root, "--no-start", "--apply", "--binary", EndToEndBinary.Path!, "--prefix", home.Prefix, "--no-tree-sitter", "--no-sqlite-vec");
         Assert.True(install.ExitCode == 0, $"install failed: {install.Stderr}");
 
         var installedNatives = Path.Combine(home.Prefix, "runtimes", CurrentRid, "native");

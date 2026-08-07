@@ -55,7 +55,7 @@ shipped but nothing has yet been leaned on it.
 
 Licensed under [Apache-2.0](LICENSE).
 
-Start with the implementation plan — it records forty-nine decisions (D1–D49) resolving
+Start with the implementation plan — it records fifty decisions (D1–D50) resolving
 questions the spec left open, the places where the spec contradicts itself, and for each
 one the argument or measurement that settled it. `CLAUDE.md` holds the invariants that are
 easy to break by accident, most of which were paid for by breaking them.
@@ -97,8 +97,8 @@ works, but it is outside what this repository tests or reasons about.
 
 ## Installing
 
-`scripts/install.sh` builds the binary, installs it, puts it on your `PATH`, and
-initialises the Engram home. **Running it installs** — no flag required:
+`scripts/install.sh` builds the binary, installs it, puts it on your `PATH`, initialises
+the Engram home, and starts the server. **Running it installs** — no flag required:
 
 ```
 scripts/install.sh                # everything: binary, plugin, grammars, vector search
@@ -113,11 +113,19 @@ pass `--dry-run` to read the plan first. (`--apply` is still accepted and ignore
 the invocation in your shell history keeps working.)
 
 Every optional component installs by default: the Claude Code plugin, the tree-sitter
-grammars (TypeScript/JavaScript indexing), the sqlite-vec vector-search extension, and
-the Claude Code tool permissions. An interactive run asks one question up front —
-press Enter to take all of that, or answer `a` to be asked a `[Y/n]` at each step. A
-piped run takes the defaults without asking, except the permission grant, which edits
-Claude Code's settings file and is never granted by a run nobody is watching.
+grammars (TypeScript/JavaScript indexing), the sqlite-vec vector-search extension, the
+Claude Code tool permissions, and starting the server at the end. An interactive run
+asks one question up front — press Enter to take all of that, or answer `a` to be asked
+a `[Y/n]` at each step. A piped run takes the defaults without asking, except the
+permission grant, which edits Claude Code's settings file and is never granted by a run
+nobody is watching.
+
+The last step starts the server and then confirms it, by asking `engram status` from a
+separate process rather than trusting the one that just launched it — so the summary
+line says `Server: running` only when something independent agrees. `--no-start` leaves
+it stopped. This matters most on a *re*install: replacing the binary requires stopping
+the daemon serving the old one, so before this step existed an upgrade ended with the
+server down and the summary still reporting success.
 
 Embeddings are the one step that stays interactive in both modes, because provider and
 model are real tradeoffs — disk, download size, memory, languages — and the picker
@@ -153,6 +161,7 @@ the Linux path.
 | `--no-plugin` | Skip the two `claude plugin` commands below. When the step does run and `claude` is missing or fails, the install still finishes and prints them for you to run. |
 | `--no-tree-sitter` | Skip compiling the tree-sitter grammars into `~/.engram/lib`. |
 | `--no-sqlite-vec` | Skip fetching the sqlite-vec vector-search extension. |
+| `--no-start` | Leave the server stopped at the end. Start it later with `engram start`. |
 | `--no-embeddings` | Skip the embedding step entirely; recall stays lexical. |
 | `--embedding-provider P` | Answer the provider question without a terminal: `none`, `local`, `ollama`, `openai-compat`, `openai`. |
 | `--embedding-model M` | Which local model (see `engram model list`), or what an endpoint calls its model. |

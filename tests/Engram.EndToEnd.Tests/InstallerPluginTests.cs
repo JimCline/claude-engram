@@ -19,7 +19,7 @@ public class InstallerPluginTests
         RunScript(
             "install.sh",
             home.Root,
-            ["--binary", EndToEndBinary.Path!, "--prefix", home.Prefix, "--no-tree-sitter", "--no-sqlite-vec", .. extra]);
+            ["--binary", EndToEndBinary.Path!, "--prefix", home.Prefix, "--no-start", "--no-tree-sitter", "--no-sqlite-vec", .. extra]);
 
     [Fact]
     public void DryRun_PrintsBothCommandsAndRunsNeither()

@@ -32,6 +32,7 @@ Usage: scripts/install.sh [options]
   --grant-permissions  Allow Claude Code to call Engram's memory tools without prompting
   --no-grant-permissions
                        Never grant them, and do not ask
+  --no-start           Leave the Engram server stopped when the install finishes
   -h, --help           Show usage
 
 Every optional component installs by default. An interactive run asks one question up
@@ -64,6 +65,7 @@ no_path=false
 with_plugin=""
 with_tree_sitter=""
 with_sqlite_vec=""
+with_start=""
 no_embeddings=false
 embedding_provider=""
 embedding_model=""
@@ -149,6 +151,14 @@ while [ $# -gt 0 ]; do
             ;;
         --no-sqlite-vec)
             with_sqlite_vec=false
+            shift
+            ;;
+        --with-start)
+            with_start=true
+            shift
+            ;;
+        --no-start)
+            with_start=false
             shift
             ;;
         --embedding-provider)
@@ -441,11 +451,11 @@ toolchain_problem() {
 # everything Engram owns without being asked, and still never edits what it does not.
 install_mode=auto
 if $apply && [ -t 0 ] && [ -r /dev/tty ]; then
-    if [ -z "$with_plugin" ] || [ -z "$with_tree_sitter" ] || [ -z "$with_sqlite_vec" ]; then
+    if [ -z "$with_plugin" ] || [ -z "$with_tree_sitter" ] || [ -z "$with_sqlite_vec" ] || [ -z "$with_start" ]; then
         echo
         echo "${T_BOLD}Optional components${T_RESET}, all installed by default: the Claude Code plugin,"
         echo "tree-sitter grammars (TypeScript/JavaScript indexing), sqlite-vec (vector"
-        echo "search), and Claude Code tool permissions."
+        echo "search), Claude Code tool permissions, and starting the server at the end."
         echo "${T_DIM}Embeddings are chosen interactively after the install either way; pin with"
         echo "--embedding-provider or --no-embeddings to skip those questions.${T_RESET}"
         printf '%s' "${T_BOLD}Install everything with the defaults, or ask about each step? [E]verything/[a]sk: ${T_RESET}"
@@ -472,6 +482,7 @@ if [ "$install_mode" = auto ]; then
     [ -n "$with_plugin" ] || with_plugin=true
     [ -n "$with_tree_sitter" ] || with_tree_sitter=true
     [ -n "$with_sqlite_vec" ] || with_sqlite_vec=true
+    [ -n "$with_start" ] || with_start=true
     # Choosing "everything" at a terminal is the consent the grant needs, given once up
     # front. A piped run never reaches this: grant_permissions stays "ask" and section 10
     # declines it, exactly as before.
@@ -1079,6 +1090,53 @@ if [ "$grant_permissions" != no ]; then
     fi
 fi
 
+# --- 10b. Start the server ---
+
+# running | failed. Only read when the step runs. Last on purpose, and the order is load
+# bearing in both directions: section 2 stopped whatever daemon was serving the binary
+# being replaced, so without this an upgrade ends with the server down; and a server holds
+# the embedder it built at *its* startup (D38), so starting before section 8b configured
+# embeddings would pin it to the setting the user just moved away from.
+server_result=failed
+if [ "$install_mode" = each ] && [ -z "$with_start" ]; then
+    if ask_step "Start the Engram server now?"; then
+        with_start=true
+    else
+        with_start=false
+    fi
+fi
+if $with_start; then
+    if $apply; then
+        step "Server"
+        # Same set -e shape as 9, 9b and 9c, and it matters most here: this is the last
+        # step before the summary, so an abort would take the whole report with it.
+        if "$target" start; then
+            # Not a retry of the health check start already did. `start` does not return 0
+            # until the server vouched for itself, so this is a second and independent
+            # process asking through the pid file the way every later consumer does — a
+            # hook, a Claude Code session, doctor — and by D42 that is a different question
+            # than the launching process answering about itself. Deliberately no polling
+            # loop: given start's guarantee, a status that disagrees is news rather than a
+            # race to wait out, and a tolerance here would convert a real failure into an
+            # intermittent one.
+            if "$target" status; then
+                server_result=running
+            else
+                server_result=failed
+                say "the server started but does not report running; look at:"
+                say "  engram status"
+                say "  engram doctor"
+            fi
+        else
+            server_result=failed
+            say "the server did not start; run it yourself to finish it:"
+            say "  engram start"
+        fi
+    else
+        would "$target start, then confirm with $target status that the server reports running"
+    fi
+fi
+
 # --- 11. Summary ---
 
 echo
@@ -1176,6 +1234,18 @@ if $apply; then
             echo "  MCP tool permissions: not touched (--no-grant-permissions)"
             ;;
     esac
+    if $with_start; then
+        case "$server_result" in
+            running)
+                echo "  Server: running (confirmed by engram status)"
+                ;;
+            failed)
+                echo "  Server: NOT running; start it with 'engram start', then check 'engram doctor'"
+                ;;
+        esac
+    else
+        echo "  Server: not started; start it with 'engram start'"
+    fi
     echo
     echo "Next steps:"
     if $path_changed; then

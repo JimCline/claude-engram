@@ -1,6 +1,6 @@
 # Engram — progress snapshot
 
-**As of 2026-08-07.** Working tree clean, 49 decisions (D1–D49). M3's tier 0 shipped overnight
+**As of 2026-08-07.** Working tree clean, 50 decisions (D1–D50). M3's tier 0 shipped overnight
 on an explicit user override of D6's gate; tier 1 (D47) and grammar v2 (D48) followed.
 
 This is a handoff, not an authority. `CLAUDE.md` holds the invariants,
@@ -14,7 +14,7 @@ disagree, they win and this file is stale.
 
 1. `CLAUDE.md` — the invariants that are easy to break by accident. All of them were paid
    for by a real defect.
-2. `docs/engram-implementation-plan.md` — D1–D49. Skim the headings; read in full any
+2. `docs/engram-implementation-plan.md` — D1–D50. Skim the headings; read in full any
    decision you are about to touch.
 3. This file — for what is in flight and what the last session learned the hard way.
 
@@ -533,10 +533,54 @@ an inverted conditional, and nobody has run that script on Windows even once. It
 
 ---
 
+### The installer starts the server, and proves it (D50)
+
+Jim, immediately after the last one: the install script should start engram at the end and
+validate it is running. Nothing else starts the server — session start spawns maintenance,
+not the daemon — so a fresh install left memory unreachable until somebody typed `engram
+start`, and the person least likely to know that is the one installing for the first time.
+
+The reinstall case is what makes it a defect rather than a nicety. Section 2 stops the
+daemon serving the binary about to be replaced, which it has to: `cp` over a running
+executable on macOS changes its pages underneath it. So an upgrade *actively ended with the
+server down* — stopped one, started nothing — and the summary reported success. Same shape
+as D49: the script did what it was told and not what it was for.
+
+Starting is not the claim; running is. `start` health-checks before returning 0, but that is
+the launching process vouching for itself, so the step asks again through `status` — a
+separate process, pid file and start token and an HTTP health check, which by D42 is a
+different question and the one every later consumer actually puts. `StatusCommand` exits 0
+only for `Running`, which is what makes it usable as a predicate; this is also the one place
+`Running` rather than `ServerIsAlive` is right, because `Wedged` and `VersionMismatch` both
+mean the server did *not* come up healthy. No retry loop, deliberately: given start's
+guarantee a disagreement is news, not a race, and a window here would trade a deterministic
+failure for an intermittent one.
+
+Three guards, and the load-bearing falsification is the third: replacing `start` with a
+command that succeeds without launching anything leaves the step running and the summary
+correctly saying `NOT running`, which is the only break that tests the *validation* rather
+than the start. Two of the three breaks silently no-opped on the first attempt — the `perl`
+patterns contained `$target` and `$with_start`, perl interpolated them to empty, nothing
+matched, and both reported green. Checksumming the file across the edit is what caught it;
+an unchanged file is now treated as a failed falsification rather than a passed test.
+
+Every other installer test gained `--no-start`. Thirty-odd apply-mode call sites would each
+have launched a real daemon on the default port, fighting each other and whatever server the
+developer running the suite has up, then had their sandbox home deleted underneath them. The
+three that do start one take a private port through `ENGRAM_PORT` (new:
+`InstallerHarness.RunScriptWithEnvironment`, because `install.sh` has no `--port` to forward)
+and stop it in a `finally`. Full installer suite after the change: 40 passed, 0 failed, and
+the machine's `engram serve` count unchanged across the run.
+
+---
+
 ## Verified vs. not
 
 | claim | status |
 |---|---|
+| the installer starts the server and confirms it independently | measured — 3 guards pass; falsified three ways, including a `start` that succeeds without launching |
+| no installer test leaks a daemon | measured — 40 passed, `pgrep 'engram serve'` count identical before and after the suite |
+| the same start step on `install.ps1` | **not ported, not run** — and the Windows fd-redirection equivalent of `ProcessServerLauncher` is unproven |
 | `install.sh` installs with no flag, and `--dry-run` still changes nothing | measured — both guards pass; falsified by restoring `apply=false`, 14 of 17 round-trip tests red |
 | the same inversion on `install.ps1` | **not ported, not run** — needs a Windows machine; parse-gating cannot see an inverted conditional |
 | in-process embedding works on the published AOT binary | measured — 45 vectors in 0.46 s, MiniLM on Metal |

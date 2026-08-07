@@ -14,7 +14,7 @@ public class InstallerSqliteVecTests
         RunScript(
             "install.sh",
             home.Root,
-            ["--binary", EndToEndBinary.Path!, "--prefix", home.Prefix, "--no-plugin", "--no-tree-sitter", .. extra]);
+            ["--binary", EndToEndBinary.Path!, "--prefix", home.Prefix, "--no-start", "--no-plugin", "--no-tree-sitter", .. extra]);
 
     [Fact]
     public void ByDefault_DryRun_PrintsTheStepAndFetchesNothing()
