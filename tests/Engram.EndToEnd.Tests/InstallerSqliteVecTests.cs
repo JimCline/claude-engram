@@ -24,7 +24,7 @@ public class InstallerSqliteVecTests
         using var home = new InstallerTestHome();
         var log = home.StubCurl();
 
-        var (exitCode, stdout, stderr) = Install(home);
+        var (exitCode, stdout, stderr) = Install(home, "--dry-run");
 
         Assert.True(exitCode == 0, $"dry run failed: {stderr}");
         Assert.Contains("would: install the sqlite-vec extension", stdout, StringComparison.Ordinal);

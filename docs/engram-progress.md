@@ -503,12 +503,42 @@ off turned exactly the keeps-backups test red, restored. `uninstall.ps1` lags ag
 recorded in the parity memory file, where the keep-backups default is flagged as the
 load-bearing piece.
 
+### `install.sh` acts by default (D49), and the destructive rule got its boundary back
+
+Jim: "folks will just want to get running." The installer had been on the dry-run-first
+list, and it did not belong there — every other verb on that list removes or rewrites
+something already present, while the installer only adds and its one file edit is backed
+up and marked (D33). Running it now installs; `--dry-run` is the brake. `--apply` is
+parsed and ignored rather than removed, because ~20 e2e call sites and every README
+written before this pass it, and turning a silent no-op into an unrecognized-argument
+error buys nothing.
+
+Eight test sites were relying on bare-means-dry-run — the two `InstallerSoupToNutsTests`
+dry runs, two in `InstallerRoundTripTests`, and the bare `Install(home)` helper call in
+each of the embedding, tree-sitter, sqlite-vec and plugin files. Those are precisely the
+tests that assert *nothing happened*, so they were the ones that would have kept passing
+while asserting the opposite of what they read. Two new guards pin the default down, and
+the falsification was unusually loud: restoring `apply=false` turned 14 of the 17
+round-trip tests red, including both new guards by their own messages — with the old
+default and `--apply` inert, every `--apply` test does nothing, which is exactly how a
+half-applied inversion would fail.
+
+The piped-run consequence is intended and worth stating: a run with no terminal now
+installs everything Engram owns unasked. The consent exception is unchanged and matters
+more for it — the MCP permission grant edits a file Engram does not own, and a run nobody
+is watching still never grants it. `install.ps1` deliberately did not follow: the whole
+content of the change is that a script acts without being asked, parse-gating cannot see
+an inverted conditional, and nobody has run that script on Windows even once. It keeps
+`-Apply`, and the README now says so instead of claiming parity it does not have.
+
 ---
 
 ## Verified vs. not
 
 | claim | status |
 |---|---|
+| `install.sh` installs with no flag, and `--dry-run` still changes nothing | measured — both guards pass; falsified by restoring `apply=false`, 14 of 17 round-trip tests red |
+| the same inversion on `install.ps1` | **not ported, not run** — needs a Windows machine; parse-gating cannot see an inverted conditional |
 | in-process embedding works on the published AOT binary | measured — 45 vectors in 0.46 s, MiniLM on Metal |
 | binary growth does not move the hook budget | measured — 21.84→22.25 MB, `file-touched` p50 9.44→9.51 ms |
 | publish output trimmed to the target RID | measured — 210 MB → 121 MB, of which 5.7 MB is llama.cpp |

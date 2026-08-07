@@ -30,7 +30,7 @@ public class InstallerSoupToNutsTests
         using var home = new InstallerTestHome();
         home.StubDotnet("10.0.100");
 
-        var result = RunScript("install.sh", home.Root, "--prefix", home.Prefix);
+        var result = RunScript("install.sh", home.Root, "--dry-run", "--prefix", home.Prefix);
 
         Assert.True(result.ExitCode == 0, $"dry run failed: {result.Stderr}");
         Assert.Contains("dotnet publish", result.Stdout);
@@ -46,7 +46,7 @@ public class InstallerSoupToNutsTests
         home.StubDotnet("8.0.100");
         var sdkDir = Path.Combine(home.Root, "sdk");
 
-        var result = RunScript("install.sh", home.Root, "--prefix", home.Prefix, "--sdk-dir", sdkDir);
+        var result = RunScript("install.sh", home.Root, "--dry-run", "--prefix", home.Prefix, "--sdk-dir", sdkDir);
 
         Assert.True(result.ExitCode == 0, $"dry run failed: {result.Stderr}");
         Assert.Contains($"install the .NET 10 SDK into {sdkDir}", result.Stdout);

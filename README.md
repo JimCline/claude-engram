@@ -80,17 +80,23 @@ works, but it is outside what this repository tests or reasons about.
 ## Installing
 
 `scripts/install.sh` builds the binary, installs it, puts it on your `PATH`, and
-initialises the Engram home. It **prints what it would do and changes nothing** unless
-you pass `--apply`:
+initialises the Engram home. **Running it installs** — no flag required:
 
 ```
-scripts/install.sh                # dry run — read this first
-scripts/install.sh --apply        # everything: binary, plugin, grammars, vector search
+scripts/install.sh                # everything: binary, plugin, grammars, vector search
+scripts/install.sh --dry-run      # print the whole plan and change nothing
 ```
+
+This is the one place Engram is not dry-run-first. Everything that removes or rewrites
+what is already there — `uninstall.sh`, `repair`, `compact`, `forget`, `backup prune` —
+still prints its plan and waits for `--apply`. The installer only adds things, and
+running an installer is already the request to install, so the brake is opt-in instead:
+pass `--dry-run` to read the plan first. (`--apply` is still accepted and ignored, so
+the invocation in your shell history keeps working.)
 
 Every optional component installs by default: the Claude Code plugin, the tree-sitter
 grammars (TypeScript/JavaScript indexing), the sqlite-vec vector-search extension, and
-the Claude Code tool permissions. An interactive `--apply` asks one question up front —
+the Claude Code tool permissions. An interactive run asks one question up front —
 press Enter to take all of that, or answer `a` to be asked a `[Y/n]` at each step. A
 piped run takes the defaults without asking, except the permission grant, which edits
 Claude Code's settings file and is never granted by a run nobody is watching.
@@ -108,14 +114,19 @@ that directory) and builds with it. What you do need is a C compiler — the Xco
 command line tools on macOS, `clang` and the zlib headers on Linux — and the installer
 checks for that first and prints the one command that fixes it.
 
-On Windows, `scripts/install.ps1` and `scripts/uninstall.ps1` are the same installers
-with the same defaults (dry run first, `-Apply` to act); building there needs the
-"Desktop development with C++" workload of Visual Studio Build Tools. Under WSL, skip
-the PowerShell pair entirely and use `scripts/install.sh` — WSL is the Linux path.
+On Windows, `scripts/install.ps1` and `scripts/uninstall.ps1` are the PowerShell
+counterparts; building there needs the "Desktop development with C++" workload of
+Visual Studio Build Tools. Both still take `-Apply` and still dry-run without it — the
+default above has *not* been inverted there, because that inversion makes a script act
+by default and no one has yet run these on a Windows machine to check. They are behind
+the POSIX installer in other ways too; `memory/install-ps1-parity-debt.md` lists what is
+owed. Under WSL, skip the PowerShell pair entirely and use `scripts/install.sh` — WSL is
+the Linux path.
 
 | | |
 |---|---|
-| `--apply` | Actually do it. Without this it is a dry run. |
+| `--dry-run` | Print the whole plan and change nothing. |
+| `--apply` | Accepted and ignored; installing is the default. |
 | `--prefix DIR` | Install directory. Default `$HOME/.local/bin`. |
 | `--binary PATH` | Install an already-built binary instead of building one. |
 | `--sdk-dir DIR` | Where a bootstrapped SDK lives. Default `<repo>/.dotnet`. |
@@ -143,7 +154,7 @@ exactly.
 Homebrew's `bin` is deliberately excluded from the symlink candidates: unbrewed symlinks
 there make `brew doctor` complain, and Homebrew may clobber them.
 
-Uninstalling is symmetric, and equally a dry run by default:
+Uninstalling removes things, so unlike the installer it *is* a dry run by default:
 
 ```
 scripts/uninstall.sh              # dry run — shows what is installed and what would go

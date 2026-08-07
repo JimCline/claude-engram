@@ -120,8 +120,16 @@ unparseable: bytes that could not be obtained are left alone, because deleting o
 bound that depends on someone typing the command is not a bound (D41).
 
 **Anything destructive is dry-run first.** `repair`, `compact`, `forget`, `backup prune`,
-`backup restore`, `backup replay`, `queue compact`, and the installer print what they would do and
-require an explicit flag to act.
+`backup restore`, `backup replay`, `queue compact`, and `uninstall.sh` print what they would do and
+require an explicit flag to act. `install.sh` is the deliberate exception and the boundary is the
+word *destructive*: every verb on that list removes or rewrites something already there, while the
+installer only adds, and running an installer is already the request to install. It acts by default
+and `--dry-run` is the brake; `--apply` is still parsed and ignored so existing invocations keep
+working. Two end-to-end guards hold the pair, and the no-flag one is the load-bearing half — the
+plan is that a default needing a flag is not a default (D49). The exception is *this script*, not
+installers as a category: `install.ps1` keeps `-Apply` until someone can run it on Windows once,
+because shipping an acts-by-default script nobody has executed is the change that should not go in
+blind.
 
 **An optional installer step that fails does not discard a finished install.** `install.sh` runs
 under `set -e`, so a non-zero command aborts it where it stands — and `--with-plugin` is near the

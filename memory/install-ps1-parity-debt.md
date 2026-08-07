@@ -42,6 +42,16 @@ none of it has a PowerShell counterpart. The TODOs, in the order they should pro
    needs all three, and the keep-backups default is the load-bearing one, because
    `backups/facts.jsonl` is the only thing that can restore a deleted store.
 
+8. **The dry-run inversion (D49, 2026-08-07).** `install.sh` now installs by default;
+   `--dry-run` is the brake and `--apply` is parsed and ignored for compatibility.
+   `install.ps1` deliberately did **not** follow and still requires `-Apply`. The reason
+   is specific to this item rather than general caution: the change makes a script act
+   without being asked, parse-gating cannot catch an inverted conditional, and the way a
+   half-applied inversion fails is a "dry run" that installs. The port is ~12 `if ($Apply)`
+   sites plus the param and the two trailer messages — mechanical, but it must be *run*
+   once on Windows before it ships, both halves: no flag installs, `-DryRun` changes
+   nothing. Bring the two guards over with it.
+
 Two constraints on the port, both from measured history:
 
 - The **tri-state falsification** is part of each optional step's definition, not

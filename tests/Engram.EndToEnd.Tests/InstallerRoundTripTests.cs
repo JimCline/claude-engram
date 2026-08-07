@@ -25,7 +25,7 @@ public class InstallerRoundTripTests
 #pragma warning restore CA1416
         File.WriteAllText(Path.Combine(roslynDir, "engram-roslyn.dll"), "managed payload");
 
-        var dry = RunScript("install.sh", home.Root, "--binary", EndToEndBinary.Path!, "--prefix", home.Prefix, "--roslyn-dir", roslynDir);
+        var dry = RunScript("install.sh", home.Root, "--dry-run", "--binary", EndToEndBinary.Path!, "--prefix", home.Prefix, "--roslyn-dir", roslynDir);
         Assert.True(dry.ExitCode == 0, $"dry run failed: {dry.Stderr}");
         Assert.Contains("would: install engram-roslyn", dry.Stdout, StringComparison.Ordinal);
         Assert.False(Directory.Exists(Path.Combine(home.Prefix, "roslyn")), "a dry run must install nothing");
@@ -173,12 +173,50 @@ public class InstallerRoundTripTests
         using var home = new InstallerTestHome();
         File.WriteAllText(home.ZshrcPath, SeedZshrc);
 
-        var result = RunScript("install.sh", home.Root, "--binary", EndToEndBinary.Path!, "--prefix", home.Prefix);
+        var result = RunScript("install.sh", home.Root, "--dry-run", "--binary", EndToEndBinary.Path!, "--prefix", home.Prefix);
         Assert.True(result.ExitCode == 0, $"dry run failed: {result.Stderr}");
 
         Assert.False(File.Exists(home.BinaryPath), "dry run must not install the binary");
         Assert.Equal(SeedZshrc, File.ReadAllText(home.ZshrcPath));
         Assert.False(Directory.Exists(Path.Combine(home.Root, ".engram")), "dry run must not create the Engram home");
+    }
+
+    /// <summary>
+    /// The other half of the pair above, and the one that pins the default down: someone
+    /// who runs the installer wanted an installation, so no flag installs. This is the
+    /// deliberate exception to Engram's dry-run-first rule, which covers verbs that remove
+    /// or rewrite what is already there.
+    /// </summary>
+    [Fact]
+    public void Install_WithNoFlagAtAll_Installs()
+    {
+        Assert.SkipUnless(EndToEndBinary.Path is not null, EndToEndBinary.SkipReason);
+
+        using var home = new InstallerTestHome();
+
+        var result = RunScript("install.sh", home.Root, "--binary", EndToEndBinary.Path!, "--prefix", home.Prefix, "--no-tree-sitter", "--no-sqlite-vec", "--no-plugin");
+        Assert.True(result.ExitCode == 0, $"install failed: {result.Stderr}");
+
+        Assert.True(File.Exists(home.BinaryPath), "no flag at all must install the binary");
+        Assert.DoesNotContain("Dry run only", result.Stdout, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// <c>--apply</c> was required before installing became the default. It is still
+    /// accepted, because the invocation in someone's shell history — and in every README
+    /// written before the change — must not start erroring.
+    /// </summary>
+    [Fact]
+    public void Install_WithTheOldApplyFlag_StillInstalls()
+    {
+        Assert.SkipUnless(EndToEndBinary.Path is not null, EndToEndBinary.SkipReason);
+
+        using var home = new InstallerTestHome();
+
+        var result = RunScript("install.sh", home.Root, "--apply", "--binary", EndToEndBinary.Path!, "--prefix", home.Prefix, "--no-tree-sitter", "--no-sqlite-vec", "--no-plugin");
+        Assert.True(result.ExitCode == 0, $"install failed: {result.Stderr}");
+
+        Assert.True(File.Exists(home.BinaryPath), "--apply must still install the binary");
     }
 
     // A .zshrc that is itself a symlink into a dotfile repository — stow, chezmoi and

@@ -4,7 +4,8 @@ set -euo pipefail
 usage() {
     cat <<'EOF'
 Usage: scripts/install.sh [options]
-  --apply              Actually perform the installation (default is a dry run)
+  --dry-run            Print the whole plan and change nothing
+  --apply              Accepted and ignored; installing is the default
   --prefix DIR         Install directory (default: $HOME/.local/bin)
   --binary PATH        Install this prebuilt binary instead of building one
   --roslyn-dir DIR     With --binary: install this prebuilt engram-roslyn publish
@@ -39,12 +40,19 @@ step off without being asked, and the --with-* spellings still pin one on. Embed
 are the one step that stays interactive in both modes — provider and model are real
 tradeoffs — unless --embedding-provider or --no-embeddings answers for it.
 
+Running this installs. --dry-run is the brake, and it prints the same plan the
+installation would carry out.
+
 No .NET SDK is required up front: when none of the right version is found, one is
 downloaded privately into the SDK directory, and nothing outside it is touched.
 EOF
 }
 
-apply=false
+# Installing is what someone running the installer asked for, so it is the default; the
+# rest of Engram's destructive verbs are dry-run-first because they remove or rewrite
+# what is already there, which is not what this does. --apply is still accepted so the
+# invocation people already have in their shell history keeps working.
+apply=true
 prefix="$HOME/.local/bin"
 binary_override=""
 roslyn_override=""
@@ -68,8 +76,11 @@ grant_permissions=ask
 
 while [ $# -gt 0 ]; do
     case "$1" in
+        --dry-run)
+            apply=false
+            shift
+            ;;
         --apply)
-            apply=true
             shift
             ;;
         --prefix)
@@ -244,7 +255,7 @@ else
     echo "Engram installer"
 fi
 if ! $apply; then
-    echo "${T_DIM}dry run — pass --apply to act${T_RESET}"
+    echo "${T_DIM}dry run — nothing will be changed${T_RESET}"
 fi
 
 cleanup_dirs=()
@@ -389,7 +400,7 @@ download_to() {
 
 # AOT publish drives a platform linker that no SDK carries. Checked before the SDK is
 # resolved so a machine that would fail an hour of download-and-build hears about the
-# missing 30-second fix first. Fatal under --apply; a dry run reports and keeps going,
+# missing 30-second fix first. Fatal on a real run; --dry-run reports and keeps going,
 # because its job is to show the whole plan.
 toolchain_problem() {
     case "$(uname -s)" in
@@ -425,7 +436,9 @@ toolchain_problem() {
 # on, and the one question an interactive run asks up front is whether to take those
 # defaults or decide each step at its turn. A piped run takes the defaults unasked — with
 # one deliberate exception, the MCP permission grant, which edits a file Engram does not
-# own and keeps section 10's rule that silence from a pipe is not consent.
+# own and keeps section 10's rule that silence from a pipe is not consent. That exception
+# carries more weight now that installing is the default: a run with no terminal installs
+# everything Engram owns without being asked, and still never edits what it does not.
 install_mode=auto
 if $apply && [ -t 0 ] && [ -r /dev/tty ]; then
     if [ -z "$with_plugin" ] || [ -z "$with_tree_sitter" ] || [ -z "$with_sqlite_vec" ]; then
@@ -483,7 +496,7 @@ if [ -z "$binary_override" ]; then
             echo "error: $problem" >&2
             exit 1
         fi
-        say "warning: $problem (--apply will stop here until it is fixed)"
+        say "warning: $problem (a real run will stop here until it is fixed)"
     fi
 
     if command -v dotnet >/dev/null 2>&1 && has_net10_sdk dotnet; then
@@ -1175,5 +1188,5 @@ if $apply; then
         echo "  Nothing to restart: Claude Code watches its settings file and reloads permissions"
     fi
 else
-    echo "Dry run only — nothing was changed. Re-run with --apply to perform this installation."
+    echo "Dry run only — nothing was changed. Re-run without --dry-run to perform this installation."
 fi

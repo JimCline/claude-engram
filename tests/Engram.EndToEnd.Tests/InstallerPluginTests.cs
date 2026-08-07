@@ -29,7 +29,7 @@ public class InstallerPluginTests
         using var home = new InstallerTestHome();
         var log = home.StubClaude();
 
-        var (exitCode, stdout, stderr) = Install(home);
+        var (exitCode, stdout, stderr) = Install(home, "--dry-run");
 
         Assert.True(exitCode == 0, $"dry run failed: {stderr}");
         Assert.Contains($"claude plugin marketplace add {RepoRoot}", stdout, StringComparison.Ordinal);

@@ -24,7 +24,7 @@ public class InstallerEmbeddingTests
 
         using var home = new InstallerTestHome();
 
-        var (exitCode, stdout, stderr) = Install(home);
+        var (exitCode, stdout, stderr) = Install(home, "--dry-run");
 
         Assert.True(exitCode == 0, $"dry run failed: {stderr}");
         Assert.Contains("would: ask which embedding provider and model to use", stdout, StringComparison.Ordinal);

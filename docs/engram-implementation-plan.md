@@ -2696,6 +2696,54 @@ output from an older sidecar still parses as v1-shaped symbols — robustness fo
 environments, not a supported deployment; the pair ships together and the version bump forces
 the re-read either way.
 
+### D49 — `install.sh` acts by default, because a dry run is not what an installer was run for
+
+Engram's rule is that anything destructive is dry-run first, and `install.sh` was on that list.
+It should not have been. Every other verb there — `repair`, `compact`, `forget`, `backup prune`,
+`backup restore`, `backup replay`, `queue compact`, `uninstall.sh` — **removes or rewrites
+something that is already there**, and for those the flag is what stands between a user and a loss
+they cannot undo. The installer only adds: a binary, a `PATH` block behind its own markers, a home
+directory, and one file edit that is backed up first and refuses to overwrite a value Engram did
+not write (D33). Running an installer is already the request to install, so the default now
+installs and `--dry-run` is the brake.
+
+**The cost being removed is real.** Requiring `--apply` made the first command anyone types do
+nothing, which is a bad first contact for the one script that has to work before anything else can
+be evaluated. The same argument as the install-everything default and D47's tree-sitter step: a
+default that needs a flag to happen is not a default, and `fetch-vec0.sh` already demonstrated
+where that ends — a step only the people who read the docs ever ran.
+
+**`--apply` is parsed and ignored rather than removed.** About twenty end-to-end call sites, every
+README written before this, and whatever is in a user's shell history all pass it. Erroring on it
+would convert a silent no-op into a broken invocation for no gain, so the flag stays accepted with
+its help text saying it is now the default.
+
+**Two guards, and the no-flag one carries the rule.** `Install_WithNoFlagAtAll_Installs` asserts a
+bare run puts the binary at the prefix; `Install_WithTheOldApplyFlag_StillInstalls` asserts the
+compatibility path. Falsified by restoring `apply=false`: 14 of 17 tests in the round-trip file go
+red, both new guards by their own messages. That breadth is itself the measurement — with the old
+default and `--apply` inert, every `--apply` test does nothing, which is exactly the failure mode a
+half-applied inversion would ship.
+
+**Eight test sites depended on bare-means-dry-run** and were switched to `--dry-run`
+(`InstallerSoupToNutsTests` ×2, `InstallerRoundTripTests` ×2, and the `Install(home)` helper call
+in the embedding, tree-sitter, sqlite-vec, and plugin files). These are the tests that assert
+*nothing happened*; left alone they would have gone on passing only until the assertion they
+inverted mattered.
+
+**The piped-run consequence was considered and accepted.** A run with no terminal now installs
+everything Engram owns without asking, where before it printed a plan. That is the intent, and
+`install.sh` is run from a checkout rather than curl-piped, since it needs the repo to build and to
+register the marketplace. The one exception holds unchanged and matters more now: the MCP
+permission grant edits `~/.claude/settings.json`, a file Engram does not own, and a run nobody is
+watching still never grants it. Silence from a pipe is consent to install Engram; it is not consent
+to edit somebody else's settings.
+
+**Not ported to `install.ps1`.** The inversion's whole content is that a script acts without being
+asked, and no one has run the PowerShell installer on a Windows machine even once — parse-gating
+does not catch an inverted conditional, and the failure it would catch late is a "dry run" that
+installs. It keeps `-Apply` and is tracked with the rest of the parity debt.
+
 ## PreCompact cannot inject context
 
 Spec §10.1 assumes `PreCompact` can "inject one instruction" the same way `SessionStart`
