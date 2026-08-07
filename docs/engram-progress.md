@@ -380,7 +380,8 @@ assertion red; the natives copy disabled → round-trip red; a syntax error in
 | the SDK bootstrap against the real dotnet-install.sh | **not measured** — the argv contract is tested through a stub; the real download path is exercised by humans |
 | the Linux server-identity fix | measured — full suite green on a linux-arm64 AOT build in a container, including the 3 tests that failed in CI |
 | that same fix on linux-**x64** | **not measured here** — Docker on Apple silicon serves arm64 and its `ld` will not link x86_64. The mechanism is procfs, not the instruction set, so CI is the check |
-| Windows anything | **not measured** — no machine, and this is why the fix leaves Windows on its existing code path |
+| Windows tiers 0–2 | **measured, green** — 369 core + 532 integration + e2e-under-JIT on Windows CI, after the pooling fixes |
+| Windows e2e against the AOT binary | **measured, failing in two named families** — 17 installer tests that want Windows skip guards, 17 server tests dead on the `/bin/sh` launchers (see open work 4) |
 | D6's gate on M3 | **unread** — see below |
 | D18's gate on M4 | **unmet**, and the adoption fraction is not computable (D43) |
 
@@ -434,7 +435,7 @@ it some accumulation before drawing a line through it.
 `coverage` currently keys off lane agreement only. The spec names score mass as a second
 input. D44's reasoning for leaving it: one unmeasured knob is a rule, two are a preference.
 
-### 4. Windows CI fixes are in, awaiting the run that can verify them
+### 4. Windows CI: tiers 0–2 green, e2e decoded into two named defects
 
 The red run decomposed into four clusters, all diagnosed by reading rather than reproducing —
 there is still no Windows machine here, so the next CI run is the verdict, not a formality:
@@ -472,6 +473,40 @@ the sandbox's own pooled handle blocks the inline delete — those construct wit
 was the alphabetically-first test paying the runner's cold-start on the first python spawn:
 `ReadPort`'s 30 s bound covered a warm start only, and its timeout branch was the one failure
 path that attached no diagnosis — now 120 s, and it kills the process then reports stderr.
+
+The verdict came in three acts. Every run after `b642bbc` **hung** in the Windows e2e step —
+2h55m and climbing where the runs before it failed in 3m24s, seven runs deep against a 6-hour
+default job timeout that a private repo bills double. Nothing in `b642bbc` can block; the pooling
+fix let Windows get past its fail-fast failures into something downstream that had always been
+waiting. `7b93374` added `timeout-minutes: 30` and `--blame-hang` so a wedged test aborts and
+prints its name, and the instrumented run decoded everything:
+
+- **Tiers 0–2 are fully green on Windows** — 369/369 core, 532 integration (25 environment
+  skips), e2e-under-JIT all passing. The pooling fixes did exactly what they claimed.
+- **The e2e step against the AOT binary crashed on `/bin/sh`.** `ServerLauncher.cs:33` and
+  `MaintenanceLauncher.cs:60` both route their detached child through a shell Windows does not
+  have; the AOT binary dies by fail-fast (`0xC0000409`) on the spawn. Every server-shaped family
+  fails on it: ServerLifecycle, McpServer, SessionMemory, Probe, ServerFirstRun, Queue
+  housekeeping, EmbedRebuild's refuse-while-running.
+- **The hang was the harness, not the product.** Job cleanup listed two orphaned console hosts
+  and no `engram.exe`: the crashed binary's conhost kept the redirected pipe open, and
+  `EngramProcess` read both pipes to EOF *before* its 10-second `WaitForExit`, so the bound
+  guarded the wrong event — EOF on a pipe is not exit of a process. `9aa4751` drains the pipes
+  concurrently and gives the join its own 5-second bound; the guard test plants a stub that exits
+  instantly leaving a backgrounded sleep holding stdout, and was proven red against the old body
+  (blocks the sleep's full 30 s, then passes nothing).
+
+Current Windows state, measured on `9aa4751`'s run: the e2e suite completes in **1 minute** —
+34 failed / 69 passed / 17 skipped of 120, every test named, no hang possible. The 34 are two
+populations: **17 installer-family** (POSIX `install.sh` driven through `/bin/bash` and
+`File.SetUnixFileMode` — these want the same `Assert.SkipWhen(OperatingSystem.IsWindows(), …)`
+the round-trip test already carries, and the population is exactly the one ps1-parity work will
+revisit) and **17 server-family** (the `/bin/sh` launchers — the one production defect Windows
+actually has). The launcher fix is a design, not a patch: Windows detachment means no shell,
+`CreateNoWindow`, descriptors not inherited, and it must not disturb the D42 identity machinery;
+it wants a session with a Windows machine or at least Windows CI iteration room. The seven hung
+runs were left to expire at their caps — cancelling them was denied to this session's
+permissions, and `gh run cancel` on anything still burning is the first thing worth doing by hand.
 
 ### 5. Smaller
 
