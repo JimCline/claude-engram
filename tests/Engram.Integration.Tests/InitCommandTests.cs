@@ -7,7 +7,9 @@ public class InitCommandTests
     [Fact]
     public void Init_CreatesAllFourDirectoriesAndConfig()
     {
-        using var sandbox = new SandboxHome();
+        // initialize: false, so the deleted directory never held a database whose pooled
+        // handle would make the delete itself throw on Windows.
+        using var sandbox = new SandboxHome(initialize: false);
         var home = sandbox.Home;
         Directory.Delete(home.Root, recursive: true);
 
@@ -28,7 +30,7 @@ public class InitCommandTests
     [Fact]
     public void Init_IsIdempotentAndDoesNotOverwriteExistingConfig()
     {
-        using var sandbox = new SandboxHome();
+        using var sandbox = new SandboxHome(initialize: false);
         var home = sandbox.Home;
         Directory.Delete(home.Root, recursive: true);
 

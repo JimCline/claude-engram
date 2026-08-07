@@ -42,7 +42,18 @@ public sealed class SandboxHome : IDisposable
     /// </remarks>
     public void Dispose()
     {
-        EngramDatabase.ReleasePooledConnections(Home.DatabasePath);
+        // Every database under the root, not just the main one: a snapshot written by
+        // BackupStore is its own file with its own pool the moment anything opens it —
+        // FingerprintOf does, and so do the backup tests — and a release that names only
+        // engram.db leaves those handles holding the directory open. That was 12 of the
+        // Windows failures the first version of this line left behind.
+        if (Directory.Exists(Home.Root))
+        {
+            foreach (var database in Directory.EnumerateFiles(Home.Root, "*.db", SearchOption.AllDirectories))
+            {
+                EngramDatabase.ReleasePooledConnections(database);
+            }
+        }
 
         for (var attempt = 0; Directory.Exists(Home.Root); attempt++)
         {

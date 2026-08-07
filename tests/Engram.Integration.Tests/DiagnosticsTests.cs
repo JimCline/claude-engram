@@ -719,11 +719,17 @@ public sealed class DiagnosticsTests : IDisposable
     private static int ReadPort(Process process)
     {
         // Bounded off-thread, because a python that hangs before printing would otherwise hang the
-        // whole test run rather than fail it.
+        // whole test run rather than fail it. The bound is sized for a CI runner's first python
+        // spawn, not a warm one: the alphabetically-first test in this class paid a cold-start
+        // that 30 seconds did not cover, twice, while every later test on the same runner passed.
         var line = Task.Run(process.StandardOutput.ReadLine);
-        if (!line.Wait(TimeSpan.FromSeconds(30)))
+        if (!line.Wait(TimeSpan.FromSeconds(120)))
         {
-            Assert.Fail("the stand-in embedding server never reported a port");
+            // Killed before Complaint so stderr becomes readable — draining it while the
+            // process lives blocks, and a timeout that reports nothing is how this stayed
+            // an unexplained flake instead of a fixed bug.
+            process.Kill(entireProcessTree: true);
+            Assert.Fail($"the stand-in embedding server never reported a port: {Complaint(process)}");
         }
 
         if (int.TryParse(line.Result, CultureInfo.InvariantCulture, out var port))

@@ -93,7 +93,8 @@ checks for that first and prints the one command that fixes it.
 
 On Windows, `scripts/install.ps1` and `scripts/uninstall.ps1` are the same installers
 with the same defaults (dry run first, `-Apply` to act); building there needs the
-"Desktop development with C++" workload of Visual Studio Build Tools.
+"Desktop development with C++" workload of Visual Studio Build Tools. Under WSL, skip
+the PowerShell pair entirely and use `scripts/install.sh` — WSL is the Linux path.
 
 | | |
 |---|---|

@@ -305,6 +305,17 @@ delete-while-open that Windows refuses — so Windows CI is its only instrument.
 `DiagnosticsTests` stopped racing for a free port on macOS: the stub server binds port 0 and
 prints what it got.
 
+The first CI run cut Windows from 358 failures to 12, and the residue was the same disease in
+two shapes the first fix missed: `SandboxHome.Dispose` released only the *main* database's pool,
+while a snapshot written by `BackupStore` is its own file with its own pool the moment
+`FingerprintOf` or a test opens it (Dispose now releases every `*.db` under the root); and the
+creation-from-nothing tests deleted a fully initialized home at the *start* of the test, where
+the sandbox's own pooled handle blocks the inline delete — those construct with
+`initialize: false` now, so the deleted directory never held a database at all. The macOS flake
+was the alphabetically-first test paying the runner's cold-start on the first python spawn:
+`ReadPort`'s 30 s bound covered a warm start only, and its timeout branch was the one failure
+path that attached no diagnosis — now 120 s, and it kills the process then reports stderr.
+
 ### 6. Smaller
 
 - D27's open sub-question.

@@ -23,7 +23,10 @@ public class TelemetryTests
     [Fact]
     public void Append_CreatesHomeDirectoryIfMissing()
     {
-        using var sandbox = new SandboxHome();
+        // initialize: false, so the directory this deletes never held a database — an
+        // initialized home has a pooled engram.db handle, which on Windows makes this
+        // very delete the thing that throws.
+        using var sandbox = new SandboxHome(initialize: false);
         Directory.Delete(sandbox.Home.Root, recursive: true);
 
         Telemetry.Append(sandbox.Home, new TelemetryRecord("2026-08-04T00:00:00Z", "s1", TelemetryEventKind.SessionStart));

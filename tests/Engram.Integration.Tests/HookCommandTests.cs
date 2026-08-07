@@ -72,7 +72,9 @@ public class HookCommandTests
     [Fact]
     public void SessionStart_MissingHomeDirectory_ExitsZeroAndWritesNothing()
     {
-        using var sandbox = new SandboxHome();
+        // initialize: false, so the deleted directory never held a database whose pooled
+        // handle would make the delete itself throw on Windows.
+        using var sandbox = new SandboxHome(initialize: false);
         Directory.Delete(sandbox.Home.Root, recursive: true);
         var stdout = new StringWriter();
         var stderr = new StringWriter();
@@ -167,7 +169,7 @@ public class HookCommandTests
     [Fact]
     public void FileTouched_MissingHomeDirectory_DoesNotThrow()
     {
-        using var sandbox = new SandboxHome();
+        using var sandbox = new SandboxHome(initialize: false);
         Directory.Delete(sandbox.Home.Root, recursive: true);
 
         var exitCode = CliApp.Run(["--home", sandbox.Home.Root, "hook", "file-touched"], new StringWriter(), new StringWriter());
