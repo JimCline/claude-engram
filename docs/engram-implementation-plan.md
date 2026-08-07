@@ -2866,6 +2866,53 @@ assertion now checks the config the install produced and then runs a hook agains
 **Not ported to `install.ps1`** (item 10 in the parity memo). The `--memory-precedence` flag and the
 three-way prompt are both new interactive surface on a script nobody has run on Windows.
 
+### D52 — a menu may not emit a row it cannot count
+
+Reported: the model picker "keeps repeating the options", the text "is not formatted well", and it
+"selected one I did not pick". One cause produces all three.
+
+`Tui.Render` assumed **one choice occupies one terminal row**. Both escapes it relies on are
+physical: `\x1b[{n}A` moves up n *rows*, and `\x1b[2K` clears *one* row. The model menu's entries
+were built as `{dims} · {size} · {window} · {languages} — {tradeoff}`, and the tradeoff is a
+paragraph, so an entry ran to about 290 characters. At 80 columns that is four rows against a
+redraw of one. Every keypress therefore repainted three rows lower than the last (options
+repeating), cleared one row in four (formatting debris), and left the visible `❯` on a stale copy
+while the internal index moved on — so Enter selected what the user *wasn't* looking at. Measured
+under a pty at 80 columns: entries of 290 characters, `\x1b[3A` between draws.
+
+**The fix is to budget rows rather than hope for them.** Every line is clipped to the width — the
+head (marker plus padded label) first, then the description against what is left, because a label
+alone overflows a narrow terminal and clipping only the description leaves that unbounded. The
+selected entry's prose moved to a new `TuiChoice.Detail`, rendered as a **fixed-height** block, so
+the row count cannot vary with the selection. `Render` now *returns* the rows it wrote and the
+caller feeds that back as the next redraw's distance, which makes the correspondence a value rather
+than an assumption. One column is left unwritten because terminals disagree about whether writing
+into the last cell wraps immediately or defers.
+
+**Why the suite could not see it.** Every other test drives redirected streams and so takes
+`Tui.Plain` by design. The one pty test presses Enter on the *first* menu, which selects `none` —
+it never presses an arrow key, so no redraw ever ran, and it never reached the model menu whose
+entries were the long ones. The bug was structurally unreachable. `Menu` blocks on
+`Console.ReadKey`, which no test can feed, so an internal `Draw` seam was added and `Menu` routed
+through it; `TuiRenderTests` then asserts the invariant deterministically at 24, 40, 80 and 200
+columns, and the pty test gained a second case that reaches the model menu, redraws, and backs out
+with `q` before anything downloads. The pty test deliberately does *not* assert on columns —
+`script(1)`'s pty is whatever width it is, and an assertion needing a width it did not choose is
+how a guard becomes flaky.
+
+**Two things found by writing the tests, not before.** At 24 columns the label itself overflowed,
+which the first fix missed because it clipped only the description. And the first version of the
+catalog test **built its own choice list** instead of using the picker's, so it would have passed no
+matter what `EmbeddingSetup` did — it could not see the defect it was written for. That is why
+`EmbeddingSetup.ModelChoices` is now extracted and named: the test draws the same list the picker
+draws. Clipping means concatenating the prose back in no longer corrupts the screen, it silently
+ellipses the specs instead, so a second guard asserts the spec line survives un-ellipsed.
+
+**Falsified six ways,** each checksummed: label unclipped, description unclipped, `Render` reporting
+`choices.Count` instead of what it wrote, the detail block varying in height, the original defect
+restored exactly (no clipping plus the concatenated description), and the prose concatenated back
+into the spec line alone.
+
 ## PreCompact cannot inject context
 
 Spec §10.1 assumes `PreCompact` can "inject one instruction" the same way `SessionStart`

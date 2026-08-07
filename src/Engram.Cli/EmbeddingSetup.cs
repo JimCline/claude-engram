@@ -38,7 +38,11 @@ public static class EmbeddingSetup
         stdout.WriteLine("with the query.");
         stdout.WriteLine();
         stdout.WriteLine("  1  none            lexical recall only — nothing to download, nothing to run");
-        stdout.WriteLine("  2  local           Engram runs the model itself, from a file in " + home.ModelsDir);
+        // The path on its own line, the way option 3's second line already reads. Inline it runs
+        // to ~96 columns for an ordinary home and wraps mid-sentence. Nothing here redraws, so
+        // this is legibility rather than the row-budget rule Tui enforces.
+        stdout.WriteLine("  2  local           Engram runs the model itself, from a file in");
+        stdout.WriteLine("                     " + home.ModelsDir);
 
         foreach (var model in EmbeddingModels.All)
         {
@@ -50,7 +54,7 @@ public static class EmbeddingSetup
         }
 
         stdout.WriteLine("  3  endpoint        something you already run answers POST /v1/embeddings");
-        stdout.WriteLine("                     LM Studio, llama.cpp's server, vLLM, Ollama, or a hosted API");
+        stdout.WriteLine("                     LM Studio, llama.cpp, vLLM, Ollama, or a hosted API");
         stdout.WriteLine();
         stdout.WriteLine("Anthropic publishes no embeddings API, so Claude cannot be the provider here.");
     }
@@ -66,6 +70,21 @@ public static class EmbeddingSetup
     /// test drives; a detected terminal gets arrow-key menus carrying each option's tradeoffs.
     /// One control flow either way, so the answers, defaults and validation cannot diverge by mode.
     /// </param>
+    /// <summary>The local-model menu entries.</summary>
+    /// <remarks>
+    /// Named rather than inlined so a test can assert on the same list the picker draws. The
+    /// split matters: the specs sit beside the label, and the tradeoff paragraph goes in Detail,
+    /// which Tui gives a fixed block of its own. Concatenating the two is what made these
+    /// entries ~290 characters and broke the redraw — clipping now stops that from corrupting
+    /// the screen, but it would silently ellipse the specs instead, so keep them apart.
+    /// </remarks>
+    internal static IReadOnlyList<TuiChoice> ModelChoices() =>
+        [.. EmbeddingModels.All.Select(m => new TuiChoice(
+            m.Id,
+            m.Id,
+            $"{m.Dimensions}d · {m.SizeLabel.Trim()} · {Window(m.ContextTokens)} window · {m.Languages}",
+            m.Tradeoff))];
+
     public static EmbeddingChoice? Ask(
         TextReader stdin,
         TextWriter stdout,
@@ -105,10 +124,7 @@ public static class EmbeddingSetup
                     stdin,
                     stdout,
                     "Which model?",
-                    [.. EmbeddingModels.All.Select(m => new TuiChoice(
-                        m.Id,
-                        m.Id,
-                        $"{m.Dimensions}d · {m.SizeLabel.Trim()} · {Window(m.ContextTokens)} window · {m.Languages} — {m.Tradeoff}"))],
+                    ModelChoices(),
                     $"Which model? [blank for {EmbeddingModels.DefaultId}] ",
                     static id => string.IsNullOrEmpty(id) ? EmbeddingModels.DefaultId : id);
                 return model is null || EmbeddingModels.Find(model) is null

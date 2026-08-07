@@ -1,6 +1,6 @@
 # Engram — progress snapshot
 
-**As of 2026-08-07.** Working tree clean, 51 decisions (D1–D51). M3's tier 0 shipped overnight
+**As of 2026-08-07.** Working tree clean, 52 decisions (D1–D52). M3's tier 0 shipped overnight
 on an explicit user override of D6's gate; tier 1 (D47) and grammar v2 (D48) followed.
 
 This is a handoff, not an authority. `CLAUDE.md` holds the invariants,
@@ -14,7 +14,7 @@ disagree, they win and this file is stale.
 
 1. `CLAUDE.md` — the invariants that are easy to break by accident. All of them were paid
    for by a real defect.
-2. `docs/engram-implementation-plan.md` — D1–D51. Skim the headings; read in full any
+2. `docs/engram-implementation-plan.md` — D1–D52. Skim the headings; read in full any
    decision you are about to touch.
 3. This file — for what is in flight and what the last session learned the hard way.
 
@@ -611,12 +611,41 @@ summary line printed from a catch-all branch that reads nothing, so it would hav
 `engram-first` whatever the config said. It now checks the config the install produced and runs a
 hook against it.
 
+### The model picker was unusable, from one assumption (D52)
+
+Jim, reporting it: the picker repeats its options, the text is badly formatted, and it selects
+something he did not pick. Three symptoms, one cause — `Tui.Render` assumed one choice occupies
+one terminal row. `\x1b[{n}A` and `\x1b[2K` both count *physical* rows, and the model menu's
+entries were `{specs} — {tradeoff}` with the tradeoff being a paragraph: about 290 characters,
+four rows at 80 columns, against a redraw of one row per choice. So each keypress repainted three
+rows lower, cleared one row in four, and left the visible `❯` on a stale copy while the real index
+moved on. The selection was never wrong internally; the thing the user was steering by was.
+
+Rows are now budgeted rather than hoped for: every line clipped to the width, the prose moved to a
+fixed-height detail block, and `Render` returns the count it wrote so the next redraw moves back
+exactly that far.
+
+The coverage gap is the part worth keeping. Every other test drives redirected streams and takes
+the plain path by design; the one pty test pressed Enter on the *first* menu, so it never pressed
+an arrow key, never triggered a redraw, and never reached the long-entry menu. The bug was
+unreachable by the whole suite. `Menu` blocks on `Console.ReadKey`, so a `Draw` seam now carries
+the invariant and `TuiRenderTests` asserts it at 24/40/80/200 columns.
+
+Two defects surfaced only by writing those tests. At 24 columns the *label* overflowed — the first
+fix clipped only the description. And the first catalog test built its own choice list rather than
+the picker's, so it would have passed whatever `EmbeddingSetup` did; `ModelChoices` is extracted
+now so the test draws the list the picker draws.
+
 ---
 
 ## Verified vs. not
 
 | claim | status |
 |---|---|
+| the arrow-key menu never emits a row wider than the terminal | measured — asserted at 24/40/80/200 columns; falsified six ways including restoring the original defect exactly |
+| a redraw moves up exactly as far as the last draw came down | measured — `Render` returns its row count and the test compares it to newlines emitted |
+| the picker works end to end under a real pty | measured — reaches the model menu, redraws, backs out with no download; columns deliberately not asserted there |
+| the picker's look on a terminal narrower than 24 columns | **not measured** — treated as unknown width and drawn at the 80-column default |
 | the primer states where durable memory lives, and a subagent gets it too | measured — 9 e2e guards on the published binary; falsified 8 ways including the hook ignoring config |
 | the D15 rule against tool names in primer guidance still holds | measured — one exact-string exemption, re-falsified afterwards by drifting generic guidance back in |
 | the config read costs the primer hooks nothing | **below the noise floor** — shipped build spans p50 14.33–16.97 ms across runs; no-read build 17.73 ms, inside it |

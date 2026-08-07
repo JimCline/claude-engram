@@ -1,7 +1,10 @@
 namespace Engram.Cli;
 
-/// <summary>One menu entry: the canonical value, the label shown, and the tradeoff prose.</summary>
-public sealed record TuiChoice(string Value, string Label, string Description);
+/// <summary>
+/// One menu entry: the canonical value, the label shown, the one-line tradeoff beside it, and
+/// optionally the longer prose shown for whichever entry is selected.
+/// </summary>
+public sealed record TuiChoice(string Value, string Label, string Description, string? Detail = null);
 
 /// <summary>
 /// The CLI's interactive dress: arrow-key menus and styled prompts on a real terminal,
@@ -17,21 +20,45 @@ public sealed record TuiChoice(string Value, string Label, string Description);
 /// requires a real console on both ends and a TERM that is not dumb; everything else —
 /// every test, every pipe, every hook — takes the plain path, whose prompt strings are
 /// supplied by the caller precisely so they can stay frozen.</para>
+///
+/// <para><b>Every rendered row must fit the terminal.</b> Redrawing is
+/// <c>\x1b[{n}A</c> — move up n rows — and clearing is <c>\x1b[2K</c>, which clears one
+/// row. Both count *physical* rows, so a line the terminal wraps makes the menu occupy
+/// more rows than the redraw moves back over, and each keypress repaints lower down the
+/// screen than the last. That is what shipped: the model menu's entries ran to about 290
+/// characters against a redraw of one row per choice, so at 80 columns each entry took
+/// four rows and the menu marched down the screen, clearing one row in four and leaving
+/// the visible <c>❯</c> on a stale copy while the real index moved on — the reported
+/// "options repeat, formatting is wrong, and it picked one I did not choose", all from
+/// this one assumption. So rows are budgeted rather than hoped for: every line is clipped
+/// to the width, the detail block is a fixed height, and <see cref="Render"/> returns the
+/// count it actually wrote so the next redraw moves back exactly that far.</para>
 /// </remarks>
 public sealed class Tui
 {
     /// <summary>The no-op instance: plain prompts, no escapes. What tests and pipes get.</summary>
-    public static readonly Tui Plain = new(interactive: false, ansi: false);
+    public static readonly Tui Plain = new(interactive: false, ansi: false, width: () => DefaultWidth);
+
+    /// <summary>Rows reserved for the selected entry's prose. Fixed so the redraw arithmetic is exact.</summary>
+    private const int DetailRows = 2;
+
+    private const int DefaultWidth = 80;
+
+    /// <summary>Below this a menu cannot be drawn sensibly, so the width is treated as unknown.</summary>
+    private const int MinimumWidth = 24;
+
+    private readonly Func<int> width;
+
+    private Tui(bool interactive, bool ansi, Func<int> width)
+    {
+        Interactive = interactive;
+        Ansi = ansi;
+        this.width = width;
+    }
 
     public bool Interactive { get; }
 
     public bool Ansi { get; }
-
-    private Tui(bool interactive, bool ansi)
-    {
-        Interactive = interactive;
-        Ansi = ansi;
-    }
 
     public static Tui Detect()
     {
@@ -39,8 +66,11 @@ public sealed class Tui
         var capable = term is { Length: > 0 } && term != "dumb";
         var interactive = capable && !Console.IsInputRedirected && !Console.IsOutputRedirected;
         var noColor = Environment.GetEnvironmentVariable("NO_COLOR") is { Length: > 0 };
-        return new Tui(interactive, interactive && !noColor);
+        return new Tui(interactive, interactive && !noColor, ConsoleWidth);
     }
+
+    /// <summary>A rich instance of a fixed width, for tests that assert on what is drawn.</summary>
+    internal static Tui ForTest(int columns, bool ansi = true) => new(interactive: true, ansi, () => columns);
 
     /// <summary>
     /// One choice from a list. Rich mode renders an arrow-key menu with the descriptions
@@ -72,17 +102,11 @@ public sealed class Tui
         stdout.WriteLine(Paint(title, "1;36"));
         stdout.WriteLine(Paint("  ↑/↓ then Enter · a number picks directly · Esc leaves it alone", "2"));
 
-        var labelWidth = 0;
-        foreach (var choice in choices)
-        {
-            labelWidth = Math.Max(labelWidth, choice.Label.Length);
-        }
-
         var index = 0;
         stdout.Write("\x1b[?25l");
         try
         {
-            Render(stdout, choices, index, labelWidth, redraw: false);
+            var rows = Draw(stdout, choices, index, previousRows: 0);
             while (true)
             {
                 var key = Console.ReadKey(intercept: true);
@@ -102,14 +126,14 @@ public sealed class Tui
                         if (key.KeyChar >= '1' && key.KeyChar - '1' < choices.Count)
                         {
                             index = key.KeyChar - '1';
-                            Render(stdout, choices, index, labelWidth, redraw: true);
+                            Draw(stdout, choices, index, rows);
                             return choices[index].Value;
                         }
 
                         continue;
                 }
 
-                Render(stdout, choices, index, labelWidth, redraw: true);
+                rows = Draw(stdout, choices, index, rows);
             }
         }
         finally
@@ -131,24 +155,149 @@ public sealed class Tui
         return (stdin.ReadLine() ?? string.Empty).Trim();
     }
 
-    private void Render(TextWriter stdout, IReadOnlyList<TuiChoice> choices, int index, int labelWidth, bool redraw)
+    /// <summary>
+    /// Draws one frame exactly as <see cref="Menu"/> does, and returns the rows it took.
+    /// The seam the redraw invariant is tested through — <see cref="Menu"/> itself blocks on
+    /// <c>Console.ReadKey</c>, which no test can feed, so without this the rich path can only
+    /// be checked by eye.
+    /// </summary>
+    internal int Draw(TextWriter stdout, IReadOnlyList<TuiChoice> choices, int index, int previousRows)
     {
-        if (redraw)
+        var labelWidth = 0;
+        foreach (var choice in choices)
         {
-            stdout.Write($"\x1b[{choices.Count}A");
+            labelWidth = Math.Max(labelWidth, choice.Label.Length);
         }
+
+        return Render(stdout, choices, index, labelWidth, previousRows);
+    }
+
+    /// <summary>Draws the menu and returns how many rows it occupied.</summary>
+    /// <remarks>
+    /// The return value is the contract: the caller feeds it back as
+    /// <paramref name="previousRows"/> so the redraw moves up exactly as far as the last
+    /// draw came down. Nothing here may emit a row it does not count, and nothing may emit
+    /// a line longer than the width, because either one breaks that correspondence.
+    /// </remarks>
+    private int Render(
+        TextWriter stdout,
+        IReadOnlyList<TuiChoice> choices,
+        int index,
+        int labelWidth,
+        int previousRows)
+    {
+        if (previousRows > 0)
+        {
+            stdout.Write($"\x1b[{previousRows}A");
+        }
+
+        // One column short of the terminal: writing into the last cell makes some terminals
+        // wrap immediately and others defer it, and the difference is a row this cannot see.
+        var room = Math.Max(MinimumWidth, width()) - 1;
+        var rows = 0;
 
         for (var i = 0; i < choices.Count; i++)
         {
             var choice = choices[i];
-            var label = choice.Label.PadRight(labelWidth + 2);
+            var marker = i == index ? " ❯ " : "   ";
+
+            // Both halves are clipped, and the head first: a label long enough to fill the row
+            // on its own — or any label at all on a narrow terminal — overflows just as surely
+            // as a long description, and clipping only the description leaves that unbounded.
+            var head = Clip(marker + choice.Label.PadRight(labelWidth + 2), room);
+            var description = Clip(choice.Description, room - head.Length);
+
             var line = i == index
-                ? Paint(" ❯ " + label, "1;36") + Paint(choice.Description, "36")
-                : "   " + label + Paint(choice.Description, "2");
+                ? Paint(head, "1;36") + Paint(description, "36")
+                : head + Paint(description, "2");
+
             stdout.WriteLine("\x1b[2K" + line);
+            rows++;
+        }
+
+        if (choices.Any(c => !string.IsNullOrEmpty(c.Detail)))
+        {
+            foreach (var line in Fold(choices[index].Detail ?? string.Empty, room - 2, DetailRows))
+            {
+                stdout.WriteLine("\x1b[2K" + (line.Length == 0 ? string.Empty : Paint("  " + line, "2")));
+                rows++;
+            }
         }
 
         stdout.Flush();
+        return rows;
+    }
+
+    /// <summary>One line, never wider than <paramref name="room"/>, ellipsed if it was.</summary>
+    private static string Clip(string text, int room)
+    {
+        if (room <= 0)
+        {
+            return string.Empty;
+        }
+
+        return text.Length <= room ? text : string.Concat(text.AsSpan(0, room - 1), "…");
+    }
+
+    /// <summary>
+    /// Word-wraps into exactly <paramref name="lines"/> lines of at most
+    /// <paramref name="room"/>, padding with empty ones and ellipsing what does not fit.
+    /// Exactly, because the row count is what the redraw is going to move back over.
+    /// </summary>
+    private static IReadOnlyList<string> Fold(string text, int room, int lines)
+    {
+        var folded = new List<string>();
+        var remaining = text.AsSpan().Trim();
+
+        while (folded.Count < lines && remaining.Length > 0)
+        {
+            if (remaining.Length <= room)
+            {
+                folded.Add(remaining.ToString());
+                break;
+            }
+
+            // The last line takes an ellipsis rather than a word break: there is no next line
+            // for the rest to go on, so breaking cleanly would just hide that it was cut.
+            if (folded.Count == lines - 1)
+            {
+                folded.Add(Clip(remaining.ToString(), room));
+                break;
+            }
+
+            var brk = remaining[..(room + 1)].LastIndexOf(' ');
+            if (brk <= 0)
+            {
+                brk = room;
+            }
+
+            folded.Add(remaining[..brk].ToString());
+            remaining = remaining[brk..].TrimStart();
+        }
+
+        while (folded.Count < lines)
+        {
+            folded.Add(string.Empty);
+        }
+
+        return folded;
+    }
+
+    private static int ConsoleWidth()
+    {
+        try
+        {
+            var columns = Console.WindowWidth;
+            return columns >= MinimumWidth ? columns : DefaultWidth;
+        }
+        catch (IOException)
+        {
+            return DefaultWidth;
+        }
+        catch (PlatformNotSupportedException)
+        {
+            return DefaultWidth;
+        }
     }
 
     private string Paint(string text, string code) => Ansi ? $"\x1b[{code}m{text}\x1b[0m" : text;

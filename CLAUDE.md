@@ -1,7 +1,7 @@
 # Engram — working rules
 
 Read `docs/engram-implementation-plan.md` before any non-trivial change. It holds
-fifty-one decisions (D1–D51) that resolve questions the spec left open, and each one was
+fifty-two decisions (D1–D52) that resolve questions the spec left open, and each one was
 reached by argument or measurement, not preference. `docs/engram-schema.sql` is the authority for
 database shape.
 
@@ -381,6 +381,24 @@ nothing in it is exactly the session where the other system wins uncontested; an
 forbidding tool names in primer guidance carries **one** exemption, subtracted by exact string rather
 than by pattern, so every other way guidance could drift back still fails. Nothing about the model's
 actual preference is measured yet — the channels exist, adoption is a D18/D43 question (D51).
+
+**A menu may not emit a row it cannot count.** `\x1b[{n}A` and `\x1b[2K` both count *physical* rows,
+so a line the terminal wraps costs rows the redraw never moves back over. `Tui.Render` therefore
+clips every line to the width, gives the detail block a fixed height, and returns the count it
+actually wrote for the caller to feed back as `previousRows` — one logical line, one row, always.
+That was the whole reported bug and all three of its symptoms: the model menu's entries ran ~290
+characters against a redraw of one row per choice, so at 80 columns each took four rows, the menu
+marched down the screen, one row in four got cleared, and the visible `❯` sat on a stale copy while
+the real index moved on — "the options repeat, the text is not formatted well, and it selected one I
+did not pick" is one assumption, not three bugs. Clip the **head first** and the description against
+what is left: on a narrow terminal the label overflows on its own, which the first fix missed. Keep
+the specs and the tradeoff prose in separate fields — clipping means concatenating them no longer
+corrupts the screen, it silently ellipses the specs instead, which is why
+`ModelMenu_SpecsFitBesideTheLabel_WithoutBeingEllipsed` exists as well as the width assertion. A test
+that builds its own `TuiChoice` list proves nothing about the picker; draw `EmbeddingSetup.ModelChoices()`
+itself, or the falsification passes with the defect restored. One column is left unwritten because
+terminals disagree about whether the last cell wraps now or later, and that difference is a row this
+cannot see (D52).
 
 ## Build constraints
 
