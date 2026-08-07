@@ -195,6 +195,21 @@ Three things the plan promised in M1 and never got, built the same night as M3:
   deletes a closed fact through a migrated store, and the sqlite_master byte-identity
   guard now covers the second copy of that DDL in `RebuildFactFts`.
 
+- **`SpoolReader.Drain` is gone** — the queue's one consumer is `SpoolQueue`, which peeks
+  without deleting and consumes only after commit; a drain that deletes before its caller
+  acts was an invitation to lose edits, kept alive only by its own tests. `Parse` and
+  `SpooledEdit` stay, because both real consumers read entries through them. Rejected:
+  demoting it to test support — the compactor tests only ever needed a name-ordered read.
+
+- **The scanner stops at another repository's border** — measured: `git ls-files` emits an
+  embedded checkout as one bare directory entry (an untracked clone as `inner/`, a
+  committed gitlink as the plain path), and both used to be counted as *unreadable files*;
+  the directory walk recursed straight through the border and indexed the inner repo's
+  sources under the outer repo's identity. Both modes now count one `embeddedcheckout`
+  skip per inner repo, and the walk also refuses to descend into any directory named
+  `.git`, which hardens `use_git = false` over real checkouts. Both guards proven able to
+  fail independently.
+
 Still absent after tonight, in plan order: tree-sitter, the salience writer (M5, and
 deliberately blind until there is a retrieval benchmark to tune against), D5 — which is
 cut by decision rather than unbuilt (plan lines 236–252: no automated cross-predicate
