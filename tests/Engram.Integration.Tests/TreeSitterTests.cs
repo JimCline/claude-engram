@@ -44,9 +44,13 @@ public class TreeSitterTests
                 Assert.True(
                     analysis is not null,
                     $"{language.Id}{extension}: {string.Join("; ", runtime.Downgrades)}");
+
+                // Compared as grammar-v2 fragments (D48), composed by the same DeepTier
+                // routine the indexer uses — the fixture's expectations pin scope chains
+                // and overload suffixes, not just names.
                 Assert.Equal(
-                    language.Fixture.ExpectedSymbols.Order(),
-                    analysis!.Symbols.Select(s => s.Name).Order());
+                    (language.Fixture.ExpectedDeepSymbols ?? language.Fixture.ExpectedSymbols).Order(),
+                    DeepTier.Fragments(analysis!.Symbols).Select(f => f.Fragment).Order());
                 Assert.Equal(
                     language.Fixture.ExpectedImports.Order(),
                     analysis.Imports.Order());
@@ -120,8 +124,8 @@ public class TreeSitterTests
 
         Assert.NotNull(analysis);
         Assert.Equal(
-            new[] { "Alias", "Base", "Internal", "Mode", "Plain", "Widget", "answer", "pump" },
-            analysis!.Symbols.Select(s => s.Name).Order());
+            new[] { "Alias", "Base", "Internal", "Internal/a", "Mode", "Plain", "Widget", "answer", "pump" },
+            DeepTier.Fragments(analysis!.Symbols).Select(f => f.Fragment).Order());
         Assert.Equal(new[] { "./lazy", "./legacy", "./types" }, analysis.Imports.Order());
 
         // The declaration body is the full source line, found by byte offset rather than

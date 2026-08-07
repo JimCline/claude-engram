@@ -3,15 +3,18 @@ using System.Text.RegularExpressions;
 namespace Engram.Core;
 
 /// <summary>
-/// A sample source and what tier-0 extraction must find in it. Carried on the registry row
-/// so the conformance suite iterates rows with zero edits per language (D24): a harness
-/// keeping its own fixture list per language is the same defect as a harness keeping its
-/// own language list.
+/// A sample source and what extraction must find in it. Carried on the registry row so the
+/// conformance suite iterates rows with zero edits per language (D24): a harness keeping
+/// its own fixture list per language is the same defect as a harness keeping its own
+/// language list. <see cref="ExpectedSymbols"/> is what tier 0's line-level read must find;
+/// <see cref="ExpectedDeepSymbols"/> is the grammar-v2 fragment list the tier-1 queries
+/// must produce from the same source (D48), null where the tiers see the same thing.
 /// </summary>
 public sealed record LanguageFixture(
     string Source,
     IReadOnlyList<string> ExpectedSymbols,
-    IReadOnlyList<string> ExpectedImports);
+    IReadOnlyList<string> ExpectedImports,
+    IReadOnlyList<string>? ExpectedDeepSymbols = null);
 
 /// <summary>
 /// One tree-sitter grammar (D47): which library file carries it, which export produces it,
@@ -38,11 +41,13 @@ public sealed record TreeSitterGrammar(
 /// growing cleverer.</para>
 ///
 /// <para>The queries mirror the patterns' contract with captures: every declaration query
-/// names its symbols <c>@name</c>, every import query its sources <c>@module</c>, and a
-/// capture starting with <c>_</c> exists only for a predicate. Each query is verified
-/// against the compiled grammar it targets before it lands here (D47) — <c>ts_query_new</c>
-/// validates node types per grammar, which is why TypeScript and JavaScript cannot share a
-/// declaration query and why a stale one fails loudly instead of matching nothing.</para>
+/// names its symbols <c>@name</c>, member patterns add <c>@scope</c> (the containing type)
+/// and <c>@params</c> (the written parameter list, for overload disambiguation — D48),
+/// every import query names its sources <c>@module</c>, and a capture starting with
+/// <c>_</c> exists only for a predicate. Each query is verified against the compiled
+/// grammar it targets before it lands here (D47) — <c>ts_query_new</c> validates node
+/// types per grammar, which is why TypeScript and JavaScript cannot share a declaration
+/// query and why a stale one fails loudly instead of matching nothing.</para>
 /// </remarks>
 public sealed record LanguageDefinition(
     string Id,
@@ -100,19 +105,27 @@ public static class LanguageRegistry
 {
     // The declaration queries capture every top-level named declaration, exported or not —
     // except const/let/var, which count only when exported: an unexported binding is
-    // implementation, not interface. Verified against the compiled grammars, where the
+    // implementation, not interface. Grammar v2 (D48) adds the member patterns: they are
+    // not program-anchored, so a class matches wherever it sits, and each carries @scope
+    // beside @name — the binding has no node navigation on purpose, nesting is the
+    // pattern's shape, and ts_query_new validates that shape like everything else. @params
+    // feeds overload disambiguation; a `private` member is filtered on its declaration
+    // line, and `#name` members never match because (property_identifier) is not
+    // (private_property_identifier). Verified against the compiled grammars, where the
     // vocabularies differ: TS names classes with (type_identifier) and has interface, enum,
     // type alias and abstract class node types JS does not.
     private const string TypeScriptDeclarations = """
-        (program (function_declaration name: (identifier) @name))
-        (program (generator_function_declaration name: (identifier) @name))
+        (program (function_declaration name: (identifier) @name parameters: (formal_parameters) @params))
+        (program (generator_function_declaration name: (identifier) @name parameters: (formal_parameters) @params))
+        (program (function_signature name: (identifier) @name parameters: (formal_parameters) @params))
         (program (class_declaration name: (type_identifier) @name))
         (program (abstract_class_declaration name: (type_identifier) @name))
         (program (interface_declaration name: (type_identifier) @name))
         (program (enum_declaration name: (identifier) @name))
         (program (type_alias_declaration name: (type_identifier) @name))
-        (program (export_statement declaration: (function_declaration name: (identifier) @name)))
-        (program (export_statement declaration: (generator_function_declaration name: (identifier) @name)))
+        (program (export_statement declaration: (function_declaration name: (identifier) @name parameters: (formal_parameters) @params)))
+        (program (export_statement declaration: (generator_function_declaration name: (identifier) @name parameters: (formal_parameters) @params)))
+        (program (export_statement declaration: (function_signature name: (identifier) @name parameters: (formal_parameters) @params)))
         (program (export_statement declaration: (class_declaration name: (type_identifier) @name)))
         (program (export_statement declaration: (abstract_class_declaration name: (type_identifier) @name)))
         (program (export_statement declaration: (interface_declaration name: (type_identifier) @name)))
@@ -120,17 +133,28 @@ public static class LanguageRegistry
         (program (export_statement declaration: (type_alias_declaration name: (type_identifier) @name)))
         (program (export_statement declaration: (lexical_declaration (variable_declarator name: (identifier) @name))))
         (program (export_statement declaration: (variable_declaration (variable_declarator name: (identifier) @name))))
+        (class_declaration name: (type_identifier) @scope body: (class_body (method_definition name: (property_identifier) @name parameters: (formal_parameters) @params)))
+        (class_declaration name: (type_identifier) @scope body: (class_body (method_signature name: (property_identifier) @name parameters: (formal_parameters) @params)))
+        (class_declaration name: (type_identifier) @scope body: (class_body (public_field_definition name: (property_identifier) @name)))
+        (abstract_class_declaration name: (type_identifier) @scope body: (class_body (method_definition name: (property_identifier) @name parameters: (formal_parameters) @params)))
+        (abstract_class_declaration name: (type_identifier) @scope body: (class_body (method_signature name: (property_identifier) @name parameters: (formal_parameters) @params)))
+        (abstract_class_declaration name: (type_identifier) @scope body: (class_body (abstract_method_signature name: (property_identifier) @name parameters: (formal_parameters) @params)))
+        (abstract_class_declaration name: (type_identifier) @scope body: (class_body (public_field_definition name: (property_identifier) @name)))
+        (interface_declaration name: (type_identifier) @scope body: (interface_body (method_signature name: (property_identifier) @name parameters: (formal_parameters) @params)))
+        (interface_declaration name: (type_identifier) @scope body: (interface_body (property_signature name: (property_identifier) @name)))
         """;
 
     private const string JavaScriptDeclarations = """
-        (program (function_declaration name: (identifier) @name))
-        (program (generator_function_declaration name: (identifier) @name))
+        (program (function_declaration name: (identifier) @name parameters: (formal_parameters) @params))
+        (program (generator_function_declaration name: (identifier) @name parameters: (formal_parameters) @params))
         (program (class_declaration name: (identifier) @name))
-        (program (export_statement declaration: (function_declaration name: (identifier) @name)))
-        (program (export_statement declaration: (generator_function_declaration name: (identifier) @name)))
+        (program (export_statement declaration: (function_declaration name: (identifier) @name parameters: (formal_parameters) @params)))
+        (program (export_statement declaration: (generator_function_declaration name: (identifier) @name parameters: (formal_parameters) @params)))
         (program (export_statement declaration: (class_declaration name: (identifier) @name)))
         (program (export_statement declaration: (lexical_declaration (variable_declarator name: (identifier) @name))))
         (program (export_statement declaration: (variable_declaration (variable_declarator name: (identifier) @name))))
+        (class_declaration name: (identifier) @scope body: (class_body (method_definition name: (property_identifier) @name parameters: (formal_parameters) @params)))
+        (class_declaration name: (identifier) @scope body: (class_body (field_definition property: (property_identifier) @name)))
         """;
 
     // Shared across TS and JS: import statements, require(), and dynamic import() all use
@@ -163,8 +187,8 @@ public static class LanguageRegistry
             DeclarationPatterns:
             [
                 // Type declarations at namespace-level indentation (0–4 spaces). Nested
-                // types are the deep tier's to key; matching them here would write paths
-                // grammar v1 does not define.
+                // types and members are the deep tier's to key (grammar v2, D48); tier 0
+                // stays top-level, the honest resolution of a line-level read.
                 @"^[ ]{0,4}(?:\[[^\]]*\][ ]*)*(?:(?:public|internal|protected|private|static|sealed|abstract|partial|unsafe|file)[ ]+)*(?:class|interface|struct|record(?:[ ]+(?:class|struct))?|enum|delegate[ ]+\S+)[ ]+(?<name>[A-Za-z_]\w*)",
             ],
             ImportPatterns:
@@ -205,12 +229,34 @@ public static class LanguageRegistry
                     import { readFile } from "node:fs";
                     import config from "./config";
 
-                    export interface Options { deep: boolean }
+                    export interface Options { deep: boolean; limit(n: number): void }
                     export async function scan(o: Options): Promise<void> {}
                     const hidden = 1;
+
+                    export class Scanner {
+                        depth = 1;
+                        private cache = "";
+                        probe(): void;
+                        probe(deep: boolean): void;
+                        probe(deep?: boolean): void {}
+                        get size(): number { return this.depth; }
+                    }
                     """,
-                ExpectedSymbols: ["Options", "scan"],
-                ExpectedImports: ["node:fs", "./config"]),
+                ExpectedSymbols: ["Options", "scan", "Scanner"],
+                ExpectedImports: ["node:fs", "./config"],
+                ExpectedDeepSymbols:
+                [
+                    "Options",
+                    "Options/deep",
+                    "Options/limit",
+                    "Scanner",
+                    "Scanner/depth",
+                    "Scanner/probe()",
+                    "Scanner/probe(deep: boolean)",
+                    "Scanner/probe(deep?: boolean)",
+                    "Scanner/size",
+                    "scan",
+                ]),
             Grammars:
             [
                 new(Library: "typescript", Symbol: "tree_sitter_typescript", Extensions: [".ts"]),
@@ -238,11 +284,24 @@ public static class LanguageRegistry
                     import path from "path";
                     const local = require("./local");
 
-                    export class Runner {}
+                    export class Runner {
+                        limit = 10;
+                        #secret = "";
+                        run() {}
+                        run(times) {}
+                    }
                     export default function main() {}
                     """,
                 ExpectedSymbols: ["Runner", "main"],
-                ExpectedImports: ["path", "./local"]),
+                ExpectedImports: ["path", "./local"],
+                ExpectedDeepSymbols:
+                [
+                    "Runner",
+                    "Runner/limit",
+                    "Runner/run()",
+                    "Runner/run(times)",
+                    "main",
+                ]),
             Grammars: [new(Library: "javascript", Symbol: "tree_sitter_javascript", Extensions: [])],
             DeclarationQuery: JavaScriptDeclarations,
             ImportQuery: ScriptImports),

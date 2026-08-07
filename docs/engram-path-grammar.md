@@ -1,6 +1,6 @@
 # The path grammar for indexed code
 
-`grammar_version = 1`
+`grammar_version = 2`
 
 This document is the authority for how code subjects are addressed. It is versioned
 because paths are promises: recall's cheapest operation is a prefix range scan over
@@ -50,16 +50,32 @@ mutable only to follow an entity on rename (D2).
   `/`: `README.md#install/prerequisites`. The slug is address, not display — the
   heading as authored lives on the entity's display name (the same split the primer
   already relies on for topics).
-- A **symbol** is the declared name verbatim, nested scopes joined with `/`:
-  `FactStore.cs#FactStore/Remember` would be the deep-tier form; the universal tier
-  writes top-level names only (`FactStore.cs#FactStore`).
-- Version 1 deliberately has **no overload disambiguation and no signature grammar**.
-  The universal tier writes one symbol entity per distinct name, which is the honest
-  resolution of what a line-level analyzer can actually see. When the deep tier can
-  resolve overloads, that is grammar v2, and existing entities are **re-keyed by
-  adopt/merge, not duplicated** (D2): the deep analyzer resolves a symbol to the
-  existing entity by name and span, keeps its `entity.id`, corrects the path, and
-  files the old path as an alias in `entity.meta`.
+- A **symbol** is the scope chain of declared names, outermost first, joined with
+  `/`, each name as written: `FactStore.cs#FactStore/Remember`,
+  `Widget.cs#Widget/Inner`. The chain holds type-like containers only — namespaces
+  are not segments, because the file path already locates the file and a namespace
+  spans files rather than nesting identity. The universal tier still writes top-level
+  names only (`FactStore.cs#FactStore`), the honest resolution of a line-level read;
+  a top-level v2 address is spelled exactly like its v1 address, which is why the
+  v1→v2 bump re-addressed nothing that existed — every v1 extractor was anchored to
+  top-level declarations (D48).
+- **Overloads** (new in v2): when several declarations in one file share a scope
+  chain and a name, each appends its parameter list as written — parentheses
+  included, interior whitespace runs collapsed to a single space:
+  `Http.cs#Http/Get(string key)` beside `Http.cs#Http/Get(string key, int count)`.
+  The suffix appears **only on collision**, so a unique name keeps its stable bare
+  form and the arrival of a first overload is the only event that re-addresses a
+  sibling. Declarations a syntactic view still cannot separate — same scope, name,
+  and written parameter list — share one address, first declaration wins: the same
+  rule partial classes already had. Which symbols a tier emits at these addresses is
+  extraction policy, decided in D48; the grammar only defines the address a symbol
+  gets.
+- A grammar bump is detected, never inferred: the version lands in `schema_meta`
+  through `code_index_version`, and a mismatch forces a full re-read. Where a bump
+  retires an address (v2: a bare name splitting into suffixed overload siblings), the
+  facts at it close through the ordinary vanished-symbol path; renames continue to
+  move paths whole through `MoveSubtree`, aliasing the old path in `entity_alias`
+  (D2).
 
 ## What a path is not
 

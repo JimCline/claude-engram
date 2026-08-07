@@ -21,6 +21,8 @@ public class RoslynSidecarTests
             public sealed class Inner { }
 
             public StringBuilder Buffer { get; } = new();
+
+            private int count;
         }
 
         public interface IWidget { }
@@ -95,13 +97,25 @@ public class RoslynSidecarTests
 
         var widget = results["Widget.cs"];
         Assert.Null(widget.Error);
-        Assert.Equal(["Widget", "IWidget"], widget.Symbols.Select(s => s.Name));
-        Assert.DoesNotContain(widget.Symbols, s => s.Name == "Inner");
+        Assert.Equal(["Widget", "Buffer", "Inner", "IWidget"], widget.Symbols.Select(s => s.Name));
+
+        // Surface only (D48): a bare private member is implementation, never emitted.
+        Assert.DoesNotContain(widget.Symbols, s => s.Name == "count");
 
         var declared = widget.Symbols.Single(s => s.Name == "Widget");
         Assert.Equal("class", declared.Kind);
+        Assert.Null(declared.Scope);
         Assert.Equal("public sealed class Widget", declared.Declaration);
         Assert.Equal("Holds widgets for the demo.", declared.Doc);
+
+        var nested = widget.Symbols.Single(s => s.Name == "Inner");
+        Assert.Equal("class", nested.Kind);
+        Assert.Equal("Widget", nested.Scope);
+
+        var property = widget.Symbols.Single(s => s.Name == "Buffer");
+        Assert.Equal("property", property.Kind);
+        Assert.Equal("Widget", property.Scope);
+        Assert.Equal("public StringBuilder Buffer { get; } = new();", property.Declaration);
 
         Assert.Equal("interface", widget.Symbols.Single(s => s.Name == "IWidget").Kind);
         Assert.Null(widget.Symbols.Single(s => s.Name == "IWidget").Doc);
@@ -224,9 +238,12 @@ public class RoslynSidecarTests
             facts.Single(f => f.SubjectPath == widgetPath && f.Predicate == "about").Body);
 
         // Tier 0's file-scoped-namespace blind spot: its 0–4 space indent window reads a
-        // nested type as top-level. The sidecar sees the nesting, so no fact lands there.
+        // nested type as top-level. The sidecar sees the nesting, so the fact lands under
+        // the scope chain (grammar v2, D48), never at the bare name tier 0 would have used.
         var innerPath = CodePaths.ForSymbol(CodePaths.ForFile(report.RepoPath, "Widget.cs"), "Inner");
         Assert.DoesNotContain(facts, f => f.SubjectPath == innerPath);
+        var nestedPath = CodePaths.ForSymbol(CodePaths.ForFile(report.RepoPath, "Widget.cs"), "Widget/Inner");
+        Assert.Contains(facts, f => f.SubjectPath == nestedPath && f.Predicate == "declared-as");
     }
 
     [Fact]

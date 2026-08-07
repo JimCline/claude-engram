@@ -170,16 +170,45 @@ public sealed unsafe class TreeSitter : IDisposable
             var root = treeRootNode(tree);
 
             var symbols = new List<DeepSymbol>();
-            foreach (var node in Captures(declarations, root, source, "name"))
+            foreach (var captures in Matches(declarations, root, source))
             {
+                if (!captures.TryGetValue("name", out var nameNode))
+                {
+                    continue;
+                }
+
+                var line = LineAt(source, nodeStartByte(nameNode));
+                var scope = captures.TryGetValue("scope", out var scopeNode)
+                    ? Text(scopeNode, source)
+                    : null;
+
+                // Grammar v2 (D48): a `private` member is implementation, not surface —
+                // the queries cannot express negation, so the modifier is read off the
+                // declaration line. The `#name` form never gets this far: the member
+                // patterns capture (property_identifier), which a private name is not.
+                if (scope is not null && line.StartsWith("private ", StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
                 symbols.Add(new DeepSymbol(
-                    Text(node, source), "symbol", LineAt(source, nodeStartByte(node)), Doc: null));
+                    Text(nameNode, source),
+                    "symbol",
+                    line,
+                    Doc: null,
+                    Scope: scope,
+                    Params: captures.TryGetValue("params", out var paramsNode)
+                        ? Text(paramsNode, source)
+                        : null));
             }
 
             var modules = new List<string>();
-            foreach (var node in Captures(imports, root, source, "module"))
+            foreach (var captures in Matches(imports, root, source))
             {
-                modules.Add(Text(node, source));
+                if (captures.TryGetValue("module", out var node))
+                {
+                    modules.Add(Text(node, source));
+                }
             }
 
             return new DeepAnalysis(relativePath, symbols, modules, null);
@@ -307,9 +336,16 @@ public sealed unsafe class TreeSitter : IDisposable
         return [.. parsed];
     }
 
-    private List<TsNode> Captures(Compiled compiled, TsNode root, byte[] source, string wanted)
+    /// <summary>
+    /// Every surviving match as its named captures, in cursor order. Grammar v2 needs
+    /// captures that belong together to stay together — <c>@scope</c> and <c>@params</c>
+    /// mean nothing apart from their match's <c>@name</c> — so this is per-match where the
+    /// v1 extraction was one flat capture list. Captures starting with <c>_</c> exist only
+    /// for predicates and are not returned.
+    /// </summary>
+    private List<Dictionary<string, TsNode>> Matches(Compiled compiled, TsNode root, byte[] source)
     {
-        var nodes = new List<TsNode>();
+        var matches = new List<Dictionary<string, TsNode>>();
         var cursor = queryCursorNew();
         try
         {
@@ -323,14 +359,18 @@ public sealed unsafe class TreeSitter : IDisposable
                     continue;
                 }
 
+                var captures = new Dictionary<string, TsNode>(StringComparer.Ordinal);
                 for (var i = 0; i < match.CaptureCount; i++)
                 {
                     var capture = ((TsQueryCapture*)match.Captures)[i];
-                    if (compiled.CaptureNames[capture.Index] == wanted)
+                    var name = compiled.CaptureNames[capture.Index];
+                    if (!name.StartsWith('_'))
                     {
-                        nodes.Add(capture.Node);
+                        captures.TryAdd(name, capture.Node);
                     }
                 }
+
+                matches.Add(captures);
             }
         }
         finally
@@ -338,7 +378,7 @@ public sealed unsafe class TreeSitter : IDisposable
             queryCursorDelete(cursor);
         }
 
-        return nodes;
+        return matches;
     }
 
     private bool PredicatesHold(Compiled compiled, in TsQueryMatch match, byte[] source)

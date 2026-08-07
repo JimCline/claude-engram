@@ -458,6 +458,32 @@ redirected streams and by design gets the plain prompts. What that one test does
 cover: arrow-key navigation itself (it pipes a bare Enter), and the rich path on Linux.
 `install.ps1` lags further still — no embedding step, no styling; same parity item.
 
+### Grammar v2 landed (D48): nested types, members, overloads
+
+The last named item of M3's deep tiers. A symbol fragment is now the scope chain joined
+with `/` (`Widget.cs#Widget/Inner`, `FactStore.cs#FactStore/Remember`); overloads append
+their parameter list as written, whitespace-collapsed, **only on collision** — a unique
+name keeps its stable bare form, and the one normalization lives in `DeepTier.Fragments`,
+which composes every fragment for both deep tiers (neither tier ever spells an address).
+`CodePaths.GrammarVersion` is 2, and the bump re-addresses nothing by construction: every
+v1 extractor was top-level-anchored, and a top-level v2 address is spelled like its v1
+address, so the forced re-read only adds member entities.
+
+The tree-sitter binding deliberately gained no node navigation — nesting is the query
+pattern's shape (`@scope` beside `@name`, `@params` for overloads), which keeps it inside
+what `ts_query_new` validates. All the new node names (`interface_body`,
+`function_signature`, `public_field_definition`, `abstract_method_signature`,
+`method_signature`, JS `field_definition`) compiled against the real pinned grammars on
+the first run. The sidecar walks nested types at any depth and emits surface members only
+(explicit public/internal/protected, or interface membership); tier 1 filters `private`
+on the declaration line and `#name` members never match structurally. Deliberately not
+emitted: enum members, indexers, operators, local functions — D44 already measured what
+near-noise does to lexical ranking. Both falsifications went red on exactly their guard:
+unconditional suffix → the two collision-rule unit tests; `PrivateKeyword` added to the
+surface list → the sidecar batch test on the planted private field. (A `if (false)` plant
+does not survive warnings-as-errors — CS0162 fails the build before the test can go red;
+plant a realistic wrong edit instead.)
+
 ---
 
 ## Verified vs. not
@@ -492,24 +518,26 @@ cover: arrow-key navigation itself (it pipes a bare Enter), and the rich path on
 | the rich TUI path renders and lands a choice | measured — one macOS pty test: menu paints ANSI, Enter writes `provider = "none"` |
 | arrow-key navigation, digits, Esc | **not measured by any test** — the pty test pipes a single Enter; the key loop beyond that has only been driven by hand |
 | the embedding tri-state guard can fail | proven — the `set -e` plant turned exactly the bad-model test red, restored |
+| grammar v2 queries against the real pinned grammars | measured — conformance walk green on first contact; fixtures pin scope chains, overload suffixes, and the private filter |
+| grammar v2 guards can fail | proven — unconditional-suffix and private-as-surface plants each turned exactly their tests red, restored |
+| the v1→v2 bump re-addresses nothing | argued from anchoring (all v1 extractors were top-level-only), not measured against a populated v1 store |
 
 ---
 
 ## Open work, ranked
 
-### 1. M3's deep tiers — grammar v2 is what remains
+### 1. M3's deep tiers — complete; what remains is watching the telemetry
 
 Tier 0 shipped on an explicit user instruction, which is worth recording precisely:
 D6's gate never *fired* — the telemetry that was supposed to open it (code-structure recall
 misses) still reads zero recalls of that shape, ever. The gate was overridden, not met, and
 the same telemetry now measures whether the index earns its keep: code facts exist, so a
 code-structure recall can finally hit or miss something. Tiers 1 and 2 have since both
-landed (the sidecar earlier, tree-sitter above, D47), so what remains here is:
-
-- **Overload grammar v2 (D27)** — nested types, overloads, member fragments. A grammar
-  bump re-keys, which is adopt/merge's job, and `code_index_version` already forces the
-  re-read. Tier 1 deliberately kept grammar v1 addresses — top-level symbols only — so
-  this lands as one coordinated bump across all three tiers, not per tier.
+landed (the sidecar earlier, tree-sitter D47), and grammar v2 (D48) closed the last named
+item — nested types, members, overloads, one coordinated bump. Nothing in this line is
+blocked on engineering now: what remains is whether code-structure recalls ever arrive,
+and whether the deliberately-unemitted populations (enum members, indexers, operators)
+turn out to be asked about, which is a telemetry question, not a backlog item.
 
 ### 2. The adoption question itself — 28 writes against 7 reads
 
@@ -599,7 +627,10 @@ permissions, and `gh run cancel` on anything still burning is the first thing wo
 
 ### 5. Smaller
 
-- D27's open sub-question.
+- D27's open sub-question — how a repo learns its project — is implemented as designed
+  (`[indexing] project` re-binds, the repo directory name is the default, read at
+  `CodeIndexer` registration). What remains is only that no multi-codebase project has
+  exercised the re-bind yet.
 - `docs/engram-spec.md:62` "not a Sage replacement" — flagged, unresolved.
 
 ---

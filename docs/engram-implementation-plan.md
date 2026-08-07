@@ -2626,7 +2626,75 @@ a query literal nobody ran is a regex nobody tested.
 C# row already records. What tier 1 buys inside v1: names parsed instead of guessed, every
 top-level declaration form, import sources including `require` and dynamic `import()`, and the same
 merge implementation tier 2 uses, so handing a store between tiers supersedes nothing that did not
-actually change.
+actually change. (Superseded by D48: tier 1 now writes v2 fragments through the same merge.)
+
+### D48 — Grammar v2: scope chains and collision-only overload suffixes
+
+**Decision.** A symbol fragment is the scope chain of declared names, outermost first, joined
+with `/`, each name as written: `Widget.cs#Widget/Inner`, `FactStore.cs#FactStore/Remember`.
+When several declarations in one file share a scope chain and a name, each appends its parameter
+list as written — parentheses included, interior whitespace runs collapsed to a single space —
+and declarations a syntactic view still cannot separate share one address, first wins, the same
+rule partial classes already had. `CodePaths.GrammarVersion` moves 1 → 2, which
+`code_index_version` turns into a full re-read on the first index after upgrade.
+
+**The bump re-addresses nothing, by construction rather than by luck.** Every v1 extractor was
+anchored to top-level declarations — the tier-1 queries all began `(program …)`, the sidecar
+skipped any type whose parent was a type, tier 0's patterns bound to column ~0 — and a top-level
+symbol's v2 fragment is spelled exactly like its v1 fragment. So v2 lands additively: existing
+entities keep their ids and paths untouched, members and nested types appear as new entities, and
+the one case where an address retires (a bare name that v2 splits into suffixed overload
+siblings) closes its facts through the ordinary vanished-symbol path. The path-grammar document's
+v1 sketch of adopt/merge re-keying was written for a migration that turned out not to exist; the
+alias machinery (`entity_alias` via `MoveSubtree`) remains what renames use (D2).
+
+**The suffix appears only on collision.** Rejected: arity or parameters on every callable —
+that re-addresses a symbol every time a parameter is added, coupling the address to the part of
+a declaration that changes most; the collision-only rule means the arrival of a first overload
+is the only event that moves a sibling's address. Rejected: normalized type-only parameter
+lists — extracting per-parameter types from a tree-sitter capture means parsing inside the
+capture, and a "normalized" spelling is a second implementation of the language's type grammar
+that drifts. As-written text from the same source file cannot disagree between tiers, because
+both tiers read the same bytes; the only normalization is whitespace-run collapse, and it lives
+in exactly one place (`DeepTier.Merge` — both deep tiers ship raw text and the merge composes
+every fragment). Rejected: type parameters in the name (`Get<T>`) — every generic symbol pays
+address noise forever to disambiguate a case (same name, same written parameters, different
+genericity) that first-wins already resolves honestly.
+
+**Scope chains hold type-like containers only, and they come from different instruments per
+tier.** Namespaces are not segments: the file path already locates the file, a namespace spans
+files and repos rather than nesting identity, and every fragment would pay its length. The
+Roslyn sidecar walks ancestor type declarations. The tree-sitter binding deliberately gained no
+node-navigation API — nesting is expressed in the query pattern itself (`@scope` captured beside
+`@name` in one pattern), which keeps the binding capture-only and keeps the shape inside what
+`ts_query_new` validates, so a wrong nesting shape refuses loudly at first use like every other
+stale query (D47). The cost is honesty about depth: a fixed-shape query sees one level of
+nesting, so tier 1 writes `Class/member` and never `Outer/Inner/member`; the sidecar walks
+arbitrarily deep. Each language has exactly one deep tier, so the difference never produces two
+addresses for one symbol.
+
+**What the tiers emit is policy, and the filter is syntactic.** Tier 2 emits every type
+declaration at any depth (v1 already emitted every top-level type regardless of visibility;
+types are structure) and the members that are surface: an explicit `public`, `internal`, or
+`protected` modifier, or membership in an interface, where the language makes them public
+implicitly. A bare private member is implementation, not interface — the same line the registry
+already draws for unexported `const`/`let`/`var`. Member kinds: methods, constructors,
+properties, fields, events; nested delegates keep their kind. Tier 1 emits class methods
+(including getters, setters, abstract methods, and overload signatures), public class fields,
+interface method and property signatures, and top-level function overload signatures; `#name`
+private members never match (`property_identifier` excludes them structurally) and a `private`
+modifier is filtered on the declaration line. Deliberately not emitted anywhere: enum members,
+indexers, operators, local functions — each is a large population of low-recall-value facts,
+and D44 already measured what a store full of near-noise does to lexical ranking. Method and
+constructor declaration lines cut at the body (a `declared-as` fact carries a signature, not an
+implementation); properties keep auto-accessor shapes (`{ get; set; }`) and drop computed
+bodies.
+
+**Sidecar protocol.** Symbol objects gain optional `"scope"` (pre-joined chain of the containing
+types) and `"params"` (parameter list as written, raw). The parser tolerates their absence, so
+output from an older sidecar still parses as v1-shaped symbols — robustness for skewed dev
+environments, not a supported deployment; the pair ships together and the version bump forces
+the re-read either way.
 
 ## PreCompact cannot inject context
 

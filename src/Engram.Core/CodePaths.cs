@@ -3,17 +3,21 @@ using System.Text;
 namespace Engram.Core;
 
 /// <summary>
-/// Builds subject paths for indexed code, per <c>docs/engram-path-grammar.md</c> v1.
+/// Builds subject paths for indexed code, per <c>docs/engram-path-grammar.md</c> v2.
 /// </summary>
 /// <remarks>
-/// The grammar document is the authority; this class only mechanizes it. Bump
+/// <para>The grammar document is the authority; this class only mechanizes it. Bump
 /// <see cref="GrammarVersion"/> together with that document — the indexer stores the value
 /// in <c>schema_meta</c> and forces a full re-index on mismatch, because two grammars
-/// interleaved in one store make the prefix scan lie.
+/// interleaved in one store make the prefix scan lie.</para>
+///
+/// <para>Symbol fragments are composed by <see cref="DeepTier.Fragments"/>, the one
+/// implementation of v2's scope-chain and collision rules (D48); <see cref="ForSymbol"/>
+/// takes the finished fragment and only attaches it.</para>
 /// </remarks>
 public static class CodePaths
 {
-    public const int GrammarVersion = 1;
+    public const int GrammarVersion = 2;
 
     /// <summary>Root for a codebase: <c>/projects/&lt;project&gt;/code/&lt;repo&gt;</c> (D27).</summary>
     public static string RepoRoot(string projectSlug, string repoSlug) =>

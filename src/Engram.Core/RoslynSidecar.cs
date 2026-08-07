@@ -165,7 +165,9 @@ public static class RoslynSidecar
                         name,
                         symbol["kind"]?.GetValue<string>() ?? "type",
                         declaration,
-                        symbol["doc"]?.GetValue<string>()));
+                        symbol["doc"]?.GetValue<string>(),
+                        symbol["scope"]?.GetValue<string>(),
+                        symbol["params"]?.GetValue<string>()));
                 }
             }
         }
