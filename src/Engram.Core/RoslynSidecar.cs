@@ -4,14 +4,6 @@ using System.Text.Json.Nodes;
 
 namespace Engram.Core;
 
-public sealed record SidecarSymbol(string Name, string Kind, string Declaration, string? Doc);
-
-public sealed record SidecarAnalysis(
-    string Path,
-    IReadOnlyList<SidecarSymbol> Symbols,
-    IReadOnlyList<string> Imports,
-    string? Error);
-
 /// <summary>
 /// Drives the tier-2 C# analyzer (D1/D24): a separate <c>engram-roslyn</c> process spoken
 /// to over stdin/stdout, never over the database. Everything here degrades to tier 0 —
@@ -58,7 +50,7 @@ public static class RoslynSidecar
     /// Returns null when the sidecar could not run at all; a partial dictionary when it
     /// died mid-batch, which the caller treats as per-file fallback.
     /// </summary>
-    public static Dictionary<string, SidecarAnalysis>? Analyze(
+    public static Dictionary<string, DeepAnalysis>? Analyze(
         string sidecarPath,
         IReadOnlyList<(string RelativePath, string Content)> files,
         TimeSpan timeout)
@@ -125,7 +117,7 @@ public static class RoslynSidecar
                 return null;
             }
 
-            var results = new Dictionary<string, SidecarAnalysis>(StringComparer.Ordinal);
+            var results = new Dictionary<string, DeepAnalysis>(StringComparer.Ordinal);
             foreach (var line in stdout.GetAwaiter().GetResult().Split('\n', StringSplitOptions.RemoveEmptyEntries))
             {
                 if (Parse(line) is { } analysis)
@@ -138,66 +130,7 @@ public static class RoslynSidecar
         }
     }
 
-    /// <summary>
-    /// Tier 2 replaces what it can see better and keeps what it cannot: symbols and
-    /// imports come from Roslyn, the file-level impression stays tier 0's, and a per-file
-    /// error keeps tier 0's candidates wholesale. The imports body is built with the same
-    /// prefix and separator tier 0 uses, so handing a store from one tier to the other
-    /// supersedes nothing that did not actually change.
-    /// </summary>
-    public static IReadOnlyList<CodeCandidate> Merge(
-        string fileEntityPath,
-        IReadOnlyList<CodeCandidate> tierZero,
-        SidecarAnalysis analysis)
-    {
-        ArgumentNullException.ThrowIfNull(tierZero);
-        ArgumentNullException.ThrowIfNull(analysis);
-
-        if (analysis.Error is not null)
-        {
-            return tierZero;
-        }
-
-        var fileName = fileEntityPath[(fileEntityPath.LastIndexOf('/') + 1)..];
-        var merged = tierZero
-            .Where(c => c.EntityPath == fileEntityPath && c.Predicate == "about")
-            .ToList();
-
-        // Partial classes declare one name twice; one address holds one declaration fact.
-        var seen = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var symbol in analysis.Symbols)
-        {
-            if (symbol.Name.Length == 0 || !seen.Add(symbol.Name))
-            {
-                continue;
-            }
-
-            var symbolPath = CodePaths.ForSymbol(fileEntityPath, symbol.Name);
-            merged.Add(new CodeCandidate(
-                symbolPath, "symbol", symbol.Name, "declared-as", CodeAnalyzer.Cap(symbol.Declaration)));
-
-            if (!string.IsNullOrWhiteSpace(symbol.Doc))
-            {
-                merged.Add(new CodeCandidate(
-                    symbolPath, "symbol", symbol.Name, "about", CodeAnalyzer.Cap(symbol.Doc)));
-            }
-        }
-
-        if (analysis.Imports.Count > 0)
-        {
-            var modules = new SortedSet<string>(analysis.Imports, StringComparer.Ordinal);
-            merged.Add(new CodeCandidate(
-                fileEntityPath,
-                "file",
-                fileName,
-                "imports",
-                CodeAnalyzer.Cap("imports " + string.Join(", ", modules))));
-        }
-
-        return merged;
-    }
-
-    private static SidecarAnalysis? Parse(string line)
+    private static DeepAnalysis? Parse(string line)
     {
         JsonObject? record;
         try
@@ -216,10 +149,10 @@ public static class RoslynSidecar
 
         if (record["error"]?.GetValue<string>() is { } error)
         {
-            return new SidecarAnalysis(path, [], [], error);
+            return new DeepAnalysis(path, [], [], error);
         }
 
-        var symbols = new List<SidecarSymbol>();
+        var symbols = new List<DeepSymbol>();
         if (record["symbols"] is JsonArray symbolArray)
         {
             foreach (var node in symbolArray)
@@ -228,7 +161,7 @@ public static class RoslynSidecar
                     && symbol["name"]?.GetValue<string>() is { Length: > 0 } name
                     && symbol["declaration"]?.GetValue<string>() is { } declaration)
                 {
-                    symbols.Add(new SidecarSymbol(
+                    symbols.Add(new DeepSymbol(
                         name,
                         symbol["kind"]?.GetValue<string>() ?? "type",
                         declaration,
@@ -249,6 +182,6 @@ public static class RoslynSidecar
             }
         }
 
-        return new SidecarAnalysis(path, symbols, imports, null);
+        return new DeepAnalysis(path, symbols, imports, null);
     }
 }

@@ -147,6 +147,7 @@ public static class CodeIndexer
         }
 
         var deep = DeepAnalyses(root, changed, options.SidecarPath, notes);
+        Tier1Analyses(root, changed, home, notes, deep);
 
         foreach (var rel in changed)
         {
@@ -192,7 +193,7 @@ public static class CodeIndexer
     /// binary beside the executable, no runtime, a hang — leaves the batch at tier 0,
     /// because the deep tier is an upgrade, never a requirement.
     /// </summary>
-    private static Dictionary<string, SidecarAnalysis> DeepAnalyses(
+    private static Dictionary<string, DeepAnalysis> DeepAnalyses(
         string root,
         List<string> changed,
         string? sidecarPath,
@@ -238,6 +239,68 @@ public static class CodeIndexer
         return results;
     }
 
+    /// <summary>
+    /// The tier-1 pass (D24/D47): files whose language declares tier 1 go through the
+    /// tree-sitter grammars in the home's lib directory, into the same dictionary the
+    /// sidecar fills — a file is tier 1 or tier 2 by its language, never both, so the two
+    /// passes cannot collide on a key. Absence is quiet, exactly like an absent sidecar:
+    /// doctor is where "which tier do I have" gets answered, and an index note repeated
+    /// every run is a note nobody reads. Anything short of absence — a grammar that will
+    /// not load, a refused query — surfaces once per cause.
+    /// </summary>
+    private static void Tier1Analyses(
+        string root,
+        List<string> changed,
+        EngramHome home,
+        List<string> notes,
+        Dictionary<string, DeepAnalysis> results)
+    {
+        var syntactic = changed.Where(rel => LanguageRegistry.Resolve(rel).Tier == 1).ToList();
+        if (syntactic.Count == 0)
+        {
+            return;
+        }
+
+        var directory = TreeSitter.Locate(Environment.GetEnvironmentVariable, home);
+        if (directory is null)
+        {
+            return;
+        }
+
+        using var runtime = TreeSitter.TryCreate(directory, notes);
+        if (runtime is null)
+        {
+            return;
+        }
+
+        var covered = 0;
+        foreach (var rel in syntactic)
+        {
+            string content;
+            try
+            {
+                content = File.ReadAllText(Path.Combine(root, rel));
+            }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+            {
+                // ProcessFile reports the unreadable file; tier 1 just never sees it.
+                continue;
+            }
+
+            if (runtime.Analyze(LanguageRegistry.Resolve(rel), rel, content) is { } analysis)
+            {
+                results[rel] = analysis;
+                covered++;
+            }
+        }
+
+        notes.AddRange(runtime.Downgrades);
+        if (covered > 0)
+        {
+            notes.Add($"tier 1: tree-sitter covered {covered} of {syntactic.Count} file(s)");
+        }
+    }
+
     private sealed class Counters
     {
         public int Written;
@@ -256,7 +319,7 @@ public static class CodeIndexer
         DateTimeOffset now,
         Counters counters,
         List<string> notes,
-        SidecarAnalysis? deep)
+        DeepAnalysis? deep)
     {
         string content;
         try
@@ -274,7 +337,7 @@ public static class CodeIndexer
         var candidates = CodeAnalyzer.Analyze(filePath, content, language);
         if (deep is not null)
         {
-            candidates = RoslynSidecar.Merge(filePath, candidates, deep);
+            candidates = DeepTier.Merge(filePath, candidates, deep);
         }
 
         var live = ReadLiveUnder(connection, filePath);

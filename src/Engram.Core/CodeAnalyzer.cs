@@ -23,7 +23,9 @@ public sealed record CodeCandidate(
 /// </summary>
 public static class CodeAnalyzer
 {
-    public const int AnalyzerVersion = 1;
+    // 2: tier 1 exists (D47) — TS/JS extraction changes wherever grammars are installed,
+    // and the bump is what makes existing stores re-read under the better extractor.
+    public const int AnalyzerVersion = 2;
 
     public static IReadOnlyList<CodeCandidate> Analyze(
         string fileEntityPath,

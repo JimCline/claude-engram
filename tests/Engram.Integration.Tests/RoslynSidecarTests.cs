@@ -149,7 +149,7 @@ public class RoslynSidecarTests
         var tierZero = CodeAnalyzer.Analyze(filePath, BraceStyleCs, language);
         var analysis = Analyze(filePath: "Widget.cs", BraceStyleCs);
 
-        var merged = RoslynSidecar.Merge(filePath, tierZero, analysis);
+        var merged = DeepTier.Merge(filePath, tierZero, analysis);
 
         var tierZeroAbout = tierZero.Single(c => c.Predicate == "about" && c.EntityPath == filePath);
         Assert.Equal(tierZeroAbout.Body, merged.Single(c => c.Predicate == "about" && c.EntityPath == filePath).Body);
@@ -175,8 +175,8 @@ public class RoslynSidecarTests
         var filePath = "/projects/demo/code/repo/src/Widget.cs";
         var tierZero = CodeAnalyzer.Analyze(filePath, BraceStyleCs, LanguageRegistry.Resolve("Widget.cs"));
 
-        var merged = RoslynSidecar.Merge(
-            filePath, tierZero, new SidecarAnalysis("Widget.cs", [], [], "did not parse"));
+        var merged = DeepTier.Merge(
+            filePath, tierZero, new DeepAnalysis("Widget.cs", [], [], "did not parse"));
 
         Assert.Equal(tierZero, merged);
     }
@@ -278,7 +278,7 @@ public class RoslynSidecarTests
         }
     }
 
-    private static SidecarAnalysis Analyze(string filePath, string content)
+    private static DeepAnalysis Analyze(string filePath, string content)
     {
         var results = RoslynSidecar.Analyze(
             SidecarBinary(), [(filePath, content)], TimeSpan.FromSeconds(30));

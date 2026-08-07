@@ -13,18 +13,36 @@ public sealed record LanguageFixture(
     IReadOnlyList<string> ExpectedSymbols,
     IReadOnlyList<string> ExpectedImports);
 
+/// <summary>
+/// One tree-sitter grammar (D47): which library file carries it, which export produces it,
+/// and which of the row's extensions it parses — an empty list claims whatever the row's
+/// other grammars did not. TSX is why this is a list: <c>.ts</c> and <c>.tsx</c> are one
+/// language row parsed by two grammars.
+/// </summary>
+public sealed record TreeSitterGrammar(
+    string Library,
+    string Symbol,
+    IReadOnlyList<string> Extensions);
+
 /// <summary>One language: what it is called, which files are its, and what tier-0 can extract.</summary>
 /// <remarks>
 /// <para><see cref="Tier"/> declares the deepest analysis this language is entitled to
-/// (D24: 0 universal, 1 tree-sitter, 2 semantic sidecar). Every row currently executes on
-/// the tier-0 mechanism; the column exists from day one so tiers 1 and 2 plug in behind
-/// the same rows instead of behind a second table.</para>
+/// (D24: 0 universal, 1 tree-sitter, 2 semantic sidecar). Tier 2 runs through the Roslyn
+/// sidecar; tier 1 through the grammars and queries on the row (D47); everything else, and
+/// every tier-1 row on a machine without the grammars, executes on the tier-0 mechanism.</para>
 ///
 /// <para>Patterns are data, not code: each declaration pattern must expose a
 /// <c>name</c> group, each import pattern a <c>module</c> group. They are deliberately
 /// conservative — top-level declarations and imports, nothing an honest line-level read
 /// cannot see. The deep tier corrects and extends by adopt/merge (D2), never by this row
 /// growing cleverer.</para>
+///
+/// <para>The queries mirror the patterns' contract with captures: every declaration query
+/// names its symbols <c>@name</c>, every import query its sources <c>@module</c>, and a
+/// capture starting with <c>_</c> exists only for a predicate. Each query is verified
+/// against the compiled grammar it targets before it lands here (D47) — <c>ts_query_new</c>
+/// validates node types per grammar, which is why TypeScript and JavaScript cannot share a
+/// declaration query and why a stale one fails loudly instead of matching nothing.</para>
 /// </remarks>
 public sealed record LanguageDefinition(
     string Id,
@@ -34,7 +52,40 @@ public sealed record LanguageDefinition(
     IReadOnlyList<string> DeclarationPatterns,
     IReadOnlyList<string> ImportPatterns,
     bool DocHeadings,
-    LanguageFixture? Fixture);
+    LanguageFixture? Fixture,
+    IReadOnlyList<TreeSitterGrammar>? Grammars = null,
+    string? DeclarationQuery = null,
+    string? ImportQuery = null)
+{
+    /// <summary>The grammar that parses one of this row's extensions, or null at tier 0/2.</summary>
+    public TreeSitterGrammar? GrammarFor(string extension)
+    {
+        if (Grammars is null)
+        {
+            return null;
+        }
+
+        TreeSitterGrammar? catchAll = null;
+        foreach (var grammar in Grammars)
+        {
+            if (grammar.Extensions.Count == 0)
+            {
+                catchAll ??= grammar;
+                continue;
+            }
+
+            foreach (var candidate in grammar.Extensions)
+            {
+                if (string.Equals(candidate, extension, StringComparison.OrdinalIgnoreCase))
+                {
+                    return grammar;
+                }
+            }
+        }
+
+        return catchAll;
+    }
+}
 
 /// <summary>
 /// The one list of languages (D24). Adding a language is one row here — if it also needs
@@ -47,6 +98,50 @@ public sealed record LanguageDefinition(
 /// </remarks>
 public static class LanguageRegistry
 {
+    // The declaration queries capture every top-level named declaration, exported or not —
+    // except const/let/var, which count only when exported: an unexported binding is
+    // implementation, not interface. Verified against the compiled grammars, where the
+    // vocabularies differ: TS names classes with (type_identifier) and has interface, enum,
+    // type alias and abstract class node types JS does not.
+    private const string TypeScriptDeclarations = """
+        (program (function_declaration name: (identifier) @name))
+        (program (generator_function_declaration name: (identifier) @name))
+        (program (class_declaration name: (type_identifier) @name))
+        (program (abstract_class_declaration name: (type_identifier) @name))
+        (program (interface_declaration name: (type_identifier) @name))
+        (program (enum_declaration name: (identifier) @name))
+        (program (type_alias_declaration name: (type_identifier) @name))
+        (program (export_statement declaration: (function_declaration name: (identifier) @name)))
+        (program (export_statement declaration: (generator_function_declaration name: (identifier) @name)))
+        (program (export_statement declaration: (class_declaration name: (type_identifier) @name)))
+        (program (export_statement declaration: (abstract_class_declaration name: (type_identifier) @name)))
+        (program (export_statement declaration: (interface_declaration name: (type_identifier) @name)))
+        (program (export_statement declaration: (enum_declaration name: (identifier) @name)))
+        (program (export_statement declaration: (type_alias_declaration name: (type_identifier) @name)))
+        (program (export_statement declaration: (lexical_declaration (variable_declarator name: (identifier) @name))))
+        (program (export_statement declaration: (variable_declaration (variable_declarator name: (identifier) @name))))
+        """;
+
+    private const string JavaScriptDeclarations = """
+        (program (function_declaration name: (identifier) @name))
+        (program (generator_function_declaration name: (identifier) @name))
+        (program (class_declaration name: (identifier) @name))
+        (program (export_statement declaration: (function_declaration name: (identifier) @name)))
+        (program (export_statement declaration: (generator_function_declaration name: (identifier) @name)))
+        (program (export_statement declaration: (class_declaration name: (identifier) @name)))
+        (program (export_statement declaration: (lexical_declaration (variable_declarator name: (identifier) @name))))
+        (program (export_statement declaration: (variable_declaration (variable_declarator name: (identifier) @name))))
+        """;
+
+    // Shared across TS and JS: import statements, require(), and dynamic import() all use
+    // node types common to both grammars. The @_fn capture exists only for the #eq?
+    // predicate, which is what keeps fetch("url") from reading as an import.
+    private const string ScriptImports = """
+        (import_statement source: (string (string_fragment) @module))
+        (call_expression function: (identifier) @_fn arguments: (arguments (string (string_fragment) @module)) (#eq? @_fn "require"))
+        (call_expression function: (import) arguments: (arguments (string (string_fragment) @module)))
+        """;
+
     /// <summary>Catch-all for files no row claims: impressions only, nothing extracted.</summary>
     public static readonly LanguageDefinition Text = new(
         Id: "text",
@@ -115,7 +210,14 @@ public static class LanguageRegistry
                     const hidden = 1;
                     """,
                 ExpectedSymbols: ["Options", "scan"],
-                ExpectedImports: ["node:fs", "./config"])),
+                ExpectedImports: ["node:fs", "./config"]),
+            Grammars:
+            [
+                new(Library: "typescript", Symbol: "tree_sitter_typescript", Extensions: [".ts"]),
+                new(Library: "tsx", Symbol: "tree_sitter_tsx", Extensions: [".tsx"]),
+            ],
+            DeclarationQuery: TypeScriptDeclarations,
+            ImportQuery: ScriptImports),
         new(
             Id: "javascript",
             DisplayName: "JavaScript",
@@ -140,7 +242,10 @@ public static class LanguageRegistry
                     export default function main() {}
                     """,
                 ExpectedSymbols: ["Runner", "main"],
-                ExpectedImports: ["path", "./local"])),
+                ExpectedImports: ["path", "./local"]),
+            Grammars: [new(Library: "javascript", Symbol: "tree_sitter_javascript", Extensions: [])],
+            DeclarationQuery: JavaScriptDeclarations,
+            ImportQuery: ScriptImports),
         new(
             Id: "markdown",
             DisplayName: "Markdown",
