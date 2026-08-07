@@ -59,7 +59,7 @@ This closes the human-like loop: *recall → use → amend → re-store*, with d
 
 ### 2.3 Non-goals
 
-- Not a general vector database and not a Sage replacement. Engram stores *structure, facts, and gist-level impressions* (§5.4) — never verbatim document content. The file itself remains the source of truth; full-text semantic document retrieval stays out of scope.
+- Not a general vector database, and not a document-retrieval system. Engram stores *structure, facts, and gist-level impressions* (§5.4) — never verbatim document content. The file itself remains the source of truth; full-text semantic document retrieval stays out of scope.
 - No cloud sync, no multi-user, no network exposure beyond localhost stdio/optional local HTTP.
 - No LLM required at runtime for core operation. Document impressions default to a zero-dependency extractive method; a generative local LLM is only ever an opt-in refinement (§5.4). Distillation and digest quality for agent-learned facts remain the *host agent's* job, guided by tool descriptions.
 

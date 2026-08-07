@@ -631,7 +631,6 @@ permissions, and `gh run cancel` on anything still burning is the first thing wo
   (`[indexing] project` re-binds, the repo directory name is the default, read at
   `CodeIndexer` registration). What remains is only that no multi-codebase project has
   exercised the re-bind yet.
-- `docs/engram-spec.md:62` "not a Sage replacement" — flagged, unresolved.
 
 ---
 
