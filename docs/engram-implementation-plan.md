@@ -2576,6 +2576,58 @@ half.
 string bounded at 300 tokens, so this adds a count and an arithmetic pass to hooks that had already
 paid for the read. It is not `file-touched`, which may not open the store at all (D4).
 
+### D47 — Tier 1 compiles at install, and its queries are registry data
+
+**Decision.** tree-sitter and its grammars arrive as pinned, digest-checked source, compiled by
+`cc` at install time into `~/.engram/lib/` — one core library, one dylib per grammar — by
+`scripts/fetch-tree-sitter.sh`, an optional install step with the same tri-state reporting as
+`--with-plugin`. The runtime loads them with `NativeLibrary.Load` (D1's side-load, D24's mechanism)
+and never fetches anything. Extraction is driven by tree-sitter *queries* carried as columns on the
+language registry row, exactly as D24 already carries tier-0 regexes: adding a tier-1 language is
+one row naming a grammar and its query strings, with zero edits to the extractor.
+
+**Compile-at-install adds no prerequisite this install did not already have.** Engram builds from
+source on the machine that runs it — install.sh runs `dotnet publish`, Native AOT shells out to a C
+toolchain and a linker, and the installer checks for clang today. Measured: the core library
+(236 KB) compiles in 1.33 s with stock clang and the full TypeScript grammar (parser.c plus
+scanner.c, 1.46 MB) in 0.40 s, so the step costs seconds on the machine that just spent minutes on
+an AOT publish. The alternative was prebuilt binaries, and it fails on supply before it fails on
+taste: tree-sitter grammars are distributed as generated C source — upstream publishes no binaries
+to fetch — so prebuilt would mean Engram hosting its own artifacts through release infrastructure
+this repo deliberately does not have. Each native dependency takes the path its upstream actually
+ships: sqlite-vec is fetched prebuilt because its releases are binaries, llama.cpp links because a
+NuGet backend exists (D45), tree-sitter compiles because source is what there is.
+
+**Failure degrades, never blocks, and the two failure shapes stay distinguishable.** A fetch step
+that fails — no network, no `cc` — leaves a finished install that indexes TS/JS at tier 0, under
+the installer's optional-step rule. A grammar that loads but was generated against a different ABI
+is refused by `ts_parser_set_language` returning false — the refusal channel whose accept half the
+probe exercised (the current API answers ABI 14, and `ts_language_version` is now spelled
+`ts_language_abi_version`). The loader reports "not installed" and "ABI mismatch" as distinct
+downgrade reasons, because they are different problems with different fixes (D36's rule).
+`ENGRAM_TREE_SITTER_DIR` overrides the lib directory with the Roslyn override's semantics: explicit
+but missing means no tier 1, never a fallback to the default — a broken explicit configuration must
+not silently become a different one.
+
+**Queries are the extractor declaration D24 promised.** Hand-walking node kinds in C# would put a
+switch per language behind the registry — the exact failure D24 exists to prevent. A query is a
+string on the row, its `@name`/`@module` captures mirroring the `(?<name>)`/`(?<module>)` groups
+the tier-0 patterns already use, and one query-driven extractor serves every row. Queries are
+per-row by necessity, not just tidiness: `ts_query_new` validates node types against the grammar
+and errors on unknown ones, so TypeScript's `interface_declaration` cannot appear in a JavaScript
+query — which also means a wrong query fails loudly at first use rather than matching nothing
+forever. TSX is its own grammar sharing the TypeScript row (`.tsx` resolves to `tree_sitter_tsx`);
+the row's queries compile against both because the TS node vocabulary they use is common to the
+pair. Every query is verified against the real compiled grammar before it lands in the registry —
+a query literal nobody ran is a regex nobody tested.
+
+**Tier 1 keeps paths grammar v1's addresses.** Top-level symbols only, addressed by
+`CodePaths.ForSymbol`, same as tiers 0 and 2 — nested symbols are grammar v2's to define, as the
+C# row already records. What tier 1 buys inside v1: names parsed instead of guessed, every
+top-level declaration form, import sources including `require` and dynamic `import()`, and the same
+merge implementation tier 2 uses, so handing a store between tiers supersedes nothing that did not
+actually change.
+
 ## PreCompact cannot inject context
 
 Spec §10.1 assumes `PreCompact` can "inject one instruction" the same way `SessionStart`
