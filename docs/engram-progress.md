@@ -722,3 +722,11 @@ permissions, and `gh run cancel` on anything still burning is the first thing wo
 - **`dotnet test` filters run in a fresh process**, so env vars from a previous shell command
   are gone. A test that "passes in the suite and fails alone" is usually this, not a flake —
   though this session it was a genuine race that only the unset-env ordering exposed.
+- **The repo owned no `nuget.config`**, so restore inherited whatever package sources the
+  machine carried. Invisible with only nuget.org and fatal with a second feed: central
+  package management plus two sources is NU1507, and warnings are errors, so a work machine
+  with a GitHub Packages source failed `install.sh` before the first line compiled. `<clear />`
+  at the repo root is the fix because it drops the inheritance rather than adding to it —
+  suppressing NU1507 would leave restore dependent on machine configuration, which is the
+  defect itself. Falsified by removing the file under a simulated two-source home: exit 1 with
+  NU1507 on all six projects, exit 0 and zero with it.
