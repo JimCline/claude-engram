@@ -61,6 +61,15 @@ ENGRAM_HOME=/tmp/e-weights ./out/engram model install all-minilm-l6-v2 --use-it
 ENGRAM_TEST_MODEL_HOME=/tmp/e-weights dotnet test Engram.sln -c Release
 ```
 
+`ENGRAM_TEST_TREE_SITTER_DIR` un-skips the 4 gated tier-1 conformance tests. Point it at a
+directory holding the compiled core and grammars — `fetch-tree-sitter.sh` produces exactly
+that layout:
+
+```bash
+scripts/fetch-tree-sitter.sh --home /tmp/e-ts
+ENGRAM_TEST_TREE_SITTER_DIR=/tmp/e-ts/lib dotnet test Engram.sln -c Release
+```
+
 The remaining skips are `sqlite-vec` tests, which need the extension side-loaded into the
 home under test.
 
@@ -360,6 +369,42 @@ assertion red; the natives copy disabled → round-trip red; a syntax error in
 
 ---
 
+### `772dd6c`…`b3188c8` — M3 tier 1: tree-sitter decided (D47) and landed in four commits
+
+The supply question that consumed a whole session for llama.cpp was settled in one decision
+here because the probe had already measured everything D47 needed: grammars arrive as pinned,
+digest-checked C source and compile at install (`scripts/fetch-tree-sitter.sh`, ~3 s for the
+core and three grammars), because upstream ships no binaries and the toolchain is already a
+prerequisite of building Engram at all. The runtime never fetches. `--with-tree-sitter` wires
+it into `install.sh` as an optional step in `--with-plugin`'s exact tri-state shape.
+
+The shape of the thing: a hand-rolled binding (`TreeSitter.cs`, 19 function pointers through
+`NativeLibrary.GetExport`, AOT-safe by construction), extraction queries carried as registry-row
+data with the same `@name`/`@module` contract the regex patterns have, and the tier-0/1/2 merge
+rule moved to one place (`DeepTier`) so the sidecar and tree-sitter cannot drift. Queries are
+per-row by necessity: `ts_query_new` validates node types against the specific grammar, so a
+stale registry query fails loudly at the exact offset rather than matching nothing — that
+refusal is the guard against a registry nobody re-verified. ABI compatibility is a measured
+*range*, not a version: one core accepted grammars answering 14 (typescript, tsx) and 15
+(javascript) in the same process, so `ts_parser_set_language` stays the only authority. The
+`#eq?` predicate machinery is implemented in the binding (the C library does not evaluate
+predicates), restricted to literal equality, and is what keeps `fetch("url")` out of the
+imports while `require("./x")` stays in. `AnalyzerVersion` bumped to 2, which is what re-reads
+existing stores under the better extractor. The doctor gained a `tree-sitter` row that answers
+from file existence alone — absence Ok ("tier 0 only"), a lying override Broken, and the state
+only doctor can see (core installed, grammar missing) Warn, since at index time that gap is a
+silent downgrade.
+
+Three falsifications, all red then restored: a planted bad node type failed the conformance
+walk with "refused at offset 265 (error 2)" in the assertion message; flipping the predicate
+comparison lost `require()` imports in two tests at once; moving the installer's fetch out of
+its `if` condition let `set -e` abort a finished install, which is the exact defect
+`--with-plugin` once shipped. Final state: the release-tag pins were proven by running the
+script into a scratch home and pointing the conformance suite at its own output — the probe's
+grammars were repo HEADs, so that run is the evidence the tags parse identically.
+
+---
+
 ## Verified vs. not
 
 | claim | status |
@@ -384,43 +429,28 @@ assertion red; the natives copy disabled → round-trip red; a syntax error in
 | Windows e2e against the AOT binary | **measured, failing in two named families** — 17 installer tests that want Windows skip guards, 17 server tests dead on the `/bin/sh` launchers (see open work 4) |
 | D6's gate on M3 | **unread** — see below |
 | D18's gate on M4 | **unmet**, and the adoption fraction is not computable (D43) |
+| tier-1 extraction through the pinned release tags | measured — `fetch-tree-sitter.sh` into a scratch home, 8-test conformance suite against its own output |
+| the tree-sitter ABI range | measured — one core accepted ABI 14 and 15 in one process; nothing compares versions |
+| tier-1 guards can fail | proven — query refusal, predicate flip, and the installer `set -e` plant each went red before restore |
+| tier-1 on Linux/Windows | **not measured** — the binding's naming covers `.so`/`.dll` and the script's case arms exist, but only macOS has executed them |
 
 ---
 
 ## Open work, ranked
 
-### 1. M3's deep tiers — the sidecar and tree-sitter are what remain
+### 1. M3's deep tiers — grammar v2 is what remains
 
-Tier 0 shipped (above) on an explicit user instruction, which is worth recording precisely:
+Tier 0 shipped on an explicit user instruction, which is worth recording precisely:
 D6's gate never *fired* — the telemetry that was supposed to open it (code-structure recall
 misses) still reads zero recalls of that shape, ever. The gate was overridden, not met, and
 the same telemetry now measures whether the index earns its keep: code facts exist, so a
-code-structure recall can finally hit or miss something.
+code-structure recall can finally hit or miss something. Tiers 1 and 2 have since both
+landed (the sidecar earlier, tree-sitter above, D47), so what remains here is:
 
-What remains, in the order the plan argues for:
-
-- **tree-sitter (tier 1, D24)** — real grammars for the languages regex is faking.
 - **Overload grammar v2 (D27)** — nested types, overloads, member fragments. A grammar
   bump re-keys, which is adopt/merge's job, and `code_index_version` already forces the
-  re-read.
-
-The supply-chain half of tree-sitter — the question that consumed a whole session for
-llama.cpp — was probed and measured before anything was built. All of it holds on this
-machine, stock clang, no dependencies: the core library compiles from its amalgamated
-`lib/src/lib.c` to a 237 KB dylib in 1.3 s; the entire TypeScript grammar (`parser.c` +
-`scanner.c`) to a 1.46 MB dylib in 0.4 s. The exact D24 mechanism was then smoke-tested
-end to end from C#: `NativeLibrary.Load` on both dylibs, function pointers via
-`GetExport` (no binding package, nothing reflection-shaped, so AOT-safe by
-construction), the 32-byte by-value `TSNode` struct round-trips, and a TypeScript
-snippet parses to an S-expression carrying precisely tier 1's facts — import with
-source, exported class, method with typed parameters and return. Two details that cost
-a retry each, worth keeping: current tree-sitter renamed `ts_language_version` to
-`ts_language_abi_version` (grammar here answered ABI 14), and
-`ts_parser_set_language` returns false on an ABI mismatch — which is the graceful
-degrade hook: a stale grammar should drop the file to tier 0, never error. Still open,
-now with numbers: whether grammars compile at install time (needs a toolchain — Xcode
-CLT or gcc) or arrive prebuilt like the llama natives; note vec0.dylib takes a third
-path today, fetched on demand rather than shipped by install.sh.
+  re-read. Tier 1 deliberately kept grammar v1 addresses — top-level symbols only — so
+  this lands as one coordinated bump across all three tiers, not per tier.
 
 ### 2. The adoption question itself — 28 writes against 7 reads
 
@@ -545,7 +575,9 @@ permissions, and `gh run cancel` on anything still burning is the first thing wo
   only because nothing referenced the assembly yet. Break the thing, watch the test fail,
   restore.
 - **`git checkout` destroys uncommitted work** and behaves differently on untracked files.
-  It ate a test-file rewrite this session.
+  It ate a test-file rewrite once, and then a second session used it to restore a
+  falsification plant and wiped every uncommitted registry edit in the same file. A plant
+  in a file carrying unfinished work is reverted by a second edit, never by `git checkout`.
 - **The subagent cap is per-session (200).** It was exhausted, so the Ultra Advisor and
   `task-gopher` were both unreachable for the whole session. Raise
   `CLAUDE_CODE_MAX_SUBAGENTS_PER_SESSION` if you want them.
