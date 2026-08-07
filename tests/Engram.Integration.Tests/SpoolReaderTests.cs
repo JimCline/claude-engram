@@ -89,7 +89,16 @@ public class SpoolReaderTests
             {
                 foreach (var path in paths)
                 {
-                    File.Delete(path);
+                    try
+                    {
+                        File.Delete(path);
+                    }
+                    catch (IOException)
+                    {
+                        // Windows refuses to delete a file Drain has open — the very race
+                        // this test manufactures. Losing this round is fine; the loop
+                        // comes back. Unix unlinks open files, so it never lands here.
+                    }
                 }
             }
         }, cancellationToken);

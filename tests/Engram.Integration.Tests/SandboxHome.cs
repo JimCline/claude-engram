@@ -64,8 +64,34 @@ public sealed class SandboxHome : IDisposable
             }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException && attempt < 9)
             {
+                // A sandbox that hosted a git checkout holds files git made read-only —
+                // loose objects and packs — and Windows refuses to delete those where Unix
+                // does not care. Clearing the bit only on refusal keeps the happy path
+                // free of a full enumeration, and the retry then covers the transient
+                // locks it always covered.
+                ClearReadOnlyAttributes(Home.Root);
                 Thread.Sleep(50);
             }
+        }
+    }
+
+    private static void ClearReadOnlyAttributes(string root)
+    {
+        try
+        {
+            foreach (var path in Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories))
+            {
+                var attributes = File.GetAttributes(path);
+                if ((attributes & FileAttributes.ReadOnly) != 0)
+                {
+                    File.SetAttributes(path, attributes & ~FileAttributes.ReadOnly);
+                }
+            }
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            // The walk is best-effort groundwork for the next delete attempt, which is
+            // where a persistent failure is allowed to surface.
         }
     }
 

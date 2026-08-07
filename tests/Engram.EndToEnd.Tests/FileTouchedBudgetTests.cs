@@ -21,6 +21,21 @@ public class FileTouchedBudgetTests
     private const double MaxMarginalCostMs = 1.0;
 
     /// <summary>
+    /// The difference of minimums, not of medians. Process-start noise is one-sided — a
+    /// sample is only ever slower than the deterministic work, never faster — so the
+    /// minimum of 100 interleaved samples converges on the true cost of each arm, while
+    /// the median wanders with however loaded the machine is. Measured where it mattered:
+    /// a CI runner with a 66 ms floor (9× this machine) pushed the median difference to
+    /// 1.44 ms with the hook doing nothing new. A violation still fails this, because
+    /// deterministic work — a database open above all — shifts every sample, including
+    /// the fastest one. Proven by planting exactly that: an <c>EngramDatabase.Open</c> in
+    /// the hook measured 1.19 ms marginal under this estimator, red against the 1.0
+    /// threshold — thinner than the old comment's 2.1–2.4 suggested, because those
+    /// numbers were whole hooks and this is a bare open.
+    /// </summary>
+    private static double Cost(List<double> samples) => samples.Min();
+
+    /// <summary>
     /// The hook's 10 ms budget is almost entirely process start, so asserting the absolute
     /// number would measure the machine. What the code controls is the difference between
     /// this hook and starting the binary to do nothing, and that difference is the rule.
@@ -50,16 +65,16 @@ public class FileTouchedBudgetTests
             hook.Add(TimeFileTouched(home.Root));
         }
 
-        var floorMedian = Median(floor);
-        var hookMedian = Median(hook);
-        var marginal = hookMedian - floorMedian;
+        var floorCost = Cost(floor);
+        var hookCost = Cost(hook);
+        var marginal = hookCost - floorCost;
 
         Assert.True(
             marginal < MaxMarginalCostMs,
             $"file-touched cost {marginal:0.00} ms more than starting the binary to do nothing "
-                + $"(p50 {hookMedian:0.00} ms against a floor of {floorMedian:0.00} ms). D4 rule 4 gives it a "
-                + "10 ms budget that is almost all process start, so anything measurable here — an "
-                + "opened database above all — is most of the headroom.");
+                + $"(fastest of {Samples}: {hookCost:0.00} ms against a floor of {floorCost:0.00} ms). "
+                + "D4 rule 4 gives it a 10 ms budget that is almost all process start, so anything "
+                + "measurable here — an opened database above all — is most of the headroom.");
     }
 
     /// <summary>
@@ -107,13 +122,5 @@ public class FileTouchedBudgetTests
         stopwatch.Stop();
 
         return stopwatch.Elapsed.TotalMilliseconds;
-    }
-
-    private static double Median(List<double> values)
-    {
-        values.Sort();
-        var mid = values.Count / 2;
-
-        return values.Count % 2 == 1 ? values[mid] : (values[mid - 1] + values[mid]) / 2.0;
     }
 }
