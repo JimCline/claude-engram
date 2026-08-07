@@ -69,10 +69,18 @@ public class FileTouchedBudgetTests
         var hookCost = Cost(hook);
         var marginal = hookCost - floorCost;
 
+        // The allowance scales with the floor: a macOS runner with a 32.49 ms floor (4×
+        // this machine) kept 2.68 ms of noise in the fastest-of-100 difference, so a flat
+        // threshold measures the runner, not the hook. Ten percent of the floor only
+        // rises above the local 1.0 ms when the floor itself says the machine is slow —
+        // locally the max() keeps the threshold the planted open (1.19 ms) failed.
+        var allowance = Math.Max(MaxMarginalCostMs, floorCost * 0.1);
+
         Assert.True(
-            marginal < MaxMarginalCostMs,
+            marginal < allowance,
             $"file-touched cost {marginal:0.00} ms more than starting the binary to do nothing "
-                + $"(fastest of {Samples}: {hookCost:0.00} ms against a floor of {floorCost:0.00} ms). "
+                + $"(fastest of {Samples}: {hookCost:0.00} ms against a floor of {floorCost:0.00} ms, "
+                + $"allowance {allowance:0.00} ms). "
                 + "D4 rule 4 gives it a 10 ms budget that is almost all process start, so anything "
                 + "measurable here — an opened database above all — is most of the headroom.");
     }

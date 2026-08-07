@@ -116,7 +116,9 @@ public class StoreRepairerTests
 
         // The provider sends foreign_keys=1 on every raw connection, so the orphan can
         // only be planted the way a foreign writer would create it: enforcement off.
-        using (var raw = new SqliteConnection($"Data Source={sandbox.Home.DatabasePath}"))
+        // Pooling off, or disposing returns the handle to the pool instead of closing it
+        // and Windows then refuses to delete the sandbox with engram.db still open.
+        using (var raw = new SqliteConnection($"Data Source={sandbox.Home.DatabasePath};Pooling=False"))
         {
             raw.Open();
             using var plant = raw.CreateCommand();

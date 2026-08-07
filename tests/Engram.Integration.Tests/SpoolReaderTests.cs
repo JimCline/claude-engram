@@ -93,11 +93,14 @@ public class SpoolReaderTests
                     {
                         File.Delete(path);
                     }
-                    catch (IOException)
+                    catch (Exception e) when (e is IOException or UnauthorizedAccessException)
                     {
                         // Windows refuses to delete a file Drain has open — the very race
-                        // this test manufactures. Losing this round is fine; the loop
-                        // comes back. Unix unlinks open files, so it never lands here.
+                        // this test manufactures — and reports the refusal both ways:
+                        // sharing violations as IOException, access-denied as
+                        // UnauthorizedAccessException (seen on CI). Losing this round is
+                        // fine; the loop comes back. Unix unlinks open files, so it never
+                        // lands here.
                     }
                 }
             }
