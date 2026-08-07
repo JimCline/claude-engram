@@ -3255,7 +3255,8 @@ chains and `valid_to` closure), the D4 concurrency rules, the D7 isolation guara
 
 ## 6. Immediate next steps
 
-1. ~~`git init` and first commit~~ — **done**, pushed to a private `JimCline/engram`.
+1. ~~`git init` and first commit~~ — **done**, pushed to a private `JimCline/engram`
+   (since renamed `JimCline/claude-engram`; GitHub redirects the old URL).
 2. ~~Day-1 spikes~~ — **done**, all three green (§1.5). D1 and D3 confirmed by
    measurement; the MCP SDK is used directly, no fallback needed.
 3. Scaffold the solution: `Directory.Build.props` (net10.0, nullable, warnings as

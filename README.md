@@ -1,5 +1,8 @@
 # Engram
 
+> [!WARNING]
+> **Experimental**: Subject to rapid changes and evolution, use at your own discretion
+
 A single-binary, fully local temporal memory and code knowledge graph for LLM coding
 agents. Unifies three kinds of memory — code structure, project knowledge, and user
 preferences — into one append-only store where facts are never mutated or deleted, only
