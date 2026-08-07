@@ -124,6 +124,38 @@ installed binary, and the config gate defaults off. Turning it on is a reinstall
 (`install.sh` or plugin update) plus `auto_index_on_session_start = true` under
 `[indexing]` — deliberately not done unbidden.
 
+### `93fe169`…`f545d2b` — the M1 stragglers closed in one sitting
+
+Three things the plan promised in M1 and never got, built the same night as M3:
+
+- **`engram repair` (D8)** — dry-run by default, snapshots unconditionally before
+  `--apply`, rebuilds only what derives: FTS, `fact.path`, orphan salience rows, WAL.
+  Detection taught two lessons now recorded in `CLAUDE.md`: external-content FTS answers
+  non-MATCH queries from the content table (the obvious drift detector compares `fact`
+  against itself — the first version could not see its own test's planted desync;
+  `fts5vocab` reads the real index), and FTS5's `'rebuild'` would re-index closed facts,
+  so repair calls `EngramDatabase.RebuildFactFts` — the one implementation of what belongs
+  in the index. Salience scores stay untouched: nothing writes them yet, and repair must
+  not become the first implementation of the formula.
+- **`engram export` / `engram import`** — the portable bundle is a *filtered fact
+  journal*, not a second format. Export streams `FactJournal.WriteTo` with MoveSubtree's
+  `/`-or-`#` boundary; import is `backup replay`'s exact flow, extracted so the two
+  ingestion paths cannot diverge. Closed facts travel with their windows and reasons.
+  Export refuses to overwrite; stdout mode keeps the bundle clean of the summary.
+- **`engram_browse` / `engram_expand` / `engram_revise`** — the last of spec §9. Browse
+  folds one subtree query into a table of contents (rendering phantom intermediate
+  segments an indexed store always has); expand shows history/related/evidence/source for
+  one handle; revise is `FactStore.Remember` with a reason — the store's one-live-fact
+  collision rule *is* belief revision, the tool only adds the guards. Both guard tests
+  fired and were updated deliberately: surface budget 2600 → 3800 for a measured 3,663
+  (the trio costs a lean 1,088), tool count 4 → 7. Browse and expand join the unprompted
+  permissions grant as reads; revise stays withheld beside forget, because closing a
+  belief should cost a confirmation prompt.
+
+Still absent after tonight, in plan order: the Roslyn sidecar (packaging fork recorded
+under "Open work" below), tree-sitter, the salience writer (M5, and deliberately blind
+until there is a retrieval benchmark to tune against), `compact` for the fact store, D5.
+
 ### D42 amended: a start time you compute is not a start time
 
 Three Linux end-to-end failures in CI turned out to be one bug, and not the one it looked like.

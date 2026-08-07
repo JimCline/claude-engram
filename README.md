@@ -191,7 +191,7 @@ friction — it is a measurement problem. M0 exists to find out whether the mode
 memory on its own, and a dialog in front of each `engram_recall` turns that number into a
 measurement of the dialog: the model calls it less, and the user approves on reflex.
 
-So the installer offers to add four entries to `permissions.allow` in Claude Code's user
+So the installer offers to add six entries to `permissions.allow` in Claude Code's user
 settings, and `engram permissions` does the same job on its own:
 
 ```
@@ -202,12 +202,17 @@ engram permissions --remove --apply     # take back only what Engram added
 
 | Granted | Withheld |
 | --- | --- |
-| `engram_recall`, `engram_remember`, `engram_digest`, `engram_status` | `engram_forget`, `engram_start`, `engram_stop` |
+| `engram_recall`, `engram_remember`, `engram_digest`, `engram_status`, `engram_browse`, `engram_expand` | `engram_forget`, `engram_revise`, `engram_start`, `engram_stop` |
 
-A server-wide wildcard would be one line instead of four and is supported, but it would pull
-the withheld three back in the moment any of them ships. `engram_forget` closes a fact and
-there is no un-retract; `start` and `stop` move the daemon out from under the session talking
-to it. Those are worth an interruption.
+`engram_browse` lists what memory holds under a path, and `engram_expand` shows the story
+behind one fact — its supersession history, its evidence, where it was learned. Both are
+reads, so they join the grant. `engram_revise` replaces a belief with a corrected one and
+records why; it is withheld for the same reason `engram_forget` is.
+
+A server-wide wildcard would be one line instead of six and is supported, but it would pull
+the withheld entries back in the moment any of them ships. `engram_forget` and
+`engram_revise` close a fact and there is no un-retract; `start` and `stop` move the daemon
+out from under the session talking to it. Those are worth an interruption.
 
 The grant is opt-in, and it asks only a terminal — a piped or CI run declines, because silence
 is not consent to edit somebody's settings file. Before writing it backs the file up, merges

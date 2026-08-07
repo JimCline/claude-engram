@@ -33,7 +33,15 @@ its entity on rename (D2), not belief content.
 **Derived state is repairable; authored truth is not.** `compact` and `repair` may only
 touch what can be regenerated — the FTS index, salience, denormalized paths, indexed
 code facts. Neither may ever create, alter, or delete a fact body, predicate, validity
-window, or supersession row (D8).
+window, or supersession row (D8). Two FTS facts to know before touching `repair`'s
+detector, both measured: on an external-content table every non-MATCH query — including
+`SELECT rowid FROM fact_fts` — is answered from the *content* table, so the obvious
+index-vs-fact set difference compares `fact` against itself and calls any desync healthy
+(the first detector could not see its own test's planted break; `fts5vocab` is how you
+read the real index). And FTS5's own `'rebuild'` command re-reads the whole content
+table, closed beliefs included, while the index deliberately holds live facts only —
+rebuild through `EngramDatabase.RebuildFactFts`, which is the one implementation of what
+belongs in the index.
 
 **Every connection sets its own pragmas.** `foreign_keys`, `busy_timeout`, and
 `synchronous` are connection-scoped. Setting them in a schema file configures the
