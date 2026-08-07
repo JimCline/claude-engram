@@ -271,10 +271,11 @@ public static class EngramDatabase
     /// guarded, by a test asserting that a migrated store and a freshly created one have
     /// byte-identical <c>sqlite_master</c> entries for this table and its triggers.</para>
     /// </remarks>
-    private static void RebuildFactFts(SqliteConnection connection)
+    internal static void RebuildFactFts(SqliteConnection connection, SqliteTransaction? transaction = null)
     {
         Execute(
             connection,
+            transaction,
             """
             DROP TRIGGER IF EXISTS fact_fts_insert;
             DROP TRIGGER IF EXISTS fact_fts_close;
@@ -329,9 +330,13 @@ public static class EngramDatabase
         return command.ExecuteScalar() is not null;
     }
 
-    private static void Execute(SqliteConnection connection, string sql)
+    private static void Execute(SqliteConnection connection, string sql) =>
+        Execute(connection, transaction: null, sql);
+
+    private static void Execute(SqliteConnection connection, SqliteTransaction? transaction, string sql)
     {
         using var command = connection.CreateCommand();
+        command.Transaction = transaction;
         command.CommandText = sql;
         command.ExecuteNonQuery();
     }
