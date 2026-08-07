@@ -2273,6 +2273,33 @@ stranger that inherited the number started at a different instant. The path adds
 identity drops the path, and the guarantee that actually mattered is untouched because it never
 rested on the path: nothing is terminated whose start time does not match what was recorded.
 
+**Amended: the start time that identifies a server is the kernel's record, never .NET's
+reconstruction of it.** On Linux `Process.StartTime` is `starttime` jiffies added to a per-process
+*estimate* of boot time, so two processes reading the same pid disagree by hundreds of microseconds
+and exact equality never holds — measured 24 of 24 cross-process reads unequal in a Linux container,
+by up to 3636 ticks. The paragraph above is right that pid plus start time is unique; it did not know
+to distinguish the kernel's value from .NET's rendering of it, and on Linux only the first is a
+property of the process. Every `status` there answered `Reused` about a healthy server, so `stop`
+did the damage described above on every invocation rather than in the rare case — which is what all
+three Linux end-to-end failures in CI turned out to be.
+
+Identity therefore compares an opaque start token (`/proc/<pid>/stat` field 22 plus the boot id on
+Linux; the exact kernel start time elsewhere), the recorded `start_time` stays as display metadata,
+and no comparison may ever convert between token and wall clock — the conversion is where the
+estimate, which is the defect, lives. macOS and Windows keep the value and the code path they
+already had, deliberately: their kernels store an absolute creation time, and a fix that does not
+touch the platform this repo cannot test is a fix that cannot regress it.
+
+**A tolerance was considered and rejected**, and the reasoning matters more than the conclusion
+because the fitted version looks defensible. The error term is not scheduler jitter but the
+difference between two boot-time estimates, each read off the realtime clock — so an NTP step or a
+VM resume moves it without bound. Every finite window is therefore either smaller than a possible
+clock step, which turns a deterministic failure into an intermittent one, or a number fitted to
+hoped-for clock behaviour. It would also have rewritten the guarantee from "does not match" to
+"approximately matches", and the start-time comparison has no backstop to absorb that: `Stop` never
+runs the health check at all, and `Start` terminates precisely when the health check *failed* to
+vouch, so `IsAnsweringForUs` proving `health.Pid == record.Pid` does no work on any kill path.
+
 The path is demoted, not discarded. `StatusResult.LaunchedFrom` carries it, and `status` and
 `doctor` print it only when it differs from the binary being asked — that difference is the entire
 explanation for an otherwise baffling row, and printing it unconditionally would bury it in noise.
@@ -2293,6 +2320,16 @@ be answered by enumerating states again and getting a different answer in each c
 Seven attempted breaks each failed a test: restoring the path to identity (three tests), collapsing
 `VersionMismatch` back into `Wedged`, narrowing `ServerIsAlive` to `Running`, dropping
 `LaunchedFrom`, and inverting the doctor row's "only when it differs" condition.
+
+The amendment added eight more, each applied and watched go red: reverting identity to the wall clock
+(two tests), weakening the comparison to `token || wall clock`, making the token required so
+pre-upgrade servers are orphaned, giving the legacy path a one-second window, cutting
+`/proc/<pid>/stat` at the first `)`, sourcing the Linux token from `Process.StartTime` again — which
+reproduces the original defect through the tier-3 test, *status called a live server dead* — and
+ignoring the token so an altered pid file still identifies the server. The last two are the ones that
+prove the tier-3 guard reaches the mechanism rather than a fake of it, and they fail on different
+platforms by design: reader-independence cannot fail on macOS, and the altered-token half fails
+everywhere.
 
 ### D43 — two session counts that do not subtract
 

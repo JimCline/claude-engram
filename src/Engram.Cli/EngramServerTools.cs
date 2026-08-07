@@ -5,11 +5,16 @@ using ModelContextProtocol.Server;
 
 namespace Engram.Cli;
 
-public sealed record ServerIdentity(int Pid, int Port, string Version, DateTimeOffset StartTimeUtc)
+public sealed record ServerIdentity(
+    int Pid,
+    int Port,
+    string Version,
+    DateTimeOffset StartTimeUtc,
+    string? StartToken = null)
 {
-    public HealthResponsePayload ToHealthPayload() => new(Pid, Port, Version, StartTimeUtc);
+    public HealthResponsePayload ToHealthPayload() => new(Pid, Port, Version, StartTimeUtc, StartToken);
 
-    public PidFileRecord ToPidFileRecord() => new(Pid, Port, Version, StartTimeUtc);
+    public PidFileRecord ToPidFileRecord() => new(Pid, Port, Version, StartTimeUtc, StartToken);
 }
 
 /// <summary>

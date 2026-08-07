@@ -273,6 +273,27 @@ it by. The path is reported, never enforced: `StatusResult.LaunchedFrom` carries
 `doctor` print it only when it differs from the binary being asked. Nothing is terminated whose
 start time does not match what was recorded — that guarantee never rested on the path (D42).
 
+**"Start time" means the kernel's start token, and Linux is where that distinction turned out to
+matter.** `Process.StartTime` there is `starttime` added to a *per-process estimate* of boot time, so
+it describes the process asking as much as the one asked about: measured in a container, 24 of 24
+cross-process reads disagreed, by up to 3636 ticks. Exact equality never held, so every Linux
+`status` answered `Reused` about a healthy server and `stop` did the damage above on every
+invocation rather than in the rare case — all three Linux end-to-end failures in CI were this one
+bug. `ProcessStartToken` is now the only thing that produces identity: `/proc/<pid>/stat` field 22
+plus the boot id on Linux, the exact kernel start time on macOS and Windows, which keep the code path
+they already had — their kernels store an absolute creation time, and a fix that does not touch the
+platform this repo cannot test cannot regress it. Self-view and by-pid view come from that one type,
+because written separately they are two implementations of one comparison and the first divergence is
+a server reporting itself dead. **No tolerance may be added, and no comparison may convert between
+token and wall clock** — the conversion *is* `bootTime + starttime`, which is the defect. The skew is
+not jitter but the difference of two clock readings, so a clock step moves it without bound and every
+window is either too small (trading a deterministic failure for an intermittent one) or fitted to
+hoped-for clock behaviour. Nothing softens a wrong answer here either: `Stop` never runs the health
+check at all, and `Start` terminates precisely *when* the health check failed to vouch, so
+`IsAnsweringForUs` does no work on any kill path. Records written before tokens existed still compare
+`StartTimeUtc` exactly; that path is legacy, not a fallback, and giving it a window would put a
+number in the kill path permanently for a population that is empty (D42).
+
 **Ask `ServerIsAlive`, never `Kind is Running`.** `Wedged` and `VersionMismatch` are both live
 processes holding whatever they loaded at startup, so any caller deciding whether it may act alone —
 `embed --rebuild`, by D38 — has to count them. Enumerating states at the call site is how one caller

@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Net.Http;
+using System.Text.Json.Nodes;
 
 namespace Engram.EndToEnd.Tests;
 
@@ -93,6 +94,64 @@ public class ServerLifecycleE2ETests
         }
         finally
         {
+            EngramProcess.Run(home.Root, "stop");
+        }
+    }
+
+    /// <summary>
+    /// What identifies a running server, proved against the shipped binary and nothing else.
+    /// </summary>
+    /// <remarks>
+    /// <para>Two claims, both black-box. <b>That the token is reader-independent</b>: the process
+    /// that ran <c>start</c> recorded the server's own view of it, and the separate process running
+    /// <c>status</c> reads that pid's token for itself — so a value that differs per reader makes
+    /// <c>status</c> report a healthy server dead. That is precisely what
+    /// <c>Process.StartTime</c> did on Linux, measured at 24 disagreements out of 24 cross-process
+    /// reads, and sourcing the token from it again fails this on Linux essentially always.</para>
+    ///
+    /// <para><b>That the token is what decides</b>: a pid file whose token has been altered, and
+    /// whose every other field including <c>start_time</c> is untouched, must make the same server
+    /// unrecognisable. This half fails on every platform if the comparison drifts back to the wall
+    /// clock, which is what keeps the test honest on macOS — where the first claim cannot fail,
+    /// because that kernel hands out an absolute creation time.</para>
+    ///
+    /// <para>The pid file is restored before <c>stop</c> deliberately: a server the pid file can no
+    /// longer name is a server this test would leak.</para>
+    /// </remarks>
+    [Fact]
+    public void PidFileStartToken_IsReaderIndependent_AndIsWhatIdentifiesTheServer()
+    {
+        Assert.SkipUnless(EndToEndBinary.Path is not null, EndToEndBinary.SkipReason);
+
+        using var home = new TestHome();
+        var port = FreeTcpPort.Next();
+
+        var (startExit, _, startErr) = EngramProcess.Run(home.Root, "start", "--port", port.ToString());
+        Assert.True(startExit == 0, $"start failed: {startErr}");
+
+        var pidFilePath = Path.Combine(home.Root, "engram.pid");
+        var original = File.ReadAllText(pidFilePath);
+
+        try
+        {
+            var record = JsonNode.Parse(original)!.AsObject();
+            var token = record["start_token"]?.GetValue<string>();
+            Assert.False(string.IsNullOrEmpty(token), $"start recorded no token: {original}");
+
+            var (runningExit, runningOut, _) = EngramProcess.Run(home.Root, "status");
+            Assert.True(runningExit == 0, $"status called a live server dead: {runningOut}");
+            Assert.Contains("server: running", runningOut);
+
+            record["start_token"] = token + "-altered";
+            File.WriteAllText(pidFilePath, record.ToJsonString());
+
+            var (alteredExit, alteredOut, _) = EngramProcess.Run(home.Root, "status");
+            Assert.Equal(1, alteredExit);
+            Assert.Contains("not running", alteredOut);
+        }
+        finally
+        {
+            File.WriteAllText(pidFilePath, original);
             EngramProcess.Run(home.Root, "stop");
         }
     }

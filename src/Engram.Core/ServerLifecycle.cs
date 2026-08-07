@@ -178,7 +178,8 @@ public sealed class ServerLifecycle(
             switch (outcome.Status)
             {
                 case HealthCheckStatus.Healthy when outcome.Result is { } health && health.Version == ourVersion:
-                    var newRecord = new PidFileRecord(health.Pid, health.Port, health.Version, health.StartTimeUtc);
+                    var newRecord = new PidFileRecord(
+                        health.Pid, health.Port, health.Version, health.StartTimeUtc, health.StartToken);
                     PidFile.Write(home, newRecord);
                     return new StartResult(StartOutcome.Started, newRecord, "engram started");
 
@@ -243,11 +244,34 @@ public sealed class ServerLifecycle(
     ///
     /// <para>The guarantee that mattered is untouched, because it never rested on the path: nothing
     /// is terminated whose start time does not match what was recorded.</para>
+    ///
+    /// <para><b>"Start time" means the kernel's start token, not .NET's reconstruction of it.</b>
+    /// On Linux <c>Process.StartTime</c> adds <c>starttime</c> to a per-process <i>estimate</i> of
+    /// boot time, so the value the server reported about itself and the value read back for the
+    /// same pid never matched — measured 24 of 24 cross-process reads unequal. Every Linux
+    /// <c>status</c> answered <see cref="ServerStatusKind.Reused"/> about a healthy server, which is
+    /// the damage above arriving through a mechanism this method's own reasoning did not anticipate.
+    /// See <see cref="ProcessStartToken"/> for why no tolerance can repair that.</para>
+    ///
+    /// <para>The two comparisons below are disjoint and chosen solely by whether the <i>record</i>
+    /// carries a token. Nothing may blend them: converting between a token and a wall clock is
+    /// <c>bootTime + starttime</c>, and that estimate is the defect itself.</para>
     /// </remarks>
     private ProcessIdentity? RecordedProcess(PidFileRecord record)
     {
-        var identity = processInspector.GetIdentity(record.Pid);
-        return identity is not null && identity.StartTimeUtc == record.StartTimeUtc ? identity : null;
+        if (processInspector.GetIdentity(record.Pid) is not { } identity)
+        {
+            return null;
+        }
+
+        if (record.StartToken is not { } recorded)
+        {
+            // Written before tokens existed. Exact, and with no tolerance fallback: a number in the
+            // kill path introduced for a population that is empty would outlive the population.
+            return identity.StartTimeUtc == record.StartTimeUtc ? identity : null;
+        }
+
+        return string.Equals(identity.StartToken, recorded, StringComparison.Ordinal) ? identity : null;
     }
 
     private static bool IsAnsweringForUs(HealthCheckOutcome outcome, PidFileRecord record) =>

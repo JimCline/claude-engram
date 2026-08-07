@@ -9,6 +9,13 @@
     <PackageReference Include="LLamaSharp" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- So the /proc/<pid>/stat parser can be tested at tier 1 without becoming public API. It is
+         a pure function over a documented kernel format, and the trap it guards against — a comm
+         containing ')' — is unreachable through the public surface, which only takes a pid. -->
+    <InternalsVisibleTo Include="Engram.Core.Tests" />
+  </ItemGroup>
+
   <!--
     Which llama.cpp build gets compiled in. Exactly one, because both packages publish a libllama
     for the same RID and having two would make which one loads a matter of file ordering.

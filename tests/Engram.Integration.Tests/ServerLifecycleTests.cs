@@ -8,6 +8,15 @@ public class ServerLifecycleTests
     private const string OtherExePath = "/opt/other/some-other-binary";
     private const string Version = "0.1.0";
 
+    // Opaque on purpose. The production token has structure on Linux and none elsewhere, and a test
+    // that encoded either would be asserting the format rather than the comparison.
+    private const string Token = "boot-a:5150";
+    private const string OtherToken = "boot-a:9021";
+
+    // The largest disagreement measured between two processes reading one pid's Process.StartTime
+    // on Linux, where the value is starttime added to a per-process estimate of boot time.
+    private const long LinuxSkewTicks = 3636;
+
     private static readonly DateTimeOffset StartTime = new(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
 
     private static readonly ServerLifecycleTimeouts FastTimeouts = new(
@@ -77,7 +86,7 @@ public class ServerLifecycleTests
         var record = new PidFileRecord(555, 7433, Version, StartTime);
         PidFile.Write(sandbox.Home, record);
         var (lifecycle, inspector, health, launcher) = CreateLifecycle();
-        inspector.SetAlive(555, new ProcessIdentity(ExePath, StartTime));
+        inspector.SetAlive(555, new ProcessIdentity(ExePath, StartTime, Token));
         health.Enqueue(Healthy(555, 7433, Version, StartTime));
 
         var result = lifecycle.Start(sandbox.Home, ExePath, Version, 7433, FastTimeouts);
@@ -96,7 +105,7 @@ public class ServerLifecycleTests
         using var sandbox = new SandboxHome();
         PidFile.Write(sandbox.Home, new PidFileRecord(777, 7433, Version, StartTime));
         var (lifecycle, inspector, health, launcher) = CreateLifecycle();
-        inspector.SetAlive(777, new ProcessIdentity(ExePath, StartTime));
+        inspector.SetAlive(777, new ProcessIdentity(ExePath, StartTime, Token));
         inspector.DieOnTerminate.Add(777);
         health.Enqueue(new HealthCheckOutcome(HealthCheckStatus.NoResponse, null));
         health.Enqueue(Healthy(pid: 888, port: 7433, Version, StartTime));
@@ -117,7 +126,7 @@ public class ServerLifecycleTests
         using var sandbox = new SandboxHome();
         PidFile.Write(sandbox.Home, new PidFileRecord(777, 7433, Version, StartTime));
         var (lifecycle, inspector, health, launcher) = CreateLifecycle();
-        inspector.SetAlive(777, new ProcessIdentity(ExePath, StartTime));
+        inspector.SetAlive(777, new ProcessIdentity(ExePath, StartTime, Token));
         inspector.DieOnTerminate.Add(777);
         health.Enqueue(Healthy(pid: 777, port: 7433, "0.0.1-stale", StartTime));
         health.Enqueue(Healthy(pid: 888, port: 7433, Version, StartTime));
@@ -136,7 +145,7 @@ public class ServerLifecycleTests
         using var sandbox = new SandboxHome();
         PidFile.Write(sandbox.Home, new PidFileRecord(777, 7433, Version, StartTime));
         var (lifecycle, inspector, health, launcher) = CreateLifecycle();
-        inspector.SetAlive(777, new ProcessIdentity(ExePath, StartTime));
+        inspector.SetAlive(777, new ProcessIdentity(ExePath, StartTime, Token));
         health.Enqueue(new HealthCheckOutcome(HealthCheckStatus.NoResponse, null));
         health.Enqueue(Healthy(pid: 888, port: 7433, Version, StartTime));
 
@@ -163,7 +172,7 @@ public class ServerLifecycleTests
         using var sandbox = new SandboxHome();
         PidFile.Write(sandbox.Home, new PidFileRecord(888, 7433, Version, StartTime));
         var (lifecycle, inspector, health, launcher) = CreateLifecycle();
-        inspector.SetAlive(888, new ProcessIdentity(OtherExePath, StartTime));
+        inspector.SetAlive(888, new ProcessIdentity(OtherExePath, StartTime, Token));
         health.Enqueue(Healthy(pid: 888, port: 7433, Version, StartTime));
 
         var result = lifecycle.Start(sandbox.Home, ExePath, Version, 7433, FastTimeouts);
@@ -183,7 +192,7 @@ public class ServerLifecycleTests
         using var sandbox = new SandboxHome();
         PidFile.Write(sandbox.Home, new PidFileRecord(888, 7433, Version, StartTime));
         var (lifecycle, inspector, health, launcher) = CreateLifecycle();
-        inspector.SetAlive(888, new ProcessIdentity(ExePath, StartTime.AddMinutes(5)));
+        inspector.SetAlive(888, new ProcessIdentity(ExePath, StartTime.AddMinutes(5), OtherToken));
         health.Enqueue(Healthy(pid: 999, port: 7433, Version, StartTime));
 
         var result = lifecycle.Start(sandbox.Home, ExePath, Version, 7433, FastTimeouts);
@@ -232,7 +241,7 @@ public class ServerLifecycleTests
         var first = lifecycle.Start(sandbox.Home, ExePath, Version, 7433, FastTimeouts);
         Assert.Equal(StartOutcome.Started, first.Outcome);
 
-        inspector.SetAlive(42, new ProcessIdentity(ExePath, StartTime));
+        inspector.SetAlive(42, new ProcessIdentity(ExePath, StartTime, Token));
         health.Enqueue(Healthy(pid: 42, port: 7433, Version, StartTime));
 
         var second = lifecycle.Start(sandbox.Home, ExePath, Version, 7433, FastTimeouts);
@@ -277,7 +286,7 @@ public class ServerLifecycleTests
         using var sandbox = new SandboxHome();
         PidFile.Write(sandbox.Home, new PidFileRecord(654, 7433, Version, StartTime));
         var (lifecycle, inspector, _, _) = CreateLifecycle();
-        inspector.SetAlive(654, new ProcessIdentity(ExePath, StartTime));
+        inspector.SetAlive(654, new ProcessIdentity(ExePath, StartTime, Token));
         inspector.DieOnTerminate.Add(654);
 
         var result = lifecycle.Stop(sandbox.Home, FastTimeouts);
@@ -294,7 +303,7 @@ public class ServerLifecycleTests
         using var sandbox = new SandboxHome();
         PidFile.Write(sandbox.Home, new PidFileRecord(654, 7433, Version, StartTime));
         var (lifecycle, inspector, _, _) = CreateLifecycle();
-        inspector.SetAlive(654, new ProcessIdentity(ExePath, StartTime));
+        inspector.SetAlive(654, new ProcessIdentity(ExePath, StartTime, Token));
 
         var result = lifecycle.Stop(sandbox.Home, FastTimeouts);
 
@@ -313,7 +322,7 @@ public class ServerLifecycleTests
         using var sandbox = new SandboxHome();
         PidFile.Write(sandbox.Home, new PidFileRecord(321, 7433, Version, StartTime));
         var (lifecycle, inspector, _, _) = CreateLifecycle();
-        inspector.SetAlive(321, new ProcessIdentity(OtherExePath, StartTime.AddMinutes(5)));
+        inspector.SetAlive(321, new ProcessIdentity(OtherExePath, StartTime.AddMinutes(5), OtherToken));
 
         var result = lifecycle.Stop(sandbox.Home, FastTimeouts);
 
@@ -338,7 +347,7 @@ public class ServerLifecycleTests
         using var sandbox = new SandboxHome();
         PidFile.Write(sandbox.Home, new PidFileRecord(321, 7433, Version, StartTime));
         var (lifecycle, inspector, _, _) = CreateLifecycle();
-        inspector.SetAlive(321, new ProcessIdentity(OtherExePath, StartTime));
+        inspector.SetAlive(321, new ProcessIdentity(OtherExePath, StartTime, Token));
 
         var result = lifecycle.Stop(sandbox.Home, FastTimeouts);
 
@@ -382,7 +391,7 @@ public class ServerLifecycleTests
         using var sandbox = new SandboxHome();
         PidFile.Write(sandbox.Home, new PidFileRecord(2, 7433, Version, StartTime));
         var (lifecycle, inspector, health, _) = CreateLifecycle();
-        inspector.SetAlive(2, new ProcessIdentity(ExePath, StartTime));
+        inspector.SetAlive(2, new ProcessIdentity(ExePath, StartTime, Token));
         health.Enqueue(Healthy(2, 7433, Version, StartTime));
 
         var status = lifecycle.Status(sandbox.Home, Version, FastTimeouts.HealthCheckTimeout);
@@ -398,7 +407,7 @@ public class ServerLifecycleTests
         using var sandbox = new SandboxHome();
         PidFile.Write(sandbox.Home, new PidFileRecord(3, 7433, Version, StartTime));
         var (lifecycle, inspector, health, _) = CreateLifecycle();
-        inspector.SetAlive(3, new ProcessIdentity(ExePath, StartTime));
+        inspector.SetAlive(3, new ProcessIdentity(ExePath, StartTime, Token));
         health.Enqueue(new HealthCheckOutcome(HealthCheckStatus.NoResponse, null));
 
         var status = lifecycle.Status(sandbox.Home, Version, FastTimeouts.HealthCheckTimeout);
@@ -433,7 +442,7 @@ public class ServerLifecycleTests
         using var sandbox = new SandboxHome();
         PidFile.Write(sandbox.Home, new PidFileRecord(4, 7433, Version, StartTime));
         var (lifecycle, inspector, _, _) = CreateLifecycle();
-        inspector.SetAlive(4, new ProcessIdentity(OtherExePath, StartTime.AddMinutes(5)));
+        inspector.SetAlive(4, new ProcessIdentity(OtherExePath, StartTime.AddMinutes(5), OtherToken));
 
         var status = lifecycle.Status(sandbox.Home, Version, FastTimeouts.HealthCheckTimeout);
 
@@ -454,7 +463,7 @@ public class ServerLifecycleTests
         using var sandbox = new SandboxHome();
         PidFile.Write(sandbox.Home, new PidFileRecord(5, 7433, Version, StartTime));
         var (lifecycle, inspector, health, _) = CreateLifecycle();
-        inspector.SetAlive(5, new ProcessIdentity(OtherExePath, StartTime));
+        inspector.SetAlive(5, new ProcessIdentity(OtherExePath, StartTime, Token));
         health.Enqueue(Healthy(pid: 5, port: 7433, Version, StartTime));
 
         var status = lifecycle.Status(sandbox.Home, Version, FastTimeouts.HealthCheckTimeout);
@@ -464,6 +473,159 @@ public class ServerLifecycleTests
 
         // Reported, so a surprising answer explains itself, rather than enforced.
         Assert.Equal(OtherExePath, status.LaunchedFrom);
+    }
+
+    /// <summary>
+    /// A platform that will not say where a process was launched from must cost the provenance
+    /// line and nothing more.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="ProcessIdentity.ExecutablePath"/> comes from <c>Process.MainModule</c>, which is
+    /// not answerable everywhere — it reads <c>/proc/&lt;pid&gt;/maps</c> on Linux and is refused for
+    /// a process the caller does not own. Folding that refusal into a null identity discarded a
+    /// start time that had already been read, which is the one thing D42 says identity rests on.
+    /// </remarks>
+    [Fact]
+    public void Status_ThePlatformWillNotSayWhereItWasLaunchedFrom_IsStillRunning()
+    {
+        using var sandbox = new SandboxHome();
+        PidFile.Write(sandbox.Home, new PidFileRecord(6, 7433, Version, StartTime));
+        var (lifecycle, inspector, health, _) = CreateLifecycle();
+        inspector.SetAlive(6, new ProcessIdentity(null, StartTime, Token));
+        health.Enqueue(Healthy(pid: 6, port: 7433, Version, StartTime));
+
+        var status = lifecycle.Status(sandbox.Home, Version, FastTimeouts.HealthCheckTimeout);
+
+        Assert.Equal(ServerStatusKind.Running, status.Kind);
+        Assert.True(status.ServerIsAlive);
+        Assert.Null(status.LaunchedFrom);
+    }
+
+    /// <summary>The half that does the damage: a stop that gives up still deletes the pid file.</summary>
+    /// <remarks>
+    /// Reporting "not running" is the harmless symptom. Losing the address is not — after this the
+    /// server is still up and no later <c>stop</c> can find it, which is why the null-path case is
+    /// asserted here and not only on <c>Status</c>.
+    /// </remarks>
+    [Fact]
+    public void Stop_ThePlatformWillNotSayWhereItWasLaunchedFrom_StillStops()
+    {
+        using var sandbox = new SandboxHome();
+        PidFile.Write(sandbox.Home, new PidFileRecord(7, 7433, Version, StartTime));
+        var (lifecycle, inspector, _, _) = CreateLifecycle();
+        inspector.SetAlive(7, new ProcessIdentity(null, StartTime, Token));
+        inspector.DieOnTerminate.Add(7);
+
+        var result = lifecycle.Stop(sandbox.Home, FastTimeouts);
+
+        Assert.Equal(StopOutcome.Stopped, result.Outcome);
+        Assert.Equal([7], inspector.TerminateCalls);
+    }
+
+    // Each of the four below varies exactly ONE of (token, wall clock). A test that varied both
+    // would pass under the old comparison and the new one alike, and prove nothing about either.
+
+    /// <summary>
+    /// The token decides, and a wall clock that disagrees does not overrule it.
+    /// </summary>
+    /// <remarks>
+    /// This is the Linux failure in miniature. There, every cross-process read of
+    /// <c>Process.StartTime</c> disagreed with the server's own — 24 of 24, by up to
+    /// <see cref="LinuxSkewTicks"/> ticks — so <c>status</c> answered <see cref="ServerStatusKind.Reused"/>
+    /// about a server that had just reported itself healthy on the same pid.
+    /// </remarks>
+    [Fact]
+    public void Status_TokenMatches_ButTheWallClockDoesNot_IsStillAlive()
+    {
+        using var sandbox = new SandboxHome();
+        PidFile.Write(sandbox.Home, new PidFileRecord(11, 7433, Version, StartTime, Token));
+        var (lifecycle, inspector, health, _) = CreateLifecycle();
+        inspector.SetAlive(11, new ProcessIdentity(ExePath, StartTime.AddTicks(LinuxSkewTicks), Token));
+        health.Enqueue(Healthy(pid: 11, port: 7433, Version, StartTime));
+
+        var status = lifecycle.Status(sandbox.Home, Version, FastTimeouts.HealthCheckTimeout);
+
+        Assert.Equal(ServerStatusKind.Running, status.Kind);
+        Assert.True(status.ServerIsAlive);
+    }
+
+    [Fact]
+    public void Stop_TokenMatches_ButTheWallClockDoesNot_StillStopsTheServer()
+    {
+        using var sandbox = new SandboxHome();
+        PidFile.Write(sandbox.Home, new PidFileRecord(12, 7433, Version, StartTime, Token));
+        var (lifecycle, inspector, _, _) = CreateLifecycle();
+        inspector.SetAlive(12, new ProcessIdentity(ExePath, StartTime.AddTicks(LinuxSkewTicks), Token));
+        inspector.DieOnTerminate.Add(12);
+
+        var result = lifecycle.Stop(sandbox.Home, FastTimeouts);
+
+        Assert.Equal(StopOutcome.Stopped, result.Outcome);
+        Assert.Equal([12], inspector.TerminateCalls);
+        Assert.Null(PidFile.Read(sandbox.Home));
+    }
+
+    /// <summary>
+    /// The safety half: an identical wall clock does not make a stranger ours.
+    /// </summary>
+    /// <remarks>
+    /// This is the guarantee written as an assertion — nothing is terminated whose start time does
+    /// not match what was recorded. It is also what makes approximate matching unreintroducible:
+    /// weaken the comparison to <c>tokenEqual || wallClockEqual</c>, or to the wall clock alone, or
+    /// to any window at all, and these identical timestamps identify the stranger and
+    /// <see cref="FakeProcessInspector.TerminateCalls"/> stops being empty.
+    /// </remarks>
+    [Fact]
+    public void Stop_TokenDiffers_ThoughTheWallClockIsIdentical_SignalsNothing()
+    {
+        using var sandbox = new SandboxHome();
+        PidFile.Write(sandbox.Home, new PidFileRecord(13, 7433, Version, StartTime, Token));
+        var (lifecycle, inspector, _, _) = CreateLifecycle();
+        inspector.SetAlive(13, new ProcessIdentity(ExePath, StartTime, OtherToken));
+
+        var result = lifecycle.Stop(sandbox.Home, FastTimeouts);
+
+        Assert.Equal(StopOutcome.NothingRunning, result.Outcome);
+        Assert.Empty(inspector.TerminateCalls);
+        Assert.Empty(inspector.KillCalls);
+    }
+
+    /// <summary>
+    /// A pid file written before tokens existed still compares on the wall clock, exactly.
+    /// </summary>
+    /// <remarks>
+    /// The identity here carries a token that does <i>not</i> match, so this fails the moment the
+    /// token becomes required rather than preferred — which would orphan any server already running
+    /// across the upgrade, leaving it alive with a pid file nothing will act on.
+    /// </remarks>
+    [Fact]
+    public void Status_RecordPredatingTokens_StillMatchesOnTheWallClock()
+    {
+        using var sandbox = new SandboxHome();
+        PidFile.Write(sandbox.Home, new PidFileRecord(14, 7433, Version, StartTime));
+        var (lifecycle, inspector, health, _) = CreateLifecycle();
+        inspector.SetAlive(14, new ProcessIdentity(ExePath, StartTime, OtherToken));
+        health.Enqueue(Healthy(pid: 14, port: 7433, Version, StartTime));
+
+        var status = lifecycle.Status(sandbox.Home, Version, FastTimeouts.HealthCheckTimeout);
+
+        Assert.Equal(ServerStatusKind.Running, status.Kind);
+    }
+
+    /// <summary>And exactly means exactly: the legacy path gets no tolerance either.</summary>
+    [Fact]
+    public void Stop_RecordPredatingTokens_OneTickOff_SignalsNothing()
+    {
+        using var sandbox = new SandboxHome();
+        PidFile.Write(sandbox.Home, new PidFileRecord(15, 7433, Version, StartTime));
+        var (lifecycle, inspector, _, _) = CreateLifecycle();
+        inspector.SetAlive(15, new ProcessIdentity(ExePath, StartTime.AddTicks(1), Token));
+
+        var result = lifecycle.Stop(sandbox.Home, FastTimeouts);
+
+        Assert.Equal(StopOutcome.NothingRunning, result.Outcome);
+        Assert.Empty(inspector.TerminateCalls);
+        Assert.Empty(inspector.KillCalls);
     }
 
     /// <summary>
@@ -480,7 +642,7 @@ public class ServerLifecycleTests
         using var sandbox = new SandboxHome();
         PidFile.Write(sandbox.Home, new PidFileRecord(6, 7433, "0.0.9", StartTime));
         var (lifecycle, inspector, health, _) = CreateLifecycle();
-        inspector.SetAlive(6, new ProcessIdentity(ExePath, StartTime));
+        inspector.SetAlive(6, new ProcessIdentity(ExePath, StartTime, Token));
         health.Enqueue(Healthy(pid: 6, port: 7433, "0.0.9", StartTime));
 
         var status = lifecycle.Status(sandbox.Home, Version, FastTimeouts.HealthCheckTimeout);
@@ -504,7 +666,7 @@ public class ServerLifecycleTests
         using var sandbox = new SandboxHome();
         PidFile.Write(sandbox.Home, new PidFileRecord(7, 7433, Version, StartTime));
         var (lifecycle, inspector, health, _) = CreateLifecycle();
-        inspector.SetAlive(7, new ProcessIdentity(ExePath, StartTime));
+        inspector.SetAlive(7, new ProcessIdentity(ExePath, StartTime, Token));
         health.Enqueue(new HealthCheckOutcome(HealthCheckStatus.NoResponse, null));
 
         var status = lifecycle.Status(sandbox.Home, Version, FastTimeouts.HealthCheckTimeout);

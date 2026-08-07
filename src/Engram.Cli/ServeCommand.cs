@@ -42,7 +42,8 @@ internal static class ServeCommand
             Environment.ProcessId,
             resolvedPort,
             EngramVersion.Current,
-            Process.GetCurrentProcess().StartTime.ToUniversalTime());
+            Process.GetCurrentProcess().StartTime.ToUniversalTime(),
+            ProcessStartToken.ForSelf());
         var openedSessions = new ConcurrentDictionary<string, byte>();
 
         var builder = WebApplication.CreateSlimBuilder([]);

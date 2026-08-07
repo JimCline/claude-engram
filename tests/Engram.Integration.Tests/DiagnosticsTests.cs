@@ -77,7 +77,7 @@ public sealed class DiagnosticsTests : IDisposable
         PidFile.Write(sandbox.Home, new PidFileRecord(4242, 7433, version, started));
 
         var inspector = new FakeProcessInspector();
-        inspector.SetAlive(4242, new ProcessIdentity(from, started));
+        inspector.SetAlive(4242, new ProcessIdentity(from, started, "boot-a:4242"));
 
         var health = new FakeServerHealthChecker();
         health.Enqueue(new HealthCheckOutcome(

@@ -1,6 +1,6 @@
 # Engram — progress snapshot
 
-**As of 2026-08-06.** Working tree clean, 46 decisions (D1–D46) — D28 amended, none added.
+**As of 2026-08-06.** Working tree clean, 46 decisions (D1–D46) — D28 and D42 amended, none added.
 
 This is a handoff, not an authority. `CLAUDE.md` holds the invariants,
 `docs/engram-implementation-plan.md` holds the decisions and their reasoning, and
@@ -36,12 +36,16 @@ dotnet test Engram.sln -c Release
 dotnet publish src/Engram.Cli -c Release -r linux-x64 -p:EngramGpu=cuda12
 ```
 
-**Last measured, both green:**
+**Last measured, green:**
 
 | | Core | Integration | EndToEnd | total |
 |---|---|---|---|---|
-| no weights (the CI shape) | 336 | 426 (64 skipped) | 104 | **866** |
-| with weights | 336 | 432 (58 skipped) | 104 | **872** |
+| no weights (the CI shape) | 344 | 435 (64 skipped) | 105 | **884** |
+| with weights | 344 | 441 (58 skipped) | 105 | **890** |
+
+The no-weights row was measured this session. The with-weights row is that row plus the same six
+real-weights tests as before — none of the eighteen tests added this session are weights-gated — and
+was **not** re-run, so treat it as arithmetic rather than a measurement.
 
 The with-weights row depends on *which* models are installed, not just that some are. A home
 holding only MiniLM skips the two-model test as well, which is why that row can show one more
@@ -62,6 +66,48 @@ home under test.
 ---
 
 ## What landed recently
+
+### D42 amended: a start time you compute is not a start time
+
+Three Linux end-to-end failures in CI turned out to be one bug, and not the one it looked like.
+`ServerLifecycle` proved a pid file still described our server by comparing the start time the server
+reported about itself against the start time read back for that pid. On Linux those are different
+numbers. `Process.StartTime` there is the kernel's `starttime` added to a **per-process estimate of
+boot time**, so it partly describes whoever is asking — measured in a container, 24 of 24
+cross-process reads disagreed, by up to 3636 ticks.
+
+Exact equality therefore never held on Linux. Every `status` answered `Reused` about a healthy
+server, and `stop` did D42's original damage — delete the pid file, say "not running", leave the
+server running with nothing left to address it by — on *every* invocation rather than in the rare
+case. The `embed --rebuild` failure that read as a sqlite-vec problem was this too: the server check
+at `EmbedCommand.cs:125` runs first and silently answered "no server".
+
+Identity is now `ProcessStartToken`: `/proc/<pid>/stat` field 22 plus the boot id on Linux, the exact
+kernel start time on macOS and Windows. Worth knowing before touching it:
+
+- **A tolerance was considered and rejected, and the fitted version looks fine.** The skew is not
+  jitter — it is the difference between two boot-time estimates, each read off the realtime clock, so
+  an NTP step or a VM resume moves it without bound. Any window is either smaller than a possible
+  clock step (trading a deterministic failure for an intermittent one) or fitted to hoped-for clock
+  behaviour. No window, ever.
+- **Nothing backstops this comparison.** `Stop` never runs the health check at all, and `Start`
+  terminates precisely *when* the health check failed to vouch — so `IsAnsweringForUs` proving
+  `health.Pid == record.Pid` does no work on any kill path. The start token carries termination
+  alone.
+- **macOS and Windows keep their existing code path deliberately.** Their kernels store an absolute
+  creation time. A fix that does not touch the platform nobody here can test cannot regress it.
+- **Cut `/proc/<pid>/stat` at the last `)`, never the first.** `comm` is whatever the process called
+  itself and may hold spaces and parens both. Cutting at the first one shifts every field left by two
+  and still *parses* — it returns num_threads — so a process free to name itself would be free to
+  nominate its own start time.
+- **Records written before tokens compare `StartTimeUtc` exactly.** That is a legacy path, not a
+  fallback; giving it a tolerance would put a number in the kill path permanently for a population
+  that is empty.
+
+Eight breaks were applied and each went red, including the two that matter most: sourcing the Linux
+token from `Process.StartTime` again reproduces the original bug through the new tier-3 test
+(`status called a live server dead`), and ignoring the token makes an altered pid file identify the
+server anyway.
 
 ### D28's Metal check: the loader records, `doctor` reads
 
@@ -141,6 +187,9 @@ happened.
 | the metal Warn branch, end to end | measured — the published binary renders it from a record the JIT host wrote, provenance line and all |
 | that Warn alone never fails the exit code | tested, not observed — `Warn` is not `Broken`; no home here has metal as its only non-ok row |
 | the Warn on hardware that natively lost the path | **not measured** — no such machine available; the JIT host is the only way to produce `false` here |
+| the Linux server-identity fix | measured — full suite green on a linux-arm64 AOT build in a container, including the 3 tests that failed in CI |
+| that same fix on linux-**x64** | **not measured here** — Docker on Apple silicon serves arm64 and its `ld` will not link x86_64. The mechanism is procfs, not the instruction set, so CI is the check |
+| Windows anything | **not measured** — no machine, and this is why the fix leaves Windows on its existing code path |
 | D6's gate on M3 | **unread** — see below |
 | D18's gate on M4 | **unmet**, and the adoption fraction is not computable (D43) |
 
@@ -186,7 +235,21 @@ hole, and `doctor` says so out loud in `Diagnostics.cs:632`.
 `coverage` currently keys off lane agreement only. The spec names score mass as a second
 input. D44's reasoning for leaving it: one unmeasured knob is a rule, two are a preference.
 
-### 5. Smaller
+### 5. Windows CI is red, and nobody here can reproduce it
+
+Linux and Windows are supported targets, so these are real bugs rather than noise. The last run had
+339 integration + 9 core + 1 end-to-end failures on `windows-latest`, in two clusters:
+
+- **Path separators in assertions.** `Expected: "/explicit/path"`, `Actual: "D:\explicit\path"` —
+  tests asserting on literal forward slashes, not necessarily a defect in the code under test.
+- **`IOException: the process cannot access the file 'engram.db' because it is being used by another
+  process.`** Windows does not allow the delete-while-open that the Unix tests rely on. This one may
+  well be a real portability defect rather than a test defect; it is the cluster to read first.
+
+Neither has been reproduced locally — there is no Windows machine and no container path to one from
+here. CI is the only instrument, so expect a slow loop.
+
+### 6. Smaller
 
 - D27's open sub-question.
 - `docs/engram-spec.md:62` "not a Sage replacement" — flagged, unresolved.
@@ -202,11 +265,23 @@ input. D44's reasoning for leaving it: one unmeasured knob is a rule, two are a 
 - **`init --with-embeddings` is a picker, and it no-ops when stdin is not a terminal.** It says so
   and prints the non-interactive forms (`init --provider local --model …`), but a script that
   checks only the exit code sees 0 and concludes it installed something. It did not.
-- **Mac is the only hardware here.** Linux, Windows and CUDA paths are guarded by construction
-  rather than by testing — the metal row is gated on macOS-arm64 and the record is never written
-  when no `ggml_metal` line appears — so anything claiming to work off this machine is an argument,
-  not a measurement. The JIT host is the one genuine second configuration available: it really does
-  lose the tensor path, which is what makes the Warn branch reachable at all.
+- **Linux is reachable, and it is worth reaching.** Docker Desktop is installed; `open -a Docker`
+  starts it. A container that mounts the repo **read-only** and copies the source in — excluding
+  `out/`, `.git/`, `bin/`, `obj/` — builds, AOT-publishes and runs the whole suite in a few minutes.
+  Mounting read-write instead leaves root-owned Linux artifacts in `bin/` and `obj/` where the macOS
+  build expects its own. Two traps cost real time: `docker run` **without `-i` discards stdin**, so
+  `bash -s <<EOF` runs an empty script and exits 0 having done nothing, which looks exactly like
+  success; and the image is **arm64** on Apple silicon, so `-r linux-x64` dies at
+  `ld.bfd: unrecognised emulation mode: elf_x86_64` — publish `linux-arm64`. Two integration tests
+  fail in-container and pass in CI (`AtomicFileTests.Write_TempFileCreationFails…`,
+  `SpoolCompactorTests.AnEntryItCannotOpen…`): both work by making a file unopenable, and the
+  container runs as root, which bypasses that.
+- **Windows is still unreachable**, and CUDA execution with it. Anything claiming to work there is
+  an argument, not a measurement — which is why the D42 fix deliberately leaves Windows on the code
+  path it already had.
+- **Mac is still the only hardware for the Metal path.** The JIT host is the one genuine second
+  configuration available: it really does lose the tensor path, which is what makes the Warn branch
+  reachable at all.
 - **Prove a guard can fail.** Two guards this session looked green while proving nothing —
   the paraphrase test survived a deliberate pooling break, and an early AOT publish passed
   only because nothing referenced the assembly yet. Break the thing, watch the test fail,

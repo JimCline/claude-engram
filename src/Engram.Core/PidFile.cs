@@ -3,11 +3,19 @@ using System.Text.Json.Serialization;
 
 namespace Engram.Core;
 
+/// <param name="StartTimeUtc">Display metadata, and the comparison for records written before
+/// <paramref name="StartToken"/> existed. It identifies nothing once a token is present.</param>
+/// <param name="StartToken">
+/// What identifies this run of the process (see <see cref="ProcessStartToken"/>). Null means a
+/// record written by a binary that predates tokens, which selects the legacy comparison — the two
+/// modes are disjoint, and nothing may ever convert between them.
+/// </param>
 public sealed record PidFileRecord(
     [property: JsonPropertyName("pid")] int Pid,
     [property: JsonPropertyName("port")] int Port,
     [property: JsonPropertyName("version")] string Version,
-    [property: JsonPropertyName("start_time")] DateTimeOffset StartTimeUtc);
+    [property: JsonPropertyName("start_time")] DateTimeOffset StartTimeUtc,
+    [property: JsonPropertyName("start_token")] string? StartToken = null);
 
 [JsonSerializable(typeof(PidFileRecord))]
 internal sealed partial class PidFileJsonContext : JsonSerializerContext;

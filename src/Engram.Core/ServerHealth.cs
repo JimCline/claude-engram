@@ -5,11 +5,18 @@ using System.Text.Json.Serialization;
 
 namespace Engram.Core;
 
+/// <param name="StartToken">
+/// The server's own view of what identifies this run of it (see <see cref="ProcessStartToken"/>).
+/// It travels in the payload rather than being read from the pid by whoever records it: between a
+/// health response and a separate lookup the pid could in principle be recycled, and the payload
+/// has no such window. Null from a server that predates tokens.
+/// </param>
 public sealed record HealthResponsePayload(
     [property: JsonPropertyName("pid")] int Pid,
     [property: JsonPropertyName("port")] int Port,
     [property: JsonPropertyName("version")] string Version,
-    [property: JsonPropertyName("start_time")] DateTimeOffset StartTimeUtc);
+    [property: JsonPropertyName("start_time")] DateTimeOffset StartTimeUtc,
+    [property: JsonPropertyName("start_token")] string? StartToken = null);
 
 [JsonSerializable(typeof(HealthResponsePayload))]
 public sealed partial class HealthResponseJsonContext : JsonSerializerContext;
