@@ -8,12 +8,25 @@ public class EngramHomeTests
     private static IReadOnlyDictionary<string, string?> Env(string? engramHome = null) =>
         new Dictionary<string, string?> { ["ENGRAM_HOME"] = engramHome };
 
+    /// <summary>This platform's own spelling of a path the fixtures write with forward slashes.</summary>
+    /// <remarks>
+    /// The fixtures use POSIX separators because they read better, but <c>EngramHome.Resolve</c>
+    /// returns <see cref="Path.GetFullPath(string)"/>'s answer, and on Windows that is
+    /// <c>D:\explicit\path</c> — the same location spelled differently, which failed nine of these
+    /// on every Windows run. Normalising the *expectation* through the same call keeps each test
+    /// about what it was written for: which of the three inputs won, and whether <c>..</c> and a
+    /// trailing separator were resolved. It does not make them tautological — the expected path is
+    /// still stated independently of the input, so a resolver that picked the wrong one, or failed
+    /// to normalise, still produces a different string and still fails.
+    /// </remarks>
+    private static string Native(string posixPath) => Path.GetFullPath(posixPath);
+
     [Fact]
     public void ExplicitPath_WinsOverEnvironmentAndDefault()
     {
         var home = EngramHome.Resolve("/explicit/path", Env("/env/path"), UserProfile, CurrentDirectory);
 
-        Assert.Equal("/explicit/path", home.Root);
+        Assert.Equal(Native("/explicit/path"), home.Root);
     }
 
     [Fact]
@@ -21,7 +34,7 @@ public class EngramHomeTests
     {
         var home = EngramHome.Resolve(null, Env("/env/path"), UserProfile, CurrentDirectory);
 
-        Assert.Equal("/env/path", home.Root);
+        Assert.Equal(Native("/env/path"), home.Root);
     }
 
     [Fact]
@@ -29,7 +42,7 @@ public class EngramHomeTests
     {
         var home = EngramHome.Resolve(null, Env(), UserProfile, CurrentDirectory);
 
-        Assert.Equal("/Users/testuser/.engram", home.Root);
+        Assert.Equal(Native("/Users/testuser/.engram"), home.Root);
     }
 
     [Fact]
@@ -37,7 +50,7 @@ public class EngramHomeTests
     {
         var home = EngramHome.Resolve(null, Env("   "), UserProfile, CurrentDirectory);
 
-        Assert.Equal("/Users/testuser/.engram", home.Root);
+        Assert.Equal(Native("/Users/testuser/.engram"), home.Root);
     }
 
     [Fact]
@@ -45,7 +58,7 @@ public class EngramHomeTests
     {
         var home = EngramHome.Resolve("~/foo", Env(), UserProfile, CurrentDirectory);
 
-        Assert.Equal("/Users/testuser/foo", home.Root);
+        Assert.Equal(Native("/Users/testuser/foo"), home.Root);
     }
 
     [Fact]
@@ -53,7 +66,7 @@ public class EngramHomeTests
     {
         var home = EngramHome.Resolve("~\\foo", Env(), UserProfile, CurrentDirectory);
 
-        Assert.Equal("/Users/testuser/foo", home.Root);
+        Assert.Equal(Native("/Users/testuser/foo"), home.Root);
     }
 
     [Fact]
@@ -61,7 +74,7 @@ public class EngramHomeTests
     {
         var home = EngramHome.Resolve("relative/dir", Env(), UserProfile, CurrentDirectory);
 
-        Assert.Equal("/current/dir/relative/dir", home.Root);
+        Assert.Equal(Native("/current/dir/relative/dir"), home.Root);
     }
 
     [Fact]
@@ -69,7 +82,7 @@ public class EngramHomeTests
     {
         var home = EngramHome.Resolve("/a/b/../c", Env(), UserProfile, CurrentDirectory);
 
-        Assert.Equal("/a/c", home.Root);
+        Assert.Equal(Native("/a/c"), home.Root);
     }
 
     [Fact]
@@ -77,7 +90,7 @@ public class EngramHomeTests
     {
         var home = EngramHome.Resolve("/explicit/path/", Env(), UserProfile, CurrentDirectory);
 
-        Assert.Equal("/explicit/path", home.Root);
+        Assert.Equal(Native("/explicit/path"), home.Root);
     }
 
     [Fact]

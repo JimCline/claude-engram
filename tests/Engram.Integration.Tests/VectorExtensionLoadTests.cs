@@ -183,6 +183,64 @@ public class VectorExtensionLoadTests
     }
 
     /// <summary>
+    /// <see cref="EngramDatabase.ReleasePooledConnections"/> empties one database's pool, and only
+    /// that one.
+    /// </summary>
+    /// <remarks>
+    /// <para>Both halves are load-bearing, and they fail to opposite mistakes. The released database
+    /// going cold is what a release that does nothing loses — including the quiet version, where
+    /// <c>ReleasePooledConnections</c> builds a connection string that no longer matches
+    /// <see cref="EngramDatabase.Open(string, string?)"/>'s: a pool is keyed by that exact text, and
+    /// clearing a key nothing was ever stored under succeeds and reports nothing. The untouched
+    /// database staying warm is what <c>ClearAllPools</c> loses, and that is not tidiness — it
+    /// disposes handles the pool has already handed out, so what breaks belongs to whatever is
+    /// mid-rent elsewhere in the process.</para>
+    ///
+    /// <para>Windows is the only platform where the release is load-bearing in production, and it is
+    /// the one platform this suite cannot run here, so the property is asserted directly rather than
+    /// through the deletion it enables.</para>
+    /// </remarks>
+    [Fact]
+    public void ReleasingOnePool_LeavesEveryOtherDatabasesPoolWarm()
+    {
+        Assert.SkipUnless(VectorExtensionFile.Path is not null, VectorExtensionFile.SkipReason);
+
+        using var released = new SandboxHome();
+        using var untouched = new SandboxHome();
+        VectorExtensionFile.InstallInto(released.Home);
+        VectorExtensionFile.InstallInto(untouched.Home);
+
+        // Warms both pools: each handle goes back with sqlite-vec still registered on it.
+        using (var loader = EngramDatabase.Open(released.Home))
+        {
+            Assert.True(AnswersVectorQueries(loader));
+        }
+
+        using (var loader = EngramDatabase.Open(untouched.Home))
+        {
+            Assert.True(AnswersVectorQueries(loader));
+        }
+
+        EngramDatabase.ReleasePooledConnections(released.Home.DatabasePath);
+
+        // No library directory on either, so neither loads anything itself and a vector query
+        // answers only on a handle the pool kept.
+        using var afterRelease = EngramDatabase.Open(released.Home.DatabasePath);
+        using var neverReleased = EngramDatabase.Open(untouched.Home.DatabasePath);
+
+        Assert.False(
+            AnswersVectorQueries(afterRelease),
+            "The pooled handle survived ReleasePooledConnections, so nothing was released and the "
+                + "database file is still held open. On Windows that is an IOException on cleanup.");
+
+        Assert.True(
+            AnswersVectorQueries(neverReleased),
+            "Releasing one database's pool emptied another's, which is ClearAllPools' behaviour and "
+                + "not this method's. That form disposes connections already handed out, so it "
+                + "breaks whichever unrelated caller happens to be between renting and using one.");
+    }
+
+    /// <summary>
     /// The other half: without a warm pool the same connection cannot answer, which is what
     /// makes the inheritance above attributable to pooling rather than to something ambient.
     /// </summary>

@@ -73,13 +73,31 @@ public class RepoScannerTests
             && Git("config", "user.email", "test@example.invalid")
             && Git("config", "user.name", "Engram Test");
 
+        /// <summary>Removes the checkout, including the parts git deliberately made read-only.</summary>
+        /// <remarks>
+        /// git marks loose objects and pack files read-only once written. On Unix that is irrelevant
+        /// — permission to unlink comes from the directory — but on Windows the read-only attribute
+        /// belongs to the file and a recursive delete stops on it with
+        /// <c>UnauthorizedAccessException</c>, which this used to let through because it caught only
+        /// <c>IOException</c>. Clearing the bit is the fix; the catch is the net, and it still
+        /// declines to fail a test over a leftover temp directory.
+        /// </remarks>
         public void Dispose()
         {
             try
             {
+                foreach (var path in Directory.EnumerateFiles(Root, "*", SearchOption.AllDirectories))
+                {
+                    var attributes = File.GetAttributes(path);
+                    if ((attributes & FileAttributes.ReadOnly) != 0)
+                    {
+                        File.SetAttributes(path, attributes & ~FileAttributes.ReadOnly);
+                    }
+                }
+
                 Directory.Delete(Root, recursive: true);
             }
-            catch (IOException)
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
             {
                 // A leftover temp directory is not worth failing a test over.
             }

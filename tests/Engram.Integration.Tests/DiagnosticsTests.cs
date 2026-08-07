@@ -649,11 +649,26 @@ public sealed class DiagnosticsTests : IDisposable
         return ((IPEndPoint)listener.LocalEndpoint).Port;
     }
 
+    /// <summary>
+    /// Starts the stand-in embedding endpoint and returns its URL.
+    /// </summary>
+    /// <remarks>
+    /// <para><b>The server picks its own port and reports it back.</b> Choosing one here with
+    /// <see cref="FreePort"/> first meant handing back a port that was free at that instant and
+    /// binding it a process start later — and on a loaded CI runner something else can take it in
+    /// between, at which point python exits with <c>Address already in use</c>. Binding port 0
+    /// closes the window rather than narrowing it, and the socket is listening before the number is
+    /// printed, because <c>HTTPServer</c> binds and listens in its constructor.</para>
+    ///
+    /// <para><b>A server that dies says why.</b> stdout and stderr were already redirected and then
+    /// never read, so the previous version of this spent twenty seconds polling a process that had
+    /// already exited and reported only that it "never came up" — which is how this stayed an
+    /// unexplained macOS flake instead of a fixed bug.</para>
+    /// </remarks>
     private string StartStandInEmbedder(string directory, int dimensions)
     {
         Directory.CreateDirectory(directory);
         var script = Path.Combine(directory, "doctor-embed-server.py");
-        var port = FreePort();
 
         File.WriteAllText(script, $$"""
             #!{{Python}}
@@ -674,7 +689,9 @@ public sealed class DiagnosticsTests : IDisposable
                     self.send_header("content-length", str(len(raw)))
                     self.end_headers()
                     self.wfile.write(raw)
-            HTTPServer(("127.0.0.1", {{port}}), H).serve_forever()
+            server = HTTPServer(("127.0.0.1", 0), H)
+            print(server.server_address[1], flush=True)
+            server.serve_forever()
 
             """);
 
@@ -692,17 +709,62 @@ public sealed class DiagnosticsTests : IDisposable
         })!;
         started.Add(process);
 
+        var port = ReadPort(process);
         var endpoint = $"http://127.0.0.1:{port.ToString(CultureInfo.InvariantCulture)}/v1";
-        WaitUntilAnswering(endpoint);
+        WaitUntilAnswering(endpoint, process);
         return endpoint;
     }
 
-    private static void WaitUntilAnswering(string endpoint)
+    /// <summary>The port the server bound, or a failure carrying whatever it said instead.</summary>
+    private static int ReadPort(Process process)
+    {
+        // Bounded off-thread, because a python that hangs before printing would otherwise hang the
+        // whole test run rather than fail it.
+        var line = Task.Run(process.StandardOutput.ReadLine);
+        if (!line.Wait(TimeSpan.FromSeconds(30)))
+        {
+            Assert.Fail("the stand-in embedding server never reported a port");
+        }
+
+        if (int.TryParse(line.Result, CultureInfo.InvariantCulture, out var port))
+        {
+            return port;
+        }
+
+        Assert.Fail($"the stand-in embedding server did not start: {Complaint(process)}");
+        return 0;
+    }
+
+    /// <summary>
+    /// Whatever the process has to say for itself, read only once it is safe to read.
+    /// </summary>
+    /// <remarks>
+    /// stderr is drained only after the process has exited. Draining it while the server is running
+    /// blocks forever, which would turn a diagnostic into the hang it is meant to explain.
+    /// </remarks>
+    private static string Complaint(Process process)
+    {
+        if (!process.WaitForExit(2000))
+        {
+            return "it is still running but said nothing";
+        }
+
+        var stderr = process.StandardError.ReadToEnd().Trim();
+        return $"exit {process.ExitCode.ToString(CultureInfo.InvariantCulture)}"
+            + (stderr.Length == 0 ? ", and no output" : $": {stderr}");
+    }
+
+    private static void WaitUntilAnswering(string endpoint, Process process)
     {
         using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(2) };
         var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(20);
         while (DateTime.UtcNow < deadline)
         {
+            if (process.HasExited)
+            {
+                Assert.Fail($"the stand-in embedding server exited while starting: {Complaint(process)}");
+            }
+
             try
             {
                 var content = new StringContent(
@@ -722,6 +784,6 @@ public sealed class DiagnosticsTests : IDisposable
             Thread.Sleep(50);
         }
 
-        Assert.Fail("the stand-in embedding server never came up");
+        Assert.Fail($"the stand-in embedding server never answered: {Complaint(process)}");
     }
 }

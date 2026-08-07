@@ -104,12 +104,18 @@ public class InstallerRoundTripTests
     [Fact]
     public void Install_BinaryThatCannotOpenADatabase_IsRejectedBeforeThePrefixIsCreated()
     {
+        // The pragma below asserted this never runs on Windows and nothing enforced it, so on Windows
+        // it did run and threw PlatformNotSupportedException from SetUnixFileMode. The claim is now
+        // made by the skip rather than by a comment: the fixture is a bash script marked executable,
+        // which is not a thing this platform has.
+        Assert.SkipWhen(OperatingSystem.IsWindows(), "install.sh is a POSIX installer; unix file modes do not exist here.");
+
         using var home = new InstallerTestHome();
         File.WriteAllText(home.ZshrcPath, SeedZshrc);
 
         var fakeBinary = Path.Combine(home.Root, "fake-engram");
         File.WriteAllText(fakeBinary, "#!/bin/bash\ncase \"$1\" in\n  home) echo \"Root=$ENGRAM_HOME\"; exit 0 ;;\n  *) echo 'cannot open database' >&2; exit 1 ;;\nesac\n");
-#pragma warning disable CA1416 // engram only ships for macOS/Linux RIDs; this test never runs on Windows.
+#pragma warning disable CA1416 // Unreachable on Windows: the skip above is what makes this true.
         File.SetUnixFileMode(fakeBinary, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
 #pragma warning restore CA1416
 

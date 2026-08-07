@@ -49,6 +49,38 @@ public static class EngramDatabase
         }
     }
 
+    private static string ConnectionStringFor(string databasePath) =>
+        new SqliteConnectionStringBuilder
+        {
+            DataSource = databasePath,
+            Mode = SqliteOpenMode.ReadWriteCreate,
+        }.ToString();
+
+    /// <summary>Closes pooled connections to one database, so its file can be moved or deleted.</summary>
+    /// <remarks>
+    /// <para>Disposing a <see cref="SqliteConnection"/> returns its handle to a pool rather than
+    /// closing it, so the file stays open afterwards. On Unix that is invisible, because an open
+    /// file can still be unlinked. On Windows it is an <c>IOException</c> on every attempt to remove
+    /// the directory — measured as 346 Windows CI failures, all of them one line of test cleanup and
+    /// none of them a defect in what was being tested.</para>
+    ///
+    /// <para><b>Targeted, never <c>SqliteConnection.ClearAllPools</c>.</b> That method is exactly as
+    /// wide as its name and disposes handles the pool has <i>already handed out</i>, so the code it
+    /// breaks is whatever is between renting a connection and using it — measured in this suite as an
+    /// <c>ObjectDisposedException</c> thrown inside an unrelated test's initializer. Pools are keyed
+    /// by connection string, so clearing only this database's leaves every other one alone.</para>
+    ///
+    /// <para>The string is built here rather than by the caller for the same reason: a pool is
+    /// identified by that exact text, so a caller that reconstructed it would keep working until
+    /// <see cref="Open(string, string?)"/> gained an option, and then release nothing while
+    /// reporting success.</para>
+    /// </remarks>
+    public static void ReleasePooledConnections(string databasePath)
+    {
+        using var handle = new SqliteConnection(ConnectionStringFor(databasePath));
+        SqliteConnection.ClearPool(handle);
+    }
+
     /// <param name="libraryDirectory">
     /// Where to look for <c>sqlite-vec</c>. Omitting it opens a connection that cannot answer a
     /// vector query — correct for a caller with no home to resolve one from, and a trap for any
@@ -63,13 +95,7 @@ public static class EngramDatabase
             Directory.CreateDirectory(directory);
         }
 
-        var connectionString = new SqliteConnectionStringBuilder
-        {
-            DataSource = databasePath,
-            Mode = SqliteOpenMode.ReadWriteCreate,
-        }.ToString();
-
-        var connection = new SqliteConnection(connectionString);
+        var connection = new SqliteConnection(ConnectionStringFor(databasePath));
         connection.Open();
 
         try

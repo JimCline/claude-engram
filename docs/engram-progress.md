@@ -235,19 +235,33 @@ hole, and `doctor` says so out loud in `Diagnostics.cs:632`.
 `coverage` currently keys off lane agreement only. The spec names score mass as a second
 input. D44's reasoning for leaving it: one unmeasured knob is a rule, two are a preference.
 
-### 5. Windows CI is red, and nobody here can reproduce it
+### 5. Windows CI fixes are in, awaiting the run that can verify them
 
-Linux and Windows are supported targets, so these are real bugs rather than noise. The last run had
-339 integration + 9 core + 1 end-to-end failures on `windows-latest`, in two clusters:
+The red run decomposed into four clusters, all diagnosed by reading rather than reproducing —
+there is still no Windows machine here, so the next CI run is the verdict, not a formality:
 
-- **Path separators in assertions.** `Expected: "/explicit/path"`, `Actual: "D:\explicit\path"` —
-  tests asserting on literal forward slashes, not necessarily a defect in the code under test.
-- **`IOException: the process cannot access the file 'engram.db' because it is being used by another
-  process.`** Windows does not allow the delete-while-open that the Unix tests rely on. This one may
-  well be a real portability defect rather than a test defect; it is the cluster to read first.
+- **346 of 358 were one missing line of cleanup.** Disposing a `SqliteConnection` pools the handle
+  rather than closing it; Unix lets an open file be unlinked, Windows turns it into `IOException` on
+  every `SandboxHome` delete. Fixed with `EngramDatabase.ReleasePooledConnections` — **targeted**
+  `ClearPool`, never `ClearAllPools`, which disposes handles already handed out and was measured in
+  this suite as an `ObjectDisposedException` inside an unrelated test's initializer. A guard in
+  `VectorExtensionLoadTests` asserts both halves (released pool goes cold, other pools stay warm),
+  using extension inheritance as the observable; both assertions were proven red independently —
+  once against `ClearAllPools`, once against a connection string that no longer matches `Open`'s,
+  which "succeeds", clears a key nothing was stored under, and releases nothing.
+- **9 core failures were POSIX literals in expectations.** `EngramHomeTests` now normalises the
+  *expected* path through the same `Path.GetFullPath` the resolver uses — stated independently of
+  the input, so a resolver that picks the wrong source or fails to normalise still goes red.
+- **`RepoScannerTests` cleanup** — git marks objects/packs read-only, and Windows refuses to delete
+  read-only files. `TempRepo.Dispose` clears the attribute first.
+- **`InstallerRoundTripTests`** claimed in a comment that it never runs on Windows; nothing enforced
+  that. Now an explicit `Assert.SkipWhen(OperatingSystem.IsWindows(), …)` — install.sh is a POSIX
+  installer.
 
-Neither has been reproduced locally — there is no Windows machine and no container path to one from
-here. CI is the only instrument, so expect a slow loop.
+The pooling fix is the one that **cannot be falsified on macOS or Linux** — both allow the
+delete-while-open that Windows refuses — so Windows CI is its only instrument. Alongside these,
+`DiagnosticsTests` stopped racing for a free port on macOS: the stub server binds port 0 and
+prints what it got.
 
 ### 6. Smaller
 

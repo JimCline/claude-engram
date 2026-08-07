@@ -26,11 +26,35 @@ public sealed class SandboxHome : IDisposable
         Home = home;
     }
 
+    /// <summary>Removes the sandbox, releasing the pooled handles that hold its database open.</summary>
+    /// <remarks>
+    /// <para>Without the release this fails on Windows and only on Windows: disposing a connection
+    /// returns its handle to the pool rather than closing it, Unix lets an open file be unlinked
+    /// anyway, and Windows does not. It was 346 of the 358 Windows CI failures, spread across
+    /// thirty test classes that had nothing in common except this line.</para>
+    ///
+    /// <para>The retry absorbs a transient lock — a virus scanner or indexer holding a file it has
+    /// just seen appear — but the last attempt is deliberately left unguarded. Swallowing the
+    /// failure the way the end-to-end <c>TestHome</c> does would be wrong here: that one tolerates a
+    /// detached backup child still writing, which is a real race with no in-process equivalent, and
+    /// a silent give-up would let this go green on Windows while leaking every sandbox it ever made.
+    /// </para>
+    /// </remarks>
     public void Dispose()
     {
-        if (Directory.Exists(Home.Root))
+        EngramDatabase.ReleasePooledConnections(Home.DatabasePath);
+
+        for (var attempt = 0; Directory.Exists(Home.Root); attempt++)
         {
-            Directory.Delete(Home.Root, recursive: true);
+            try
+            {
+                Directory.Delete(Home.Root, recursive: true);
+                return;
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException && attempt < 9)
+            {
+                Thread.Sleep(50);
+            }
         }
     }
 
