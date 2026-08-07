@@ -11,22 +11,36 @@ superseded, with the reason for every revision recorded.
 The success metric is **tokens the host LLM did not have to load**. Memory is a
 substitute for context, not a supplement to it.
 
-- C# / .NET 10, published as a Native AOT binary plus the SQLite library it loads at
-  runtime — the installer places both, and refuses to finish if the installed copy
-  cannot open a database
+- C# / .NET 10, published as a Native AOT binary plus the native libraries it loads at
+  runtime — SQLite, llama.cpp for local embeddings, and optionally sqlite-vec and the
+  tree-sitter grammars. The installer places them, and refuses to finish if the installed
+  copy cannot open a database
 - SQLite only (WAL), one database at `~/.engram/engram.db`
 - CLI for humans, MCP over local HTTP for agents — `engram start` / `stop` / `status`
-- No containers, no runtime install, and nothing that leaves the machine: the server
-  binds `127.0.0.1` only and rejects any request carrying an `Origin` header
+- No containers and no runtime install. The server binds `127.0.0.1` only and rejects any
+  request carrying an `Origin` header, and with the default local embedding model nothing
+  leaves the machine at all — the one way to change that is choosing a remote embedding
+  endpoint, which sends it the text being embedded
 
-**Status:** M0 complete and M1 in progress. The CLI, the supervised HTTP daemon, the hooks,
-the installer and the Claude Code plugin all exist and are verified against a live Claude
-Code. M0 deliberately shipped with no database — it was an adoption probe measuring whether
-the agent calls the memory tools at all, before anything was built on the assumption that
-it would. The evidence that this was the right order is in D12: a sibling tool on the same
-machine holds 67,936 unstructured notes and zero structured facts, because the structured
-half asks more of the model than the model volunteers. The store now exists, and every
-memory tool writes to it — `engram_digest` was the last that did not.
+**Status:** everything described below is built and runs against a live Claude Code — the
+store, the CLI, the supervised HTTP daemon, the hooks, the installer, the plugin, the code
+index through all three analyzer tiers, and the embedding and vector-search lane. In the
+implementation plan's milestone terms: M0 and M1 are done; M2's integration landed as the
+installer plus the plugin rather than the `engram install claude-code` verb the plan
+sketched, and its `share`/`join` and HTML report were never built; M3's code graph ships.
+M4's machinery exists too, but its gate does not — see below.
+
+**What is not settled** is the question the whole design is bet on: whether the agent
+reaches for memory on its own. M0 deliberately shipped with no database because that was
+the thing to measure first, before anything was built on the assumption. The evidence that
+this was the right order is D12 — a sibling tool on the same machine holds 67,936
+unstructured notes and zero structured facts, because the structured half asks more of the
+model than the model volunteers. Engram's own telemetry now shows 28 writes against 7
+reads, which is spec §1.2's stated cause of death appearing in its own numbers. It is not
+yet a verdict: the session primer delivers memory without any tool call, so recall
+undercounts delivery by construction, and D46 is what makes the difference countable going
+forward. D18 gates M4 on that same evidence, which is why the vector lane is built and
+shipped but nothing has yet been leaned on it.
 
 ## Documents
 
@@ -34,13 +48,15 @@ memory tool writes to it — `engram_digest` was the last that did not.
 |---|---|
 | [`docs/engram-spec.md`](docs/engram-spec.md) | Design specification, Rev D |
 | [`docs/engram-implementation-plan.md`](docs/engram-implementation-plan.md) | Locked decisions, spec errata, milestones, testing strategy |
-| [`docs/engram-schema.sql`](docs/engram-schema.sql) | Canonical M1 database schema |
-| [`docs/engram-path-grammar.md`](docs/engram-path-grammar.md) | How code entities are addressed — versioned, v1 |
+| [`docs/engram-schema.sql`](docs/engram-schema.sql) | Canonical database schema — the authority for database shape, currently v3 |
+| [`docs/engram-path-grammar.md`](docs/engram-path-grammar.md) | How code entities are addressed — versioned, v2 |
 | [`docs/engram-design.html`](docs/engram-design.html) | Visual design sheet |
+| [`docs/engram-progress.md`](docs/engram-progress.md) | What landed recently, what is verified vs. merely argued, and the open work |
 
-Start with the implementation plan — it records twenty-eight decisions (D1–D28) resolving
+Start with the implementation plan — it records forty-nine decisions (D1–D49) resolving
 questions the spec left open, the places where the spec contradicts itself, and for each
-one the argument or measurement that settled it.
+one the argument or measurement that settled it. `CLAUDE.md` holds the invariants that are
+easy to break by accident, most of which were paid for by breaking them.
 
 ## Building
 
@@ -230,8 +246,8 @@ claude --plugin-dir /Users/jimcline/git/repos/engram/plugin
 ### Letting the agent reach memory without a prompt
 
 By default Claude Code asks before every MCP tool call. For a memory system that is not just
-friction — it is a measurement problem. M0 exists to find out whether the model reaches for
-memory on its own, and a dialog in front of each `engram_recall` turns that number into a
+friction — it is a measurement problem. The open question above is whether the model reaches
+for memory on its own, and a dialog in front of each `engram_recall` turns that number into a
 measurement of the dialog: the model calls it less, and the user approves on reflex.
 
 So the installer offers to add six entries to `permissions.allow` in Claude Code's user
@@ -269,10 +285,11 @@ an uninstall, and `engram permissions --remove` says so when it leaves one alone
 
 ### Remembering what the user says
 
-Every other path into memory waits for the model to volunteer a tool call, and the M0
-telemetry says it does not: `remember` fired 0 times in 1 session, `digest` 0 times. A
-fact the user states in passing is lost unless something that is not the model writes it
-down. `UserPromptSubmit` is the only place every message passes through.
+Every other path into memory waits for the model to volunteer a tool call, and the
+telemetry says that is not something to rely on — `engram_recall` has fired 7 times across
+the life of the instance that has been running this repo, every one of them opt-in. A fact
+the user states in passing is lost unless something that is not the model writes it down.
+`UserPromptSubmit` is the only place every message passes through.
 
 The catchable shape is grammatical, not lexical. *"I went to see a Spiderman movie last
 Saturday"* contains no memory keyword at all — matching on "remember" or "always" would
@@ -349,21 +366,84 @@ compaction. `--auto` declines silently unless `[indexing] auto_index_on_session_
 true` is set, a store already exists, and the directory actually is a git checkout — a
 shell that happens to start in `$HOME` must not index `$HOME`.
 
-The default analyzers are tier 0 of D24: managed code in-core, regex-shaped, no external
-dependencies. C# has tier 2: `engram-roslyn`, a separate Roslyn process (D1 keeps Roslyn
-out of the core binary) that the indexer batch-feeds over stdin/stdout. `install.sh`
-builds and installs it automatically into `roslyn/` under the install prefix (with
-`--binary`, pass `--roslyn-dir` to ship a prebuilt one); the indexer finds it there,
-beside the executable, or wherever `ENGRAM_ROSLYN_SIDECAR` points, and `engram doctor`'s
-`code analysis` row says which tier this machine actually has. It
-replaces symbol and import facts with syntax-tree-accurate ones — nested types stop
-masquerading as top-level — while keeping tier 0's file impression, and it formats the
-imports fact byte-identically to tier 0, so swapping tiers rewrites nothing that did not
-change. Anything that stops the sidecar (absent, no runtime, hung) silently leaves that
-run at tier 0. Tree-sitter grammars (tier 1) for the other languages remain future work,
-slotting into the same registry, because the grammar version and analyzer version are
-recorded in the store and a bump forces re-analysis. `engram doctor` reports the index
-per registered repo: how many files, into which project path, how stale.
+Analysis is tiered (D24), and all three tiers now exist. **Tier 0** is the default and the
+floor: managed code in-core, regex-shaped, no external dependencies, every language. **Tier
+1** is tree-sitter, which the installer compiles into `~/.engram/lib` from pinned
+digest-checked sources (D47); it covers TypeScript and JavaScript today, and adding a
+language is a registry row rather than a code change. **Tier 2** is `engram-roslyn`, a
+separate Roslyn process for C# (D1 keeps Roslyn out of the core binary) that the indexer
+batch-feeds over stdin/stdout. `install.sh` builds and installs it automatically into
+`roslyn/` under the install prefix (with `--binary`, pass `--roslyn-dir` to ship a prebuilt
+one); the indexer finds it there, beside the executable, or wherever
+`ENGRAM_ROSLYN_SIDECAR` points.
+
+The deep tiers replace symbol and import facts with syntax-tree-accurate ones — nested
+types stop masquerading as top-level — while keeping tier 0's file impression, and they
+format the imports fact byte-identically to tier 0, so swapping tiers rewrites nothing that
+did not change. Anything that stops a deep tier (absent, no runtime, hung) silently leaves
+that run at tier 0, which is why `engram doctor`'s `code analysis` row reports the tier
+this machine actually has rather than the one it could have. Both the grammar version and
+the analyzer version are recorded per fact, so a bump forces re-analysis instead of leaving
+a store half-addressed: grammar v2 (D48) is what lets a fragment name a nested type or one
+overload of a method (`FactStore.cs#FactStore/Remember`) rather than only a top-level
+declaration. `engram doctor` also reports the index per registered repo: how many files,
+into which project path, how stale.
+
+### Finding it again: lexical, semantic, or both
+
+Recall's default lane is lexical (SQLite FTS5), which is exact and needs nothing installed.
+The second lane is semantic: facts are embedded into vectors and searched by meaning, so
+*"how do we handle retries"* can reach a fact that says nothing about retries. The two are
+fused rather than chosen between, and either can be absent — **recall can never fail
+because the vector lane failed.** Every way that lane can stop returns a reason and an empty
+ranking, so a dead endpoint or a missing extension costs vector hits and nothing else.
+
+Embeddings come from one of four providers, picked during install or with `engram init
+--with-embeddings`: `none`, `local` (a GGUF model loaded in-process through llama.cpp —
+fully offline, and the default), `ollama`, or `openai-compat` (which also answers to
+`openai`, and covers anything serving `POST /v1/embeddings`). `engram model
+list` names the local models with their size and tradeoffs. Two settings fail *silently*
+when wrong and so are handled rather than typed: vector width is asked of the endpoint
+(`engram embed --probe`) instead of guessed from the model name, because a mismatched width
+stores vectors that rank like noise and error nowhere; and changing model or provider needs
+`engram embed --rebuild`, which refuses to run while the server is up rather than racing the
+embedder that server loaded at *its* startup.
+
+`engram explain <query>` shows why recall ranks what it ranks — every lane's contribution,
+what fused, and what got left outside the token budget. It runs the same `VectorLane` recall
+runs rather than a copy of it, so what it describes is the ranker that actually executed.
+
+Recall also reports `coverage`, which counts **lane agreement, not rows**: a fact found by
+several lanes is corroborated, and three or more corroborated facts is `high`. Counting
+candidates instead was a real bug — a weekend-plans query returned seven hits, six of them
+engineering notes reached through a shared word stem, and reported `high`, which is the
+value that tells the model memory has the question covered.
+
+### Keeping it healthy
+
+`engram doctor` checks the whole instance and says what to type about anything wrong —
+resolved binary, server, home contents, schema version, embedding provider, analyzer tier,
+index freshness per repo. It is strictly read-only: it will not migrate, repair, or even
+open a model file, because the most useful thing it can tell you is *your store is a schema
+behind*, and a check that fixed things could not say it. Only genuinely broken things set
+exit 1; a feature you turned off is a supported configuration, not a fault.
+
+Backups are automatic and cheap. Session start snapshots the store if the interval has
+passed *and* authored truth actually changed, so an idle day costs nothing. Each snapshot is
+written with SQLite's `VACUUM INTO` rather than `cp` — a WAL database copied with `cp` was
+measured here to produce not a stale file but an unusable one — and alongside it goes
+`backups/facts.jsonl`, every fact in plain text. That journal is the durable half: a `.db`
+snapshot only restores into the schema version that wrote it, while the journal is addressed
+by path and predicate and replays into any later one. `engram backup replay` is additive and
+idempotent, and will never rewrite or close a fact the target store already has. Both it and
+`restore` are dry-run first, like everything else that rewrites the store.
+
+```
+engram doctor                          # what is wrong, and what to type about it
+engram backup list                     # what snapshots exist
+engram backup restore [name] --apply   # put one back, keeping the current store as a new snapshot
+engram backup replay --apply           # read facts.jsonl into the store, adding what it lacks
+```
 
 ### Slash commands
 
@@ -432,7 +512,12 @@ export ENGRAM_HOME=$(mktemp -d)
 Pick a port other than the default when a real instance is already running, since the
 pid file lives in the home and the two instances would otherwise fight over one port.
 
-`engram start` refuses to touch a port held by anything it cannot prove is itself, and
-proves identity by executable path *and* recorded start time before it signals a
-process — so a recycled pid is forgotten, never killed.
+`engram start` refuses to touch a port held by anything it cannot prove is itself, so a
+recycled pid is forgotten rather than killed. Identity is the pid plus the kernel's start
+token for that pid, and deliberately **not** the executable path (D42): two engram binaries
+legitimately serve one home — an installed one and a freshly built one is what every
+session working on this repo looks like — so keying on the path answers a different
+question, *was this launched from the same file I am?*, and answering it wrongly once left
+a live server running with its pid file deleted. The path is reported when it differs from
+the binary you asked, never enforced.
 

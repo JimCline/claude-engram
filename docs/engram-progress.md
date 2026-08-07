@@ -1,7 +1,7 @@
 # Engram — progress snapshot
 
-**As of 2026-08-07.** Working tree clean, 46 decisions (D1–D46). M3's tier 0 shipped overnight
-on an explicit user override of D6's gate.
+**As of 2026-08-07.** Working tree clean, 49 decisions (D1–D49). M3's tier 0 shipped overnight
+on an explicit user override of D6's gate; tier 1 (D47) and grammar v2 (D48) followed.
 
 This is a handoff, not an authority. `CLAUDE.md` holds the invariants,
 `docs/engram-implementation-plan.md` holds the decisions and their reasoning, and
