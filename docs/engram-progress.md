@@ -444,7 +444,6 @@ path that attached no diagnosis — now 120 s, and it kills the process then rep
 
 - D27's open sub-question.
 - `docs/engram-spec.md:62` "not a Sage replacement" — flagged, unresolved.
-- Nested-git-checkout edge case in the scanner.
 
 ---
 

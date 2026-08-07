@@ -19,6 +19,12 @@ public enum SkipReason
 
     /// <summary>Gone, or unreadable, between listing and inspection.</summary>
     Unreadable,
+
+    /// <summary>
+    /// Another repository's tree — an embedded clone, a submodule, a worktree. Indexed as
+    /// its own repo with its own identity, never as this one's files.
+    /// </summary>
+    EmbeddedCheckout,
 }
 
 public readonly record struct FileVerdict(SkipReason Reason)
@@ -76,7 +82,13 @@ public sealed class IndexFilter
             var info = new FileInfo(fullPath);
             if (!info.Exists)
             {
-                return new FileVerdict(SkipReason.Unreadable);
+                // git lists an embedded checkout as one bare directory entry — measured:
+                // an untracked clone as "inner/" with a trailing slash, a committed
+                // gitlink as the plain path. A directory here is another repository's
+                // tree, not an unreadable file of this one.
+                return Directory.Exists(fullPath)
+                    ? new FileVerdict(SkipReason.EmbeddedCheckout)
+                    : new FileVerdict(SkipReason.Unreadable);
             }
 
             if (info.Length > settings.MaxFileBytes)

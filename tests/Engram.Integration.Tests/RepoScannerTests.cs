@@ -324,6 +324,69 @@ public class RepoScannerTests
         Assert.Equal(1, scan.Skipped[SkipReason.Unreadable]);
     }
 
+    /// <summary>
+    /// git lists an embedded checkout as one bare directory entry — measured: an untracked
+    /// clone as <c>inner/</c> with a trailing slash, a committed gitlink as the plain path.
+    /// Both are another repository's tree; counting them as unreadable files of this one
+    /// was a lie in the report.
+    /// </summary>
+    [Fact]
+    public void Scan_OnAListedEntryThatIsADirectory_CountsAnEmbeddedCheckout()
+    {
+        using var repo = new TempRepo();
+        repo.Write("app.cs", "class A;\n");
+        repo.Write("cloned/lib.cs", "class B;\n");
+        repo.Write("linked/lib.cs", "class C;\n");
+
+        var scan = RepoScanner.Scan(repo.Root, Settings, new StubLister("app.cs", "cloned/", "linked"));
+
+        Assert.Equal(["app.cs"], scan.Files);
+        Assert.Equal(2, scan.Skipped[SkipReason.EmbeddedCheckout]);
+        Assert.Equal(0, scan.Skipped.GetValueOrDefault(SkipReason.Unreadable));
+    }
+
+    [Fact]
+    public void Scan_InACheckout_ReportsAnEmbeddedCheckoutRatherThanIndexingIt()
+    {
+        using var repo = new TempRepo();
+        Assert.SkipUnless(repo.InitRepo(), "git is not available on this machine.");
+
+        repo.Write("app.cs", "class A;\n");
+        Assert.True(repo.Git("init", "--quiet", "embedded"));
+        repo.Write("embedded/lib.cs", "class B;\n");
+
+        var scan = RepoScanner.Scan(repo.Root, Settings with { Ignore = [] });
+
+        Assert.Equal(ScanSource.Git, scan.Source);
+        Assert.Contains("app.cs", scan.Files);
+        Assert.DoesNotContain(scan.Files, file => file.StartsWith("embedded", StringComparison.Ordinal));
+        Assert.Equal(1, scan.Skipped[SkipReason.EmbeddedCheckout]);
+    }
+
+    /// <summary>
+    /// The walk stops at a checkout boundary too: those files belong to the inner repo's
+    /// own identity, and indexing them here would double them under the wrong paths. The
+    /// marker is <c>.git</c> in either shape — a directory in a plain clone, a file in a
+    /// worktree or submodule — and it counts once, matching what git reports for the same
+    /// tree.
+    /// </summary>
+    [Fact]
+    public void Scan_WalkingANonCheckout_StopsAtAnEmbeddedCheckoutBoundary()
+    {
+        using var repo = new TempRepo();
+        repo.Write("notes.md", "# notes\n");
+        repo.Write("cloned/.git/HEAD", "ref: refs/heads/main\n");
+        repo.Write("cloned/lib.cs", "class B;\n");
+        repo.Write("linked/.git", "gitdir: /elsewhere/worktrees/linked\n");
+        repo.Write("linked/lib.cs", "class C;\n");
+
+        var scan = RepoScanner.Scan(repo.Root, Settings with { Ignore = [] }, new NotACheckout());
+
+        Assert.Equal(ScanSource.DirectoryWalk, scan.Source);
+        Assert.Equal(["notes.md"], scan.Files);
+        Assert.Equal(2, scan.Skipped[SkipReason.EmbeddedCheckout]);
+    }
+
     [Fact]
     public void Scan_ReturnsFilesInAStableOrder()
     {

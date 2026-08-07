@@ -74,10 +74,10 @@ public static class RepoScanner
 
         var listed = settings.UseGit ? (lister ?? new GitFileLister()).List(full) : null;
         var source = listed is null ? ScanSource.DirectoryWalk : ScanSource.Git;
-        var candidates = listed ?? Walk(full, filter);
 
         var files = new List<string>();
         var skipped = new Dictionary<SkipReason, int>();
+        var candidates = listed ?? Walk(full, filter, skipped);
 
         foreach (var relative in candidates.Distinct(StringComparer.Ordinal))
         {
@@ -101,11 +101,17 @@ public static class RepoScanner
     /// The fallback for a directory that is not a checkout.
     /// </summary>
     /// <remarks>
-    /// Pruned at the directory rather than filtered at the file, so an ignored <c>node_modules</c>
-    /// costs one pattern match instead of a hundred thousand — which is the difference between a
-    /// scan that finishes and one that does not.
+    /// <para>Pruned at the directory rather than filtered at the file, so an ignored
+    /// <c>node_modules</c> costs one pattern match instead of a hundred thousand — which is the
+    /// difference between a scan that finishes and one that does not.</para>
+    ///
+    /// <para>It stops at a checkout boundary: a subdirectory holding <c>.git</c> — a directory
+    /// in a plain clone, a file in a worktree or submodule — is another repository, whose files
+    /// belong to its own identity, and it counts once rather than per file, matching what
+    /// <c>git ls-files</c> reports for the same shape. A directory <i>named</i> <c>.git</c> is
+    /// the scanned root's own plumbing and is skipped without comment.</para>
     /// </remarks>
-    private static List<string> Walk(string root, IndexFilter filter)
+    private static List<string> Walk(string root, IndexFilter filter, Dictionary<SkipReason, int> skipped)
     {
         var found = new List<string>();
         var pending = new Stack<string>();
@@ -131,13 +137,27 @@ public static class RepoScanner
 
                 if (Directory.Exists(entry))
                 {
-                    // Match the directory both bare and with a trailing slash, so "**/bin/**"
-                    // prunes "bin" itself rather than only the files inside it.
-                    if (!filter.IsIgnored(relative) && !filter.IsIgnored(relative + "/"))
+                    if (Path.GetFileName(entry) == ".git")
                     {
-                        pending.Push(entry);
+                        continue;
                     }
 
+                    // Match the directory both bare and with a trailing slash, so "**/bin/**"
+                    // prunes "bin" itself rather than only the files inside it.
+                    if (filter.IsIgnored(relative) || filter.IsIgnored(relative + "/"))
+                    {
+                        continue;
+                    }
+
+                    var gitMarker = Path.Combine(entry, ".git");
+                    if (Directory.Exists(gitMarker) || File.Exists(gitMarker))
+                    {
+                        skipped[SkipReason.EmbeddedCheckout] =
+                            skipped.GetValueOrDefault(SkipReason.EmbeddedCheckout) + 1;
+                        continue;
+                    }
+
+                    pending.Push(entry);
                     continue;
                 }
 
