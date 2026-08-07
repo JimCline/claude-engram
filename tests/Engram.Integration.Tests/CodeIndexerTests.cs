@@ -148,6 +148,37 @@ public class CodeIndexerTests
     }
 
     [Fact]
+    public void Drain_MatchesAnEntrySpooledThroughASymlinkedSpellingOfTheRepo()
+    {
+        using var sandbox = new SandboxHome();
+        var repo = CreateFixture(sandbox);
+        using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
+        Index(connection, sandbox, repo, apply: true);
+
+        // macOS spells temp two ways (/tmp vs /private/tmp) and a hook records whichever
+        // the tool used. Found on the published binary: the entry drained as "another
+        // repo's" and leaked in the queue forever.
+        var link = Path.Combine(sandbox.Home.Root, "via-link");
+        try
+        {
+            Directory.CreateSymbolicLink(link, repo);
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or PlatformNotSupportedException)
+        {
+            return;
+        }
+
+        File.AppendAllText(Path.Combine(repo, "README.md"), "\nEdited through the truth.\n");
+        Spool(sandbox, Path.Combine(link, "README.md"));
+
+        var report = Index(connection, sandbox, repo, apply: true, drain: true);
+
+        Assert.Equal(1, report.Analyzed);
+        Assert.Equal(1, report.QueueConsumed);
+        Assert.Empty(Directory.GetFiles(sandbox.Home.QueueDir));
+    }
+
+    [Fact]
     public void PathlessQueueEntry_EscalatesADrainToAFullScan()
     {
         using var sandbox = new SandboxHome();
@@ -237,6 +268,66 @@ public class CodeIndexerTests
             fact.SubjectPath == filePath && fact.Predicate == "about");
         Assert.Equal("the load-bearing fixture, per the agent", live.Body);
         Assert.False(live.Regenerable);
+    }
+
+    [Fact]
+    public void UnstagedEdit_InARealCheckout_IsStillDetected()
+    {
+        using var sandbox = new SandboxHome();
+        var repo = CreateFixture(sandbox);
+        if (!Git(repo, "init", "-q")
+            || !Git(repo, "add", "-A")
+            || !Git(repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "fixture"))
+        {
+            return;
+        }
+
+        using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
+        Index(connection, sandbox, repo, apply: true);
+
+        // Edited and NOT staged — the state every file is in the moment the hook fires.
+        // ls-files -s still reports the committed blob for it; found on the published
+        // binary as "0 analyzed, 1 unchanged" right after an edit.
+        File.WriteAllText(
+            Path.Combine(repo, "Program.cs"),
+            ProgramCs.Replace("public enum Gear { Low }", "public enum Sprocket { Fine }"));
+
+        var report = Index(connection, sandbox, repo, apply: true);
+
+        Assert.Equal(1, report.Analyzed);
+        Assert.Contains(CodeFacts(connection), fact =>
+            fact.SubjectPath.EndsWith("#Sprocket", StringComparison.Ordinal));
+    }
+
+    private static bool Git(string directory, params string[] args)
+    {
+        try
+        {
+            var info = new System.Diagnostics.ProcessStartInfo("git")
+            {
+                WorkingDirectory = directory,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+            };
+            foreach (var argument in args)
+            {
+                info.ArgumentList.Add(argument);
+            }
+
+            using var process = System.Diagnostics.Process.Start(info);
+            if (process is null)
+            {
+                return false;
+            }
+
+            process.WaitForExit(10_000);
+            return process.HasExited && process.ExitCode == 0;
+        }
+        catch (Exception e) when (e is System.ComponentModel.Win32Exception or InvalidOperationException)
+        {
+            return false;
+        }
     }
 
     private static string CreateFixture(SandboxHome sandbox)

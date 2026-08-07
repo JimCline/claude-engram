@@ -581,9 +581,13 @@ public static class CodeIndexer
     }
 
     /// <summary>
-    /// Blob hashes for every tracked file in one <c>git</c> invocation. Content is hashed
-    /// directly only for untracked files — mtime is never consulted, because it changes
-    /// under checkouts and copies that change nothing.
+    /// Blob hashes for every clean tracked file in two <c>git</c> invocations. A file that
+    /// is dirty in the working tree, or untracked, falls through to a content hash —
+    /// <c>ls-files -s</c> reports the staged blob, and the staged blob is exactly what an
+    /// unstaged edit does not change. Found on the published binary: the hook spooled an
+    /// edit and the drain called the file unchanged, because the edit was not staged.
+    /// mtime is never consulted either way (D38's cousin: it moves under checkouts and
+    /// copies that change nothing).
     /// </summary>
     private static Dictionary<string, string> GitBlobShas(string root)
     {
@@ -606,6 +610,28 @@ public static class CodeIndexer
             if (parts.Length >= 2)
             {
                 shas[record[(tab + 1)..]] = parts[1];
+            }
+        }
+
+        var status = GitFileLister.Run(root, "status", "--porcelain", "-z", "--untracked-files=all");
+        if (status is not null)
+        {
+            var records = status.Split('\0', StringSplitOptions.RemoveEmptyEntries);
+            for (var i = 0; i < records.Length; i++)
+            {
+                var record = records[i];
+                if (record.Length < 4)
+                {
+                    continue;
+                }
+
+                shas.Remove(record[3..]);
+
+                // A rename record carries the old path as its own following record.
+                if (record[0] is 'R' or 'C')
+                {
+                    i++;
+                }
             }
         }
 

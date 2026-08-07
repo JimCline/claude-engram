@@ -68,18 +68,24 @@ public sealed class SpoolQueue
     public int Pathless => entries.Count(entry => entry.Kind == Kind.PathlessEntry);
 
     /// <summary>Repo-relative paths of the entries this root can act on.</summary>
-    public IReadOnlyList<string> Under(string root) =>
-        entries
-            .Where(entry => entry.Kind == Kind.Pathed && Relativize(root, entry.Path!) is not null)
-            .Select(entry => Relativize(root, entry.Path!)!)
+    public IReadOnlyList<string> Under(string root)
+    {
+        var canonicalRoot = PathCanonicalizer.Canonical(root);
+        return entries
+            .Where(entry => entry.Kind == Kind.Pathed && Relativize(canonicalRoot, entry.Path!) is not null)
+            .Select(entry => Relativize(canonicalRoot, entry.Path!)!)
             .Distinct(StringComparer.Ordinal)
             .ToList();
+    }
 
     /// <summary>Entries a run rooted here cannot consume: other repos' edits stay queued.</summary>
-    public int LeftBehind(string root) =>
-        entries.Count(entry =>
+    public int LeftBehind(string root)
+    {
+        var canonicalRoot = PathCanonicalizer.Canonical(root);
+        return entries.Count(entry =>
             entry.Kind == Kind.Unreadable
-            || (entry.Kind == Kind.Pathed && Relativize(root, entry.Path!) is null));
+            || (entry.Kind == Kind.Pathed && Relativize(canonicalRoot, entry.Path!) is null));
+    }
 
     /// <summary>
     /// Deletes what this run made redundant, and only that. Call after the work has
@@ -88,12 +94,13 @@ public sealed class SpoolQueue
     public int Consume(string root, bool consumePathless)
     {
         var consumed = 0;
+        var canonicalRoot = PathCanonicalizer.Canonical(root);
 
         foreach (var entry in entries)
         {
             var consumable = entry.Kind switch
             {
-                Kind.Pathed => Relativize(root, entry.Path!) is not null,
+                Kind.Pathed => Relativize(canonicalRoot, entry.Path!) is not null,
                 Kind.PathlessEntry => consumePathless,
                 Kind.Garbage => true,
                 _ => false,
@@ -117,14 +124,17 @@ public sealed class SpoolQueue
         return consumed;
     }
 
-    private static string? Relativize(string root, string path)
+    private static string? Relativize(string canonicalRoot, string path)
     {
         if (!Path.IsPathRooted(path))
         {
             return null;
         }
 
-        var relative = Path.GetRelativePath(root, path);
+        // Both sides canonical, or /tmp and /private/tmp never meet: the hook records the
+        // spelling the tool used, git reports the resolved one, and an entry that compares
+        // as another repo's is an entry that never drains.
+        var relative = Path.GetRelativePath(canonicalRoot, PathCanonicalizer.Canonical(path));
         if (relative == "." || relative.StartsWith("..", StringComparison.Ordinal) || Path.IsPathRooted(relative))
         {
             return null;
