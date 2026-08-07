@@ -39,7 +39,7 @@ public class PermissionsCommandTests
     }
 
     [Fact]
-    public void ApplyGrantsTheFourToolsAndNothingElse()
+    public void ApplyGrantsTheReadAndWriteToolsAndNothingThatCloses()
     {
         Assert.SkipUnless(EndToEndBinary.Path is not null, EndToEndBinary.SkipReason);
 
@@ -50,15 +50,21 @@ public class PermissionsCommandTests
             home.Root, "permissions", "--settings", settings, "--apply");
 
         Assert.Equal(0, exitCode);
-        Assert.Contains("Granted 4 tool(s).", stdout);
+        Assert.Contains("Granted 6 tool(s).", stdout);
 
         var allowed = AllowListOf(settings);
-        Assert.Equal(4, allowed.Count);
+        Assert.Equal(6, allowed.Count);
         Assert.Contains("mcp__plugin_engram_engram__engram_recall", allowed);
         Assert.Contains("mcp__plugin_engram_engram__engram_remember", allowed);
         Assert.Contains("mcp__plugin_engram_engram__engram_digest", allowed);
         Assert.Contains("mcp__plugin_engram_engram__engram_status", allowed);
+        Assert.Contains("mcp__plugin_engram_engram__engram_browse", allowed);
+        Assert.Contains("mcp__plugin_engram_engram__engram_expand", allowed);
+
+        // Closing a belief costs a confirmation prompt, so neither retraction nor
+        // revision may ride the unprompted grant.
         Assert.DoesNotContain("mcp__plugin_engram_engram__engram_forget", allowed);
+        Assert.DoesNotContain("mcp__plugin_engram_engram__engram_revise", allowed);
     }
 
     [Fact]
@@ -79,9 +85,10 @@ public class PermissionsCommandTests
             }
             """);
 
+        // The user's two entries plus the grant, minus the digest they already had.
         var (grantExit, _, _) = EngramProcess.Run(home.Root, "permissions", "--settings", settings, "--apply");
         Assert.Equal(0, grantExit);
-        Assert.Equal(5, AllowListOf(settings).Count);
+        Assert.Equal(7, AllowListOf(settings).Count);
 
         var (revokeExit, revokeOut, _) = EngramProcess.Run(
             home.Root, "permissions", "--settings", settings, "--remove", "--apply");
