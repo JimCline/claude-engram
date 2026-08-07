@@ -15,13 +15,17 @@ Usage: scripts/install.sh [options]
                        Use this local copy of Microsoft's dotnet-install.sh instead of
                        downloading it (air-gapped machines)
   --no-path            Do not modify any shell startup file
-  --with-plugin        Also register the Claude Code marketplace and install the plugin
-  --with-tree-sitter   Also compile the tree-sitter grammars for tier-1 TS/JS analysis
-                       (needs a C compiler and network access)
+  --no-plugin          Skip registering the Claude Code marketplace and plugin
+  --no-tree-sitter     Skip compiling the tree-sitter grammars (tier-1 TS/JS analysis)
+  --no-sqlite-vec      Skip the sqlite-vec vector-search extension
   --grant-permissions  Allow Claude Code to call Engram's memory tools without prompting
   --no-grant-permissions
                        Never grant them, and do not ask
   -h, --help           Show usage
+
+Every optional component installs by default. An interactive run asks one question up
+front — take those defaults, or decide each step at its turn; the --no-* flags pin a
+step off without being asked, and the --with-* spellings still pin one on.
 
 No .NET SDK is required up front: when none of the right version is found, one is
 downloaded privately into the SDK directory, and nothing outside it is touched.
@@ -35,8 +39,11 @@ roslyn_override=""
 sdk_dir=""
 dotnet_install_override=""
 no_path=false
-with_plugin=false
-with_tree_sitter=false
+# Optional components: empty means undecided — auto mode resolves it to true, "each"
+# mode asks at the step itself, and a flag pins it here so nobody is asked about it.
+with_plugin=""
+with_tree_sitter=""
+with_sqlite_vec=""
 # ask | yes | no. "ask" only ever asks a terminal; a non-interactive run declines, because
 # silence from a pipe is not consent to edit somebody's settings file.
 grant_permissions=ask
@@ -95,8 +102,24 @@ while [ $# -gt 0 ]; do
             with_plugin=true
             shift
             ;;
+        --no-plugin)
+            with_plugin=false
+            shift
+            ;;
         --with-tree-sitter)
             with_tree_sitter=true
+            shift
+            ;;
+        --no-tree-sitter)
+            with_tree_sitter=false
+            shift
+            ;;
+        --with-sqlite-vec)
+            with_sqlite_vec=true
+            shift
+            ;;
+        --no-sqlite-vec)
+            with_sqlite_vec=false
             shift
             ;;
         --grant-permissions)
@@ -309,6 +332,51 @@ toolchain_problem() {
             ;;
     esac
 }
+
+# --- 0. Install mode ---
+
+# Clone to running with one script and no thinking: every optional component defaults to
+# on, and the one question an interactive run asks up front is whether to take those
+# defaults or decide each step at its turn. A piped run takes the defaults unasked — with
+# one deliberate exception, the MCP permission grant, which edits a file Engram does not
+# own and keeps section 10's rule that silence from a pipe is not consent.
+install_mode=auto
+if $apply && [ -t 0 ] && [ -r /dev/tty ]; then
+    if [ -z "$with_plugin" ] || [ -z "$with_tree_sitter" ] || [ -z "$with_sqlite_vec" ]; then
+        echo "Optional components, all installed by default: the Claude Code plugin,"
+        echo "tree-sitter grammars (TypeScript/JavaScript indexing), sqlite-vec (vector"
+        echo "search), and Claude Code tool permissions."
+        printf 'Install everything with the defaults, or ask about each step? [E]verything/[a]sk: '
+        mode_reply=""
+        read -r mode_reply < /dev/tty || true
+        case "$mode_reply" in
+            [aA]*) install_mode=each ;;
+        esac
+    fi
+fi
+
+# "each" mode only: one [Y/n] question, asked at the step it concerns, defaulting to yes.
+ask_step() {
+    printf '%s [Y/n] ' "$1"
+    local reply=""
+    read -r reply < /dev/tty || true
+    case "$reply" in
+        [nN]*) return 1 ;;
+        *) return 0 ;;
+    esac
+}
+
+if [ "$install_mode" = auto ]; then
+    [ -n "$with_plugin" ] || with_plugin=true
+    [ -n "$with_tree_sitter" ] || with_tree_sitter=true
+    [ -n "$with_sqlite_vec" ] || with_sqlite_vec=true
+    # Choosing "everything" at a terminal is the consent the grant needs, given once up
+    # front. A piped run never reaches this: grant_permissions stays "ask" and section 10
+    # declines it, exactly as before.
+    if $apply && [ -t 0 ] && [ -r /dev/tty ] && [ "$grant_permissions" = ask ]; then
+        grant_permissions=yes
+    fi
+fi
 
 # --- 1. Preflight ---
 
@@ -728,10 +796,17 @@ else
     would "run $target init to initialise the Engram home (idempotent, will not overwrite an existing config)"
 fi
 
-# --- 9. --with-plugin ---
+# --- 9. Claude Code plugin ---
 
-# installed | no-claude | failed. Only read when --with-plugin was given.
+# installed | no-claude | failed. Only read when the step runs.
 plugin_result=no-claude
+if [ "$install_mode" = each ] && [ -z "$with_plugin" ]; then
+    if ask_step "Register the Claude Code marketplace and install the plugin?"; then
+        with_plugin=true
+    else
+        with_plugin=false
+    fi
+fi
 if $with_plugin; then
     if $apply; then
         if command -v claude >/dev/null 2>&1; then
@@ -760,12 +835,19 @@ if $with_plugin; then
     fi
 fi
 
-# --- 9b. --with-tree-sitter ---
+# --- 9b. tree-sitter grammars ---
 
-# installed | no-cc | failed. Only read when --with-tree-sitter was given. Same set -e
-# shape as the plugin step: by now the install proper is durable, so a failed optional
-# step reports through the summary instead of aborting it.
+# installed | no-cc | failed. Only read when the step runs. Same set -e shape as the
+# plugin step: by now the install proper is durable, so a failed optional step reports
+# through the summary instead of aborting it.
 tree_sitter_result=no-cc
+if [ "$install_mode" = each ] && [ -z "$with_tree_sitter" ]; then
+    if ask_step "Compile the tree-sitter grammars for TypeScript/JavaScript indexing?"; then
+        with_tree_sitter=true
+    else
+        with_tree_sitter=false
+    fi
+fi
 if $with_tree_sitter; then
     if $apply; then
         if command -v cc >/dev/null 2>&1; then
@@ -783,6 +865,32 @@ if $with_tree_sitter; then
         fi
     else
         would "compile the tree-sitter core and grammars via $script_dir/fetch-tree-sitter.sh"
+    fi
+fi
+
+# --- 9c. sqlite-vec ---
+
+# installed | failed. Only read when the step runs; same set -e shape as 9 and 9b.
+sqlite_vec_result=failed
+if [ "$install_mode" = each ] && [ -z "$with_sqlite_vec" ]; then
+    if ask_step "Install the sqlite-vec vector-search extension?"; then
+        with_sqlite_vec=true
+    else
+        with_sqlite_vec=false
+    fi
+fi
+if $with_sqlite_vec; then
+    if $apply; then
+        say "Installing the sqlite-vec extension ..."
+        if "$script_dir/fetch-vec0.sh"; then
+            sqlite_vec_result=installed
+        else
+            sqlite_vec_result=failed
+            say "the sqlite-vec step failed; run it yourself to finish it:"
+            say "  $script_dir/fetch-vec0.sh"
+        fi
+    else
+        would "install the sqlite-vec extension via $script_dir/fetch-vec0.sh"
     fi
 fi
 
@@ -804,16 +912,16 @@ if [ "$grant_permissions" != no ]; then
     elif [ -t 0 ] && [ -r /dev/tty ]; then
         echo
         "$target" permissions || true
-        printf 'Grant these now? [y/N] '
+        printf 'Grant these now? [Y/n] '
         reply=""
         read -r reply < /dev/tty || true
         case "$reply" in
-            [yY]*)
-                "$target" permissions --apply && grant_result=granted
-                ;;
-            *)
+            [nN]*)
                 grant_result=declined
                 say "Left Claude Code's settings alone. Grant later with: engram permissions --apply"
+                ;;
+            *)
+                "$target" permissions --apply && grant_result=granted
                 ;;
         esac
     else
@@ -864,6 +972,8 @@ if $apply; then
                 echo "  Claude Code plugin: NOT installed (claude reported an error); run the commands printed above"
                 ;;
         esac
+    else
+        echo "  Claude Code plugin: skipped"
     fi
     if $with_tree_sitter; then
         case "$tree_sitter_result" in
@@ -877,6 +987,20 @@ if $apply; then
                 echo "  Tier-1 TS/JS analysis: NOT installed (fetch or compile failed); run scripts/fetch-tree-sitter.sh to retry"
                 ;;
         esac
+    else
+        echo "  Tier-1 TS/JS analysis: skipped"
+    fi
+    if $with_sqlite_vec; then
+        case "$sqlite_vec_result" in
+            installed)
+                echo "  Vector search (sqlite-vec): extension installed"
+                ;;
+            failed)
+                echo "  Vector search (sqlite-vec): NOT installed (fetch failed); run scripts/fetch-vec0.sh to retry"
+                ;;
+        esac
+    else
+        echo "  Vector search (sqlite-vec): skipped"
     fi
     case "$grant_result" in
         granted)

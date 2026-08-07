@@ -3,9 +3,10 @@ using static Engram.EndToEnd.Tests.InstallerHarness;
 namespace Engram.EndToEnd.Tests;
 
 /// <summary>
-/// <c>install.sh --with-tree-sitter</c> (D47), held to the rule the plugin step paid to
-/// learn: an optional step that fails reports through the summary and never discards the
-/// finished installation around it.
+/// The tree-sitter step (D47), which installs by default and opts out with
+/// <c>--no-tree-sitter</c>, held to the rule the plugin step paid to learn: an optional
+/// step that fails reports through the summary and never discards the finished
+/// installation around it.
 /// </summary>
 public class InstallerTreeSitterTests
 {
@@ -13,17 +14,17 @@ public class InstallerTreeSitterTests
         RunScript(
             "install.sh",
             home.Root,
-            ["--binary", EndToEndBinary.Path!, "--prefix", home.Prefix, .. extra]);
+            ["--binary", EndToEndBinary.Path!, "--prefix", home.Prefix, "--no-plugin", "--no-sqlite-vec", .. extra]);
 
     [Fact]
-    public void WithTreeSitter_DryRun_PrintsTheStepAndFetchesNothing()
+    public void ByDefault_DryRun_PrintsTheStepAndFetchesNothing()
     {
         Assert.SkipUnless(EndToEndBinary.Path is not null, EndToEndBinary.SkipReason);
 
         using var home = new InstallerTestHome();
         var log = home.StubCurl();
 
-        var (exitCode, stdout, stderr) = Install(home, "--with-tree-sitter");
+        var (exitCode, stdout, stderr) = Install(home);
 
         Assert.True(exitCode == 0, $"dry run failed: {stderr}");
         Assert.Contains("would: compile the tree-sitter core and grammars", stdout, StringComparison.Ordinal);
@@ -31,18 +32,18 @@ public class InstallerTreeSitterTests
     }
 
     [Fact]
-    public void WithoutTheFlag_TheInstallerNeverMentionsTreeSitterAndNeverFetches()
+    public void WithNoTreeSitter_TheInstallerSkipsTheStepAndNothingFetches()
     {
         Assert.SkipUnless(EndToEndBinary.Path is not null, EndToEndBinary.SkipReason);
 
         using var home = new InstallerTestHome();
         var log = home.StubCurl();
 
-        var (exitCode, stdout, stderr) = Install(home, "--apply");
+        var (exitCode, stdout, stderr) = Install(home, "--apply", "--no-tree-sitter");
 
         Assert.True(exitCode == 0, $"install failed: {stderr}");
-        Assert.False(File.Exists(log), "nothing may fetch unless --with-tree-sitter was given");
-        Assert.DoesNotContain("tree-sitter", stdout, StringComparison.Ordinal);
+        Assert.False(File.Exists(log), "nothing may fetch under --no-tree-sitter");
+        Assert.Contains("Tier-1 TS/JS analysis: skipped", stdout, StringComparison.Ordinal);
     }
 
     /// <summary>
@@ -56,18 +57,19 @@ public class InstallerTreeSitterTests
     /// failure leaves no half-written library for <c>TreeSitter.Locate</c> to find.
     /// </remarks>
     [Fact]
-    public void WithTreeSitter_WhenTheFetchFails_TheInstallStillFinishesAndSaysWhatBroke()
+    public void ByDefault_WhenTheFetchFails_TheInstallStillFinishesAndSaysWhatBroke()
     {
         Assert.SkipUnless(EndToEndBinary.Path is not null, EndToEndBinary.SkipReason);
 
         using var home = new InstallerTestHome();
         var log = home.StubCurl();
 
-        var (exitCode, stdout, stderr) = Install(home, "--apply", "--with-tree-sitter", "--grant-permissions");
+        var (exitCode, stdout, stderr) = Install(home, "--apply", "--grant-permissions");
 
         Assert.True(exitCode == 0, $"a failed tree-sitter step must not fail the install: {stderr}");
 
-        // It got far enough to fetch, so the failure is the stub's, not a skipped step.
+        // It got far enough to fetch — by default, with no flag asking for it — so the
+        // failure is the stub's, not a skipped step.
         Assert.True(File.Exists(log), "the step should have invoked curl");
 
         // The summary ran at all, which is what set -e would have destroyed.

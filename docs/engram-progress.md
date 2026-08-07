@@ -375,8 +375,8 @@ The supply question that consumed a whole session for llama.cpp was settled in o
 here because the probe had already measured everything D47 needed: grammars arrive as pinned,
 digest-checked C source and compile at install (`scripts/fetch-tree-sitter.sh`, ~3 s for the
 core and three grammars), because upstream ships no binaries and the toolchain is already a
-prerequisite of building Engram at all. The runtime never fetches. `--with-tree-sitter` wires
-it into `install.sh` as an optional step in `--with-plugin`'s exact tri-state shape.
+prerequisite of building Engram at all. The runtime never fetches. The installer compiles
+the grammars by default — see the install-everything entry below; `--no-tree-sitter` opts out.
 
 The shape of the thing: a hand-rolled binding (`TreeSitter.cs`, 19 function pointers through
 `NativeLibrary.GetExport`, AOT-safe by construction), extraction queries carried as registry-row
@@ -402,6 +402,31 @@ its `if` condition let `set -e` abort a finished install, which is the exact def
 `--with-plugin` once shipped. Final state: the release-tag pins were proven by running the
 script into a scratch home and pointing the conformance suite at its own output — the probe's
 grammars were repo HEADs, so that run is the evidence the tags parse identically.
+
+### install.sh installs everything by default, and asks exactly one question
+
+Jim's directive, and it is a contract, not a preference: **clone to running with one script,
+no thinking required.** Every optional component — the Claude Code plugin, the tree-sitter
+grammars, the sqlite-vec extension, the MCP tool permissions — installs by default. An
+interactive `--apply` asks once, up front: take the defaults (Enter) or be asked a `[Y/n]`
+at each step; `--no-plugin`, `--no-tree-sitter`, `--no-sqlite-vec` pin a step off without
+being asked, and the `--with-*` spellings still pin one on. A piped run takes the defaults
+unasked, with one deliberate exception carried over intact: the permission grant edits a
+file Engram does not own, and silence from a pipe is still not consent — at a terminal,
+choosing "everything" up front *is* that consent, so auto mode grants without re-asking.
+
+The reasoning is D41's, applied to the installer: an opt-in flag nobody types is a tier
+that does not exist in the field, and M4's adoption gate measures defaults, not flags.
+sqlite-vec is the proof case — `fetch-vec0.sh` existed but nothing invoked it, so the
+vector lane's extension only reached machines whose owner read the docs; it is now section
+9c in the same tri-state shape as the plugin and tree-sitter steps, and that shape was
+falsified again (invocation moved out of its `if`, the fetch-fails test went red, restored).
+Every apply-mode e2e call site gained `--no-tree-sitter --no-sqlite-vec` so no test touches
+the network; the per-step tests pin the *other* two steps off and stub curl for their own.
+
+Debt made explicit rather than hidden: `install.ps1` now lags behind — it still has
+`-WithPlugin` as opt-in and no tree-sitter, sqlite-vec, or mode question at all. That
+belongs to the existing ps1-parity item and needs a Windows machine to land honestly.
 
 ---
 

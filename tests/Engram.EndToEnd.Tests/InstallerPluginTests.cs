@@ -3,13 +3,15 @@ using static Engram.EndToEnd.Tests.InstallerHarness;
 namespace Engram.EndToEnd.Tests;
 
 /// <summary>
-/// <c>install.sh --with-plugin</c>, which had no test at all.
+/// The Claude Code plugin step, which installs by default and opts out with
+/// <c>--no-plugin</c>.
 /// </summary>
 /// <remarks>
 /// The installer is the first thing anyone runs, so an untested branch in it is the worst place to
-/// have one. This branch is two <c>claude</c> invocations, which means the only way to assert it
+/// have one. This step is two <c>claude</c> invocations, which means the only way to assert it
 /// did the right thing is to be the <c>claude</c> it invoked — the harness pins PATH to the
-/// sandboxed home, so a stand-in there is found and the real one never is.
+/// sandboxed home, so a stand-in there is found and the real one never is. The other two
+/// default-on steps are pinned off here so nothing in these tests reaches the network.
 /// </remarks>
 public class InstallerPluginTests
 {
@@ -17,17 +19,17 @@ public class InstallerPluginTests
         RunScript(
             "install.sh",
             home.Root,
-            ["--binary", EndToEndBinary.Path!, "--prefix", home.Prefix, .. extra]);
+            ["--binary", EndToEndBinary.Path!, "--prefix", home.Prefix, "--no-tree-sitter", "--no-sqlite-vec", .. extra]);
 
     [Fact]
-    public void WithPlugin_DryRun_PrintsBothCommandsAndRunsNeither()
+    public void DryRun_PrintsBothCommandsAndRunsNeither()
     {
         Assert.SkipUnless(EndToEndBinary.Path is not null, EndToEndBinary.SkipReason);
 
         using var home = new InstallerTestHome();
         var log = home.StubClaude();
 
-        var (exitCode, stdout, stderr) = Install(home, "--with-plugin");
+        var (exitCode, stdout, stderr) = Install(home);
 
         Assert.True(exitCode == 0, $"dry run failed: {stderr}");
         Assert.Contains($"claude plugin marketplace add {RepoRoot}", stdout, StringComparison.Ordinal);
@@ -35,15 +37,19 @@ public class InstallerPluginTests
         Assert.False(File.Exists(log), "a dry run must not invoke claude");
     }
 
+    /// <summary>
+    /// No flag at all is the install everyone runs, so it is the one that must register
+    /// the plugin — a default that needs a flag to happen is not a default.
+    /// </summary>
     [Fact]
-    public void WithPlugin_Apply_RegistersTheMarketplaceForThisCheckoutAndInstallsThePlugin()
+    public void ByDefault_Apply_RegistersTheMarketplaceForThisCheckoutAndInstallsThePlugin()
     {
         Assert.SkipUnless(EndToEndBinary.Path is not null, EndToEndBinary.SkipReason);
 
         using var home = new InstallerTestHome();
         var log = home.StubClaude();
 
-        var (exitCode, stdout, stderr) = Install(home, "--apply", "--with-plugin");
+        var (exitCode, stdout, stderr) = Install(home, "--apply");
 
         Assert.True(exitCode == 0, $"install failed: {stderr}");
 
@@ -58,18 +64,19 @@ public class InstallerPluginTests
     }
 
     [Fact]
-    public void WithoutTheFlag_TheInstallerNeverMentionsThePluginAndNeverRunsClaude()
+    public void WithNoPlugin_TheInstallerSkipsTheStepAndNeverRunsClaude()
     {
         Assert.SkipUnless(EndToEndBinary.Path is not null, EndToEndBinary.SkipReason);
 
         using var home = new InstallerTestHome();
         var log = home.StubClaude();
 
-        var (exitCode, stdout, stderr) = Install(home, "--apply");
+        var (exitCode, stdout, stderr) = Install(home, "--apply", "--no-plugin");
 
         Assert.True(exitCode == 0, $"install failed: {stderr}");
-        Assert.False(File.Exists(log), "claude must not run unless --with-plugin was given");
+        Assert.False(File.Exists(log), "claude must not run under --no-plugin");
         Assert.DoesNotContain("engram@engram", stdout, StringComparison.Ordinal);
+        Assert.Contains("Claude Code plugin: skipped", stdout, StringComparison.Ordinal);
     }
 
     /// <summary>
@@ -81,13 +88,13 @@ public class InstallerPluginTests
     /// throw away a completed installation over an optional extra.
     /// </remarks>
     [Fact]
-    public void WithPlugin_WhenClaudeIsNotOnPath_SaysSoAndStillSucceeds()
+    public void ByDefault_WhenClaudeIsNotOnPath_SaysSoAndStillSucceeds()
     {
         Assert.SkipUnless(EndToEndBinary.Path is not null, EndToEndBinary.SkipReason);
 
         using var home = new InstallerTestHome();
 
-        var (exitCode, stdout, stderr) = Install(home, "--apply", "--with-plugin");
+        var (exitCode, stdout, stderr) = Install(home, "--apply");
 
         Assert.True(exitCode == 0, $"install failed: {stderr}");
         Assert.True(File.Exists(home.BinaryPath), "the binary still installs");
@@ -112,14 +119,14 @@ public class InstallerPluginTests
     /// summary, with the commands to finish it by hand.</para>
     /// </remarks>
     [Fact]
-    public void WithPlugin_WhenClaudeFails_TheInstallStillFinishesAndSaysWhatBroke()
+    public void ByDefault_WhenClaudeFails_TheInstallStillFinishesAndSaysWhatBroke()
     {
         Assert.SkipUnless(EndToEndBinary.Path is not null, EndToEndBinary.SkipReason);
 
         using var home = new InstallerTestHome();
         var log = home.StubClaude(failWhenArgsContain: "install");
 
-        var (exitCode, stdout, stderr) = Install(home, "--apply", "--with-plugin", "--grant-permissions");
+        var (exitCode, stdout, stderr) = Install(home, "--apply", "--grant-permissions");
 
         Assert.True(exitCode == 0, $"a failed plugin step must not fail the install: {stderr}");
 

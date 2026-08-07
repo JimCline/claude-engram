@@ -82,9 +82,15 @@ you pass `--apply`:
 
 ```
 scripts/install.sh                # dry run — read this first
-scripts/install.sh --apply
-scripts/install.sh --apply --with-plugin   # also register the Claude Code plugin
+scripts/install.sh --apply        # everything: binary, plugin, grammars, vector search
 ```
+
+Every optional component installs by default: the Claude Code plugin, the tree-sitter
+grammars (TypeScript/JavaScript indexing), the sqlite-vec vector-search extension, and
+the Claude Code tool permissions. An interactive `--apply` asks one question up front —
+press Enter to take all of that, or answer `a` to be asked a `[Y/n]` at each step. A
+piped run takes the defaults without asking, except the permission grant, which edits
+Claude Code's settings file and is never granted by a run nobody is watching.
 
 You do not need the .NET SDK: when no SDK 10 is found, the installer downloads one
 privately into `<repo>/.dotnet` (a few hundred MB, no `PATH` changes, nothing outside
@@ -105,7 +111,9 @@ the PowerShell pair entirely and use `scripts/install.sh` — WSL is the Linux p
 | `--sdk-dir DIR` | Where a bootstrapped SDK lives. Default `<repo>/.dotnet`. |
 | `--dotnet-install PATH` | Use a local copy of Microsoft's `dotnet-install.sh` instead of downloading it. |
 | `--no-path` | Do not put the binary on `PATH` by any means. |
-| `--with-plugin` | Also run the two `claude plugin` commands below. Optional: if `claude` is missing or those commands fail, the install still finishes and prints them for you to run. |
+| `--no-plugin` | Skip the two `claude plugin` commands below. When the step does run and `claude` is missing or fails, the install still finishes and prints them for you to run. |
+| `--no-tree-sitter` | Skip compiling the tree-sitter grammars into `~/.engram/lib`. |
+| `--no-sqlite-vec` | Skip fetching the sqlite-vec vector-search extension. |
 | `--grant-permissions` | Allow the memory tools without prompting, instead of asking. |
 | `--no-grant-permissions` | Never grant them, and do not ask. |
 

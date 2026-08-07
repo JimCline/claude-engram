@@ -30,7 +30,7 @@ public class InstallerRoundTripTests
         Assert.Contains("would: install engram-roslyn", dry.Stdout, StringComparison.Ordinal);
         Assert.False(Directory.Exists(Path.Combine(home.Prefix, "roslyn")), "a dry run must install nothing");
 
-        var install = RunScript("install.sh", home.Root, "--apply", "--binary", EndToEndBinary.Path!, "--prefix", home.Prefix, "--roslyn-dir", roslynDir);
+        var install = RunScript("install.sh", home.Root, "--apply", "--binary", EndToEndBinary.Path!, "--prefix", home.Prefix, "--roslyn-dir", roslynDir, "--no-tree-sitter", "--no-sqlite-vec");
         Assert.True(install.ExitCode == 0, $"install failed: {install.Stderr}");
         Assert.Contains("Tier-2 C# analysis: engram-roslyn installed", install.Stdout, StringComparison.Ordinal);
 
@@ -57,7 +57,7 @@ public class InstallerRoundTripTests
         using var home = new InstallerTestHome();
         File.WriteAllText(home.ZshrcPath, SeedZshrc);
 
-        var install1 = RunScript("install.sh", home.Root, "--apply", "--binary", EndToEndBinary.Path!, "--prefix", home.Prefix);
+        var install1 = RunScript("install.sh", home.Root, "--apply", "--binary", EndToEndBinary.Path!, "--prefix", home.Prefix, "--no-tree-sitter", "--no-sqlite-vec");
         Assert.True(install1.ExitCode == 0, $"first install failed: {install1.Stderr}");
 
         Assert.True(File.Exists(home.BinaryPath), "binary should exist after install");
@@ -74,7 +74,7 @@ public class InstallerRoundTripTests
         var configPath = Path.Combine(home.Root, ".engram", "config.toml");
         Assert.True(File.Exists(configPath), "config.toml should exist under the redirected home after init");
 
-        var install2 = RunScript("install.sh", home.Root, "--apply", "--binary", EndToEndBinary.Path!, "--prefix", home.Prefix);
+        var install2 = RunScript("install.sh", home.Root, "--apply", "--binary", EndToEndBinary.Path!, "--prefix", home.Prefix, "--no-tree-sitter", "--no-sqlite-vec");
         Assert.True(install2.ExitCode == 0, $"second install failed: {install2.Stderr}");
 
         var zshrcAfterSecond = File.ReadAllText(home.ZshrcPath);
@@ -102,7 +102,7 @@ public class InstallerRoundTripTests
         using var home = new InstallerTestHome();
         File.WriteAllText(home.ZshrcPath, SeedZshrc);
 
-        var install = RunScript("install.sh", home.Root, "--apply", "--binary", EndToEndBinary.Path!, "--prefix", home.Prefix);
+        var install = RunScript("install.sh", home.Root, "--apply", "--binary", EndToEndBinary.Path!, "--prefix", home.Prefix, "--no-tree-sitter", "--no-sqlite-vec");
         Assert.True(install.ExitCode == 0, $"install failed: {install.Stderr}");
 
         var probeHome = Path.Combine(home.Root, "probe-home");
@@ -122,7 +122,7 @@ public class InstallerRoundTripTests
         using var home = new InstallerTestHome();
         File.WriteAllText(home.ZshrcPath, SeedZshrc);
 
-        var install = RunScript("install.sh", home.Root, "--apply", "--binary", EndToEndBinary.Path!, "--prefix", home.Prefix);
+        var install = RunScript("install.sh", home.Root, "--apply", "--binary", EndToEndBinary.Path!, "--prefix", home.Prefix, "--no-tree-sitter", "--no-sqlite-vec");
         Assert.True(install.ExitCode == 0, $"install failed: {install.Stderr}");
 
         var sidecarPath = Path.Combine(home.Prefix, SidecarName);
@@ -201,7 +201,7 @@ public class InstallerRoundTripTests
         File.Delete(home.ZshrcPath);
         File.CreateSymbolicLink(home.ZshrcPath, managedFile);
 
-        var install = RunScript("install.sh", home.Root, "--apply", "--binary", EndToEndBinary.Path!, "--prefix", home.Prefix);
+        var install = RunScript("install.sh", home.Root, "--apply", "--binary", EndToEndBinary.Path!, "--prefix", home.Prefix, "--no-tree-sitter", "--no-sqlite-vec");
         Assert.True(install.ExitCode == 0, $"install failed: {install.Stderr}");
 
         Assert.NotNull(new FileInfo(home.ZshrcPath).LinkTarget);
@@ -222,7 +222,7 @@ public class InstallerRoundTripTests
         using var home = new InstallerTestHome();
         File.WriteAllText(home.ZshrcPath, SeedZshrc);
 
-        var install = RunScript("install.sh", home.Root, "--apply", "--binary", EndToEndBinary.Path!, "--prefix", home.Prefix);
+        var install = RunScript("install.sh", home.Root, "--apply", "--binary", EndToEndBinary.Path!, "--prefix", home.Prefix, "--no-tree-sitter", "--no-sqlite-vec");
         Assert.True(install.ExitCode == 0, $"install failed: {install.Stderr}");
 
         var engramHome = Path.Combine(home.Root, ".engram");
@@ -243,7 +243,7 @@ public class InstallerRoundTripTests
         using var home = new InstallerTestHome();
         File.WriteAllText(home.ZshrcPath, SeedZshrc);
 
-        var install = RunScript("install.sh", home.Root, "--apply", "--binary", EndToEndBinary.Path!, "--prefix", home.Prefix);
+        var install = RunScript("install.sh", home.Root, "--apply", "--binary", EndToEndBinary.Path!, "--prefix", home.Prefix, "--no-tree-sitter", "--no-sqlite-vec");
         Assert.True(install.ExitCode == 0, $"install failed: {install.Stderr}");
 
         var engramHome = Path.Combine(home.Root, ".engram");
@@ -265,7 +265,7 @@ public class InstallerRoundTripTests
         var binDir = Path.Combine(home.Root, "bin");
         Directory.CreateDirectory(binDir);
 
-        var install = RunScript("install.sh", home.Root, "--apply", "--no-path", "--binary", EndToEndBinary.Path!, "--prefix", home.Prefix);
+        var install = RunScript("install.sh", home.Root, "--apply", "--no-path", "--binary", EndToEndBinary.Path!, "--prefix", home.Prefix, "--no-tree-sitter", "--no-sqlite-vec");
         Assert.True(install.ExitCode == 0, $"install --no-path failed: {install.Stderr}");
 
         Assert.True(File.Exists(home.BinaryPath), "binary should exist after install");
@@ -285,7 +285,7 @@ public class InstallerRoundTripTests
         var binDir = Path.Combine(home.Root, "bin");
         Directory.CreateDirectory(binDir);
 
-        var install = RunScript("install.sh", home.Root, "--apply", "--binary", EndToEndBinary.Path!, "--prefix", home.Prefix);
+        var install = RunScript("install.sh", home.Root, "--apply", "--binary", EndToEndBinary.Path!, "--prefix", home.Prefix, "--no-tree-sitter", "--no-sqlite-vec");
         Assert.True(install.ExitCode == 0, $"install failed: {install.Stderr}");
 
         var symlinkPath = Path.Combine(binDir, "engram");
@@ -312,7 +312,7 @@ public class InstallerRoundTripTests
         const string blockerContent = "not an engram binary, do not touch";
         File.WriteAllText(blockerPath, blockerContent);
 
-        var install = RunScript("install.sh", home.Root, "--apply", "--binary", EndToEndBinary.Path!, "--prefix", home.Prefix);
+        var install = RunScript("install.sh", home.Root, "--apply", "--binary", EndToEndBinary.Path!, "--prefix", home.Prefix, "--no-tree-sitter", "--no-sqlite-vec");
         Assert.True(install.ExitCode == 0, $"install failed: {install.Stderr}");
 
         Assert.Equal(blockerContent, File.ReadAllText(blockerPath));
@@ -330,7 +330,7 @@ public class InstallerRoundTripTests
         const string seedWithoutTrailingNewline = "# seeded by InstallerRoundTripTests\nexport SOME_ENGRAM_TEST_VAR=1";
         File.WriteAllText(home.ZshrcPath, seedWithoutTrailingNewline);
 
-        var install = RunScript("install.sh", home.Root, "--apply", "--binary", EndToEndBinary.Path!, "--prefix", home.Prefix);
+        var install = RunScript("install.sh", home.Root, "--apply", "--binary", EndToEndBinary.Path!, "--prefix", home.Prefix, "--no-tree-sitter", "--no-sqlite-vec");
         Assert.True(install.ExitCode == 0, $"install failed: {install.Stderr}");
 
         var zshrcAfter = File.ReadAllText(home.ZshrcPath);

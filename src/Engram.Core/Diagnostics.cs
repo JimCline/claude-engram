@@ -209,7 +209,7 @@ public static class Diagnostics
                 "tree-sitter",
                 DiagnosisState.Warn,
                 $"tier 1 core is installed but {string.Join(", ", missing)} {(missing.Count == 1 ? "is" : "are")} not — the languages they parse take tier 0",
-                "re-run scripts/fetch-tree-sitter.sh, or reinstall with --with-tree-sitter");
+                "re-run scripts/fetch-tree-sitter.sh (a reinstall also compiles them by default)");
     }
 
     private static void Try(List<Diagnosis> checks, string name, Action<List<Diagnosis>> check)
