@@ -31,7 +31,7 @@ namespace Engram.Core;
 /// </remarks>
 public static class MaintenanceLauncher
 {
-    public static void Spawn(string executablePath, string homeRoot)
+    public static void Spawn(string executablePath, string homeRoot, string? indexRoot = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(executablePath);
         ArgumentException.ThrowIfNullOrWhiteSpace(homeRoot);
@@ -41,7 +41,19 @@ public static class MaintenanceLauncher
 
         var command = new StringBuilder("{ ")
             .Append(engram).Append(" backup take --if-due").Append(home).Append("; ")
-            .Append(engram).Append(" queue compact --apply --if-large").Append(home).Append("; ")
+            .Append(engram).Append(" queue compact --apply --if-large").Append(home).Append("; ");
+
+        // After the compaction on purpose: folding the queue first makes the drain read
+        // fewer entries and lose nothing. --auto carries the whole policy — config gate,
+        // git-checkout check, store existence — because the child deciding for itself is
+        // what lets this stay unconditional, exactly like --if-due and --if-large.
+        if (indexRoot is not null)
+        {
+            command.Append(engram).Append(" index --drain --apply --auto ")
+                .Append(ShellQuote(indexRoot)).Append(home).Append("; ");
+        }
+
+        var script = command
             .Append("} </dev/null >/dev/null 2>&1")
             .ToString();
 
@@ -51,7 +63,7 @@ public static class MaintenanceLauncher
             CreateNoWindow = true,
         };
         startInfo.ArgumentList.Add("-c");
-        startInfo.ArgumentList.Add(command);
+        startInfo.ArgumentList.Add(script);
 
         using var process = Process.Start(startInfo);
     }

@@ -15,6 +15,7 @@ internal static class IndexCommand
         var apply = false;
         var drain = false;
         var full = false;
+        var auto = false;
         string? target = null;
 
         foreach (var argument in rest)
@@ -29,6 +30,9 @@ internal static class IndexCommand
                     break;
                 case "--full":
                     full = true;
+                    break;
+                case "--auto":
+                    auto = true;
                     break;
                 default:
                     if (argument.StartsWith('-') || target is not null)
@@ -52,6 +56,21 @@ internal static class IndexCommand
         var home = EngramHome.ResolveFromProcess(homePath);
         var config = ConfigFile.Load(home.ConfigPath);
         var settings = IndexingSettings.Read(config);
+
+        // --auto is the session-start maintenance child asking. The whole policy lives
+        // here, like --if-due and --if-large: the config gate, the requirement that the
+        // directory actually is a git checkout (a shell that happens to start in $HOME
+        // must not index $HOME), and an existing store. Every refusal is silent success —
+        // housekeeping declining to run is not an error a hook should surface.
+        if (auto)
+        {
+            if (!settings.AutoIndexOnSessionStart
+                || !File.Exists(home.DatabasePath)
+                || !CodeIndexer.IsGitCheckout(root))
+            {
+                return 0;
+            }
+        }
 
         foreach (var problem in settings.Problems)
         {

@@ -127,7 +127,7 @@ public static class Diagnostics
 
         if (repoRoot is not null)
         {
-            Try(checks, "indexing", list => list.Add(CheckRepo(repoRoot, config)));
+            Try(checks, "indexing", list => list.Add(CheckRepo(repoRoot, config, connection)));
         }
 
         return new DiagnosticReport(checks);
@@ -701,17 +701,56 @@ public static class Diagnostics
             spooled > SpoolCompactor.Threshold ? "engram queue compact --apply" : null);
     }
 
-    private static Diagnosis CheckRepo(string repoRoot, ConfigFile config)
+    private static Diagnosis CheckRepo(string repoRoot, ConfigFile config, SqliteConnection? connection)
     {
         var scan = RepoScanner.Scan(repoRoot, IndexingSettings.Read(config));
 
-        // Honest rather than flattering: this is a real measurement of what indexing would read,
-        // and nothing reads it yet. D30's rule for lanes applies to commands too — reporting the
-        // system that is planned rather than the one that runs is how a report stops being usable.
+        if (connection is null)
+        {
+            return new Diagnosis(
+                "indexing",
+                DiagnosisState.Off,
+                $"{scan.Summary()} in {repoRoot}, and no store to index them into yet",
+                "engram init");
+        }
+
+        // Registration is looked up the same way the indexer does it, because two answers
+        // to "which repo is this" is how a report drifts from the system it describes.
+        var identity = CodeIndexer.ResolveIdentity(repoRoot);
+
+        using var command = connection.CreateCommand();
+        command.CommandText =
+            """
+            SELECT r.repo_path, COUNT(f.path), MAX(f.indexed_at)
+            FROM repo_registry r LEFT JOIN file_state f ON f.repo_path = r.repo_path
+            WHERE r.identity = $identity
+            GROUP BY r.repo_path;
+            """;
+        command.Parameters.AddWithValue("$identity", identity);
+
+        using var reader = command.ExecuteReader();
+        if (!reader.Read())
+        {
+            // Not indexed is a choice, not a fault (D37) — indexing starts on the next
+            // session start once enabled, or right now by hand.
+            return new Diagnosis(
+                "indexing",
+                DiagnosisState.Off,
+                $"{scan.Summary()} in {repoRoot}, none indexed yet",
+                "engram index --apply");
+        }
+
+        var repoPath = reader.GetString(0);
+        var indexed = reader.GetInt64(1);
+        var newest = reader.IsDBNull(2) ? (long?)null : reader.GetInt64(2);
+        var age = newest is { } stamp
+            ? $", newest {Age(DateTimeOffset.UtcNow - DateTimeOffset.FromUnixTimeSeconds(stamp))} old"
+            : string.Empty;
+
         return new Diagnosis(
             "indexing",
-            DiagnosisState.Off,
-            $"{scan.Summary()} in {repoRoot} — the indexer that would read them is not built yet");
+            DiagnosisState.Ok,
+            $"{Plural((int)indexed, "file")} indexed into {repoPath}{age}; {scan.Summary()} on disk");
     }
 
     private static string Age(TimeSpan age)

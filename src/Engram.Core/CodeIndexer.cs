@@ -461,6 +461,14 @@ public static class CodeIndexer
         return facts;
     }
 
+    /// <summary>Whether the directory sits inside a git checkout at all.</summary>
+    /// <remarks>
+    /// The auto-index gate: a maintenance child launched from an arbitrary shell must
+    /// never treat that shell's directory as a repository.
+    /// </remarks>
+    public static bool IsGitCheckout(string root) =>
+        !string.IsNullOrEmpty(GitFileLister.Run(Path.GetFullPath(root), "rev-parse", "--show-toplevel")?.Trim());
+
     private static string ResolveRoot(string requested)
     {
         var full = Path.GetFullPath(requested);
@@ -473,7 +481,7 @@ public static class CodeIndexer
     /// one — a checkout can move directories without becoming a different repo — else the
     /// root path.
     /// </summary>
-    private static string ResolveIdentity(string root)
+    public static string ResolveIdentity(string root)
     {
         var remote = GitFileLister.Run(root, "remote", "get-url", "origin")?.Trim();
         if (string.IsNullOrEmpty(remote))

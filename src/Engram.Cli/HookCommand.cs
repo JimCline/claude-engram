@@ -222,7 +222,7 @@ internal static class HookCommand
         {
             if (Environment.ProcessPath is { Length: > 0 } executable)
             {
-                MaintenanceLauncher.Spawn(executable, home.Root);
+                MaintenanceLauncher.Spawn(executable, home.Root, Directory.GetCurrentDirectory());
             }
         }
         catch

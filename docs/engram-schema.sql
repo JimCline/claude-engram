@@ -67,9 +67,9 @@ CREATE TABLE entity (
   id         INTEGER PRIMARY KEY,
   path       TEXT    NOT NULL UNIQUE,  -- rooted, broad → specific:
                                        --   /people/jim/preferences
-                                       --   /code/acme-api/src/Auth.cs#ValidateToken
+                                       --   /projects/acme/code/acme-api/src/Auth.cs#ValidateToken
   kind       TEXT    NOT NULL,         -- machine|repo|project|module|file|symbol|
-                                       -- concept|decision|convention|preference|person|
+                                       -- section|concept|decision|convention|preference|person|
                                        -- tool|topic|statement|session|agent|note
   name       TEXT    NOT NULL,         -- last path segment, denormalized for display
   created_at INTEGER NOT NULL,
@@ -223,7 +223,7 @@ CREATE TABLE session (
   id         INTEGER PRIMARY KEY,
   external_id TEXT UNIQUE,          -- the host's session identifier, if any
   host       TEXT    NOT NULL,      -- claude-code | cli | other
-  repo_path  TEXT,                  -- memory path, e.g. /code/acme-api
+  repo_path  TEXT,                  -- memory path, e.g. /projects/acme/code/acme-api
   started_at INTEGER NOT NULL,
   ended_at   INTEGER,
   digest     TEXT
@@ -300,7 +300,7 @@ END;
 -- exactly the set `compact` may prune and `repair` may regenerate (D8).
 -- ---------------------------------------------------------------------------
 CREATE TABLE file_state (
-  repo_path  TEXT    NOT NULL,   -- memory path of the repo, e.g. /code/acme-api
+  repo_path  TEXT    NOT NULL,   -- memory path of the repo, e.g. /projects/acme/code/acme-api
   path       TEXT    NOT NULL,   -- repo-relative file path
   blob_sha   TEXT    NOT NULL,   -- git blob hash, or content hash if untracked
   lang       TEXT,
@@ -309,7 +309,7 @@ CREATE TABLE file_state (
 );
 
 CREATE TABLE repo_registry (
-  repo_path   TEXT PRIMARY KEY,  -- memory path, e.g. /code/acme-api
+  repo_path   TEXT PRIMARY KEY,  -- memory path, e.g. /projects/acme/code/acme-api
   identity    TEXT NOT NULL,     -- normalized git remote URL, else normalized root path
   disk_path   TEXT,              -- last seen location; NULL once detached
   detached_at INTEGER,           -- non-NULL when the checkout is gone from disk

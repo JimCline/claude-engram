@@ -120,6 +120,7 @@ public static class CliApp
         writer.WriteLine("  --apply                            actually write the facts and consume the queue");
         writer.WriteLine("  --drain                            index only what the file-touched queue names");
         writer.WriteLine("  --full                             ignore what was indexed before and re-read everything");
+        writer.WriteLine("  --drain --apply --auto             what session start runs; declines silently unless configured and in a checkout");
         writer.WriteLine();
         writer.WriteLine("explain options:");
         writer.WriteLine("  --budget <n>                       token budget to test against (default 500)");
