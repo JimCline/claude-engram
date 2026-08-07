@@ -84,7 +84,7 @@ internal static class InitCommand
             return 0;
         }
 
-        if (EmbeddingSetup.Ask(Console.In, stdout, EmbedCommand.ProbeWidth) is not { } choice)
+        if (EmbeddingSetup.Ask(Console.In, stdout, EmbedCommand.ProbeWidth, Tui.Detect()) is not { } choice)
         {
             stdout.WriteLine();
             stdout.WriteLine("Left the config alone.");

@@ -428,6 +428,36 @@ Debt made explicit rather than hidden: `install.ps1` now lags behind — it stil
 `-WithPlugin` as opt-in and no tree-sitter, sqlite-vec, or mode question at all. That
 belongs to the existing ps1-parity item and needs a Windows machine to land honestly.
 
+### Embeddings joined the installer, and the picker grew a TUI
+
+The second half of Jim's directive. Section 8b runs the embedding step through the
+binary's own picker (`engram init --with-embeddings < /dev/tty`), so the model catalog,
+the tradeoff prose, and the endpoint probe stay single-sourced — the installer owns
+*when* the question is asked, never *what* the choices are. It is deliberately unlike
+the other optional steps: it stays interactive even when the mode answer was
+"everything", because provider and model are real costs the user should see. Six
+`--embedding-*` flags answer unattended runs (`--embedding-provider none` is a complete
+answer); `--no-embeddings` skips; no flags and no terminal defers, and the summary says
+how to finish. Four states — configured | skipped | manual | failed — and the tri-state
+`set -e` plant was falsified a fourth time: invocation moved out of its `if`, exactly
+`WithABadModel_TheInstallStillFinishesAndSaysWhatBroke` went red, restored. That failure
+test needs no network stub — a model id the catalog does not know is refused before
+anything downloads.
+
+The TUI is hand-rolled ANSI in `Tui.cs`, no package, because binary size is hook latency
+(1.06 MB starts in 3.44 ms, 21.2 MB in 7.80 ms — adding a TUI dependency would tax
+`file-touched` forever). One control flow: `EmbeddingSetup.Ask` routes presentation
+through `Tui.Menu`/`Tui.Line`, and the plain path is **byte-identical to what the 26
+existing `EmbeddingSetupTests` freeze** — rich mode needs a real console on both ends
+plus a sane `TERM`, colors additionally honor `NO_COLOR`. The installer got the same
+treatment in shell: step headers, a boxed banner, bold prompts, all gated on the same
+terminal test. One pty test (`TuiPtyTests`, macOS-gated, `script -q /dev/null`) proves
+the arrow-key menu actually renders and Enter lands `provider = "none"` in the config —
+without it the rich path would ship forever unexecuted, since every other test drives
+redirected streams and by design gets the plain prompts. What that one test does not
+cover: arrow-key navigation itself (it pipes a bare Enter), and the rich path on Linux.
+`install.ps1` lags further still — no embedding step, no styling; same parity item.
+
 ---
 
 ## Verified vs. not
@@ -458,6 +488,10 @@ belongs to the existing ps1-parity item and needs a Windows machine to land hone
 | the tree-sitter ABI range | measured — one core accepted ABI 14 and 15 in one process; nothing compares versions |
 | tier-1 guards can fail | proven — query refusal, predicate flip, and the installer `set -e` plant each went red before restore |
 | tier-1 on Linux/Windows | **not measured** — the binding's naming covers `.so`/`.dll` and the script's case arms exist, but only macOS has executed them |
+| the plain prompt path under the TUI refactor | frozen — the 26 pre-existing `EmbeddingSetupTests` pass unchanged against the reworked `Ask` |
+| the rich TUI path renders and lands a choice | measured — one macOS pty test: menu paints ANSI, Enter writes `provider = "none"` |
+| arrow-key navigation, digits, Esc | **not measured by any test** — the pty test pipes a single Enter; the key loop beyond that has only been driven by hand |
+| the embedding tri-state guard can fail | proven — the `set -e` plant turned exactly the bad-model test red, restored |
 
 ---
 

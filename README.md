@@ -92,6 +92,13 @@ press Enter to take all of that, or answer `a` to be asked a `[Y/n]` at each ste
 piped run takes the defaults without asking, except the permission grant, which edits
 Claude Code's settings file and is never granted by a run nobody is watching.
 
+Embeddings are the one step that stays interactive in both modes, because provider and
+model are real tradeoffs — disk, download size, memory, languages — and the picker
+explains them (with arrow-key menus at a real terminal). Pin the answers with the
+`--embedding-*` flags for unattended runs, or `--no-embeddings` to skip the step; with
+neither flags nor a terminal it defers and the summary says how to finish
+(`engram init --with-embeddings`).
+
 You do not need the .NET SDK: when no SDK 10 is found, the installer downloads one
 privately into `<repo>/.dotnet` (a few hundred MB, no `PATH` changes, nothing outside
 that directory) and builds with it. What you do need is a C compiler — the Xcode
@@ -114,6 +121,12 @@ the PowerShell pair entirely and use `scripts/install.sh` — WSL is the Linux p
 | `--no-plugin` | Skip the two `claude plugin` commands below. When the step does run and `claude` is missing or fails, the install still finishes and prints them for you to run. |
 | `--no-tree-sitter` | Skip compiling the tree-sitter grammars into `~/.engram/lib`. |
 | `--no-sqlite-vec` | Skip fetching the sqlite-vec vector-search extension. |
+| `--no-embeddings` | Skip the embedding step entirely; recall stays lexical. |
+| `--embedding-provider P` | Answer the provider question without a terminal: `none`, `local`, `ollama`, `openai-compat`, `openai`. |
+| `--embedding-model M` | Which local model (see `engram model list`), or what an endpoint calls its model. |
+| `--embedding-endpoint URL` | Base URL of a server answering `POST /v1/embeddings`. |
+| `--embedding-dim N` | Vector width, when the endpoint cannot be asked. |
+| `--embedding-api-key-env VAR` | Environment variable holding the endpoint's API key. |
 | `--grant-permissions` | Allow the memory tools without prompting, instead of asking. |
 | `--no-grant-permissions` | Never grant them, and do not ask. |
 

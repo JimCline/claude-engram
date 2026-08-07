@@ -61,41 +61,72 @@ public static class EmbeddingSetup
     /// than called directly so this stays a function of its input — and so a test does not have to
     /// stand up a server to prove the questions are asked in the right order.
     /// </param>
+    /// <param name="tui">
+    /// Presentation only. Null (and <see cref="Tui.Plain"/>) is the frozen line-prompt flow every
+    /// test drives; a detected terminal gets arrow-key menus carrying each option's tradeoffs.
+    /// One control flow either way, so the answers, defaults and validation cannot diverge by mode.
+    /// </param>
     public static EmbeddingChoice? Ask(
         TextReader stdin,
         TextWriter stdout,
-        Func<string, string, string, int?>? probe = null)
+        Func<string, string, string, int?>? probe = null,
+        Tui? tui = null)
     {
         ArgumentNullException.ThrowIfNull(stdin);
         ArgumentNullException.ThrowIfNull(stdout);
+        tui ??= Tui.Plain;
 
-        var rung = Prompt(stdin, stdout, "Which one? [1/2/3, or blank to leave it alone] ");
+        var rung = tui.Menu(
+            stdin,
+            stdout,
+            "Which one?",
+            [
+                new TuiChoice("none", "none", "lexical recall only — nothing to download, nothing to run"),
+                new TuiChoice("local", "local", "Engram runs the model itself; the weights download once"),
+                new TuiChoice("endpoint", "endpoint", "a server you already run answers POST /v1/embeddings"),
+            ],
+            "Which one? [1/2/3, or blank to leave it alone] ",
+            static answer => answer switch
+            {
+                "1" or "none" => "none",
+                "2" or "local" => "local",
+                "3" or "endpoint" => "endpoint",
+                _ => null,
+            });
 
         switch (rung)
         {
-            case "1" or "none":
+            case "none":
                 return new EmbeddingChoice("none", null, null, null, null);
 
-            case "2" or "local":
+            case "local":
             {
-                var id = Prompt(stdin, stdout, $"Which model? [blank for {EmbeddingModels.DefaultId}] ");
-                var model = string.IsNullOrEmpty(id) ? EmbeddingModels.DefaultId : id;
-                return EmbeddingModels.Find(model) is null
+                var model = tui.Menu(
+                    stdin,
+                    stdout,
+                    "Which model?",
+                    [.. EmbeddingModels.All.Select(m => new TuiChoice(
+                        m.Id,
+                        m.Id,
+                        $"{m.Dimensions}d · {m.SizeLabel.Trim()} · {Window(m.ContextTokens)} window · {m.Languages} — {m.Tradeoff}"))],
+                    $"Which model? [blank for {EmbeddingModels.DefaultId}] ",
+                    static id => string.IsNullOrEmpty(id) ? EmbeddingModels.DefaultId : id);
+                return model is null || EmbeddingModels.Find(model) is null
                     ? null
                     : new EmbeddingChoice("local", model, null, null, null);
             }
 
-            case "3" or "endpoint":
+            case "endpoint":
             {
-                var endpoint = Prompt(stdin, stdout, "Endpoint URL? [e.g. http://localhost:1234/v1] ");
+                var endpoint = tui.Line(stdin, stdout, "Endpoint URL? [e.g. http://localhost:1234/v1] ");
                 if (string.IsNullOrEmpty(endpoint))
                 {
                     return null;
                 }
 
-                var provider = Prompt(stdin, stdout, "Is that Ollama's native API? [y/N] ")
+                var provider = tui.Line(stdin, stdout, "Is that Ollama's native API? [y/N] ")
                     .StartsWith('y') ? "ollama" : "openai-compat";
-                var model = Prompt(stdin, stdout, "What does the endpoint call the model? ");
+                var model = tui.Line(stdin, stdout, "What does the endpoint call the model? ");
 
                 // The endpoint is asked before the user is. A width is not knowable from a model
                 // name — an endpoint may serve a quantized or truncated variant under the same
@@ -104,7 +135,7 @@ public static class EmbeddingSetup
                 if (model is { Length: > 0 } && probe?.Invoke(provider, endpoint, model) is { } measured)
                 {
                     stdout.WriteLine($"  {endpoint} returns {measured} dimensions.");
-                    var keyForMeasured = Prompt(stdin, stdout, "Environment variable holding the API key, if any? ");
+                    var keyForMeasured = tui.Line(stdin, stdout, "Environment variable holding the API key, if any? ");
                     return new EmbeddingChoice(
                         provider,
                         model,
@@ -114,13 +145,13 @@ public static class EmbeddingSetup
                 }
 
                 stdout.WriteLine("  Could not ask the endpoint, so this one has to be typed.");
-                var width = Prompt(stdin, stdout, "How many dimensions does it return? ");
+                var width = tui.Line(stdin, stdout, "How many dimensions does it return? ");
                 if (!int.TryParse(width, CultureInfo.InvariantCulture, out var dimensions) || dimensions < 1)
                 {
                     return null;
                 }
 
-                var keyVariable = Prompt(stdin, stdout, "Environment variable holding the API key, if any? ");
+                var keyVariable = tui.Line(stdin, stdout, "Environment variable holding the API key, if any? ");
 
                 return new EmbeddingChoice(
                     provider,
@@ -236,13 +267,6 @@ public static class EmbeddingSetup
         }
 
         return 0;
-    }
-
-    private static string Prompt(TextReader stdin, TextWriter stdout, string question)
-    {
-        stdout.Write(question);
-        stdout.Flush();
-        return (stdin.ReadLine() ?? string.Empty).Trim();
     }
 
     private static string Window(int tokens) => tokens >= 1024

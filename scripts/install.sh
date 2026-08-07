@@ -18,6 +18,16 @@ Usage: scripts/install.sh [options]
   --no-plugin          Skip registering the Claude Code marketplace and plugin
   --no-tree-sitter     Skip compiling the tree-sitter grammars (tier-1 TS/JS analysis)
   --no-sqlite-vec      Skip the sqlite-vec vector-search extension
+  --embedding-provider P
+                       Configure embeddings without asking: none, local, ollama,
+                       openai-compat, or openai
+  --embedding-model M  With local: which model ('engram model list' names them)
+  --embedding-endpoint URL
+                       With an endpoint provider: where it answers
+  --embedding-dim N    Vector width, for an endpoint that cannot be asked
+  --embedding-api-key-env VAR
+                       Environment variable holding the endpoint's API key
+  --no-embeddings      Skip embedding setup entirely
   --grant-permissions  Allow Claude Code to call Engram's memory tools without prompting
   --no-grant-permissions
                        Never grant them, and do not ask
@@ -25,7 +35,9 @@ Usage: scripts/install.sh [options]
 
 Every optional component installs by default. An interactive run asks one question up
 front — take those defaults, or decide each step at its turn; the --no-* flags pin a
-step off without being asked, and the --with-* spellings still pin one on.
+step off without being asked, and the --with-* spellings still pin one on. Embeddings
+are the one step that stays interactive in both modes — provider and model are real
+tradeoffs — unless --embedding-provider or --no-embeddings answers for it.
 
 No .NET SDK is required up front: when none of the right version is found, one is
 downloaded privately into the SDK directory, and nothing outside it is touched.
@@ -44,6 +56,12 @@ no_path=false
 with_plugin=""
 with_tree_sitter=""
 with_sqlite_vec=""
+no_embeddings=false
+embedding_provider=""
+embedding_model=""
+embedding_endpoint=""
+embedding_dim=""
+embedding_api_key_env=""
 # ask | yes | no. "ask" only ever asks a terminal; a non-interactive run declines, because
 # silence from a pipe is not consent to edit somebody's settings file.
 grant_permissions=ask
@@ -122,6 +140,50 @@ while [ $# -gt 0 ]; do
             with_sqlite_vec=false
             shift
             ;;
+        --embedding-provider)
+            if [ $# -lt 2 ]; then
+                echo "error: --embedding-provider requires a value" >&2
+                exit 1
+            fi
+            embedding_provider="$2"
+            shift 2
+            ;;
+        --embedding-model)
+            if [ $# -lt 2 ]; then
+                echo "error: --embedding-model requires a value" >&2
+                exit 1
+            fi
+            embedding_model="$2"
+            shift 2
+            ;;
+        --embedding-endpoint)
+            if [ $# -lt 2 ]; then
+                echo "error: --embedding-endpoint requires a value" >&2
+                exit 1
+            fi
+            embedding_endpoint="$2"
+            shift 2
+            ;;
+        --embedding-dim)
+            if [ $# -lt 2 ]; then
+                echo "error: --embedding-dim requires a value" >&2
+                exit 1
+            fi
+            embedding_dim="$2"
+            shift 2
+            ;;
+        --embedding-api-key-env)
+            if [ $# -lt 2 ]; then
+                echo "error: --embedding-api-key-env requires a value" >&2
+                exit 1
+            fi
+            embedding_api_key_env="$2"
+            shift 2
+            ;;
+        --no-embeddings)
+            no_embeddings=true
+            shift
+            ;;
         --grant-permissions)
             grant_permissions=yes
             shift
@@ -160,6 +222,30 @@ say() {
 would() {
     echo "would: $*"
 }
+
+# Styling: only a real terminal gets it. A piped run — every test, every curl|bash —
+# reads plain bytes, which is also what keeps the e2e assertions byte-stable.
+if [ -t 1 ] && [ -n "${TERM:-}" ] && [ "${TERM:-}" != dumb ] && [ -z "${NO_COLOR:-}" ]; then
+    T_BOLD=$'\033[1m'; T_DIM=$'\033[2m'; T_CYAN=$'\033[36m'; T_RESET=$'\033[0m'
+else
+    T_BOLD=""; T_DIM=""; T_CYAN=""; T_RESET=""
+fi
+
+step() {
+    echo
+    echo "${T_CYAN}${T_BOLD}── $*${T_RESET}"
+}
+
+if [ -n "$T_CYAN" ]; then
+    echo "${T_CYAN}╭──────────────────╮${T_RESET}"
+    echo "${T_CYAN}│${T_RESET} ${T_BOLD}Engram installer${T_RESET} ${T_CYAN}│${T_RESET}"
+    echo "${T_CYAN}╰──────────────────╯${T_RESET}"
+else
+    echo "Engram installer"
+fi
+if ! $apply; then
+    echo "${T_DIM}dry run — pass --apply to act${T_RESET}"
+fi
 
 cleanup_dirs=()
 cleanup() {
@@ -343,10 +429,13 @@ toolchain_problem() {
 install_mode=auto
 if $apply && [ -t 0 ] && [ -r /dev/tty ]; then
     if [ -z "$with_plugin" ] || [ -z "$with_tree_sitter" ] || [ -z "$with_sqlite_vec" ]; then
-        echo "Optional components, all installed by default: the Claude Code plugin,"
+        echo
+        echo "${T_BOLD}Optional components${T_RESET}, all installed by default: the Claude Code plugin,"
         echo "tree-sitter grammars (TypeScript/JavaScript indexing), sqlite-vec (vector"
         echo "search), and Claude Code tool permissions."
-        printf 'Install everything with the defaults, or ask about each step? [E]verything/[a]sk: '
+        echo "${T_DIM}Embeddings are chosen interactively after the install either way; pin with"
+        echo "--embedding-provider or --no-embeddings to skip those questions.${T_RESET}"
+        printf '%s' "${T_BOLD}Install everything with the defaults, or ask about each step? [E]verything/[a]sk: ${T_RESET}"
         mode_reply=""
         read -r mode_reply < /dev/tty || true
         case "$mode_reply" in
@@ -379,6 +468,7 @@ if [ "$install_mode" = auto ]; then
 fi
 
 # --- 1. Preflight ---
+step "Preflight"
 
 dotnet_cmd=""
 bootstrap_sdk=false
@@ -454,6 +544,7 @@ if [ -z "$binary_override" ] && $bootstrap_sdk; then
 fi
 
 # --- 4. Build, unless --binary was given ---
+step "Binary"
 
 if [ -n "$binary_override" ]; then
     binary_path="$binary_override"
@@ -578,6 +669,7 @@ else
 fi
 
 # --- 6. Install ---
+step "Install"
 
 if $apply; then
     mkdir -p "$prefix"
@@ -658,6 +750,7 @@ else
 fi
 
 # --- 7. PATH ---
+step "PATH"
 
 path_changed=false
 path_backup=""
@@ -788,12 +881,55 @@ BLOCKEOF
 fi
 
 # --- 8. Initialise the home ---
+step "Home"
 
 if $apply; then
     say "Initialising the Engram home ..."
     "$target" init
 else
     would "run $target init to initialise the Engram home (idempotent, will not overwrite an existing config)"
+fi
+
+# --- 8b. Embeddings ---
+
+# configured | skipped | manual | failed. Embeddings stay interactive even when the mode
+# answer was "everything": which provider — and which model, if local — are real choices
+# with real costs (disk, download size, memory), and the binary's picker presents those
+# tradeoffs itself. Flags pin the answer for unattended runs; with neither flags nor a
+# terminal the step defers and the summary says how to finish, because a prompt that
+# reads EOF as an answer would pick on the user's behalf.
+embedding_result=manual
+if $no_embeddings; then
+    embedding_result=skipped
+elif ! $apply; then
+    if [ -n "$embedding_provider" ]; then
+        would "configure embeddings: engram init --provider $embedding_provider"
+    else
+        would "ask which embedding provider and model to use (engram init --with-embeddings)"
+    fi
+elif [ -n "$embedding_provider" ]; then
+    step "Embeddings"
+    embed_args=(--provider "$embedding_provider")
+    if [ -n "$embedding_model" ]; then embed_args+=(--model "$embedding_model"); fi
+    if [ -n "$embedding_endpoint" ]; then embed_args+=(--endpoint "$embedding_endpoint"); fi
+    if [ -n "$embedding_dim" ]; then embed_args+=(--dim "$embedding_dim"); fi
+    if [ -n "$embedding_api_key_env" ]; then embed_args+=(--api-key-env "$embedding_api_key_env"); fi
+    if "$target" init "${embed_args[@]}"; then
+        embedding_result=configured
+    else
+        embedding_result=failed
+        say "the embedding step failed; run it yourself to finish it:"
+        say "  engram init --with-embeddings"
+    fi
+elif [ -t 0 ] && [ -r /dev/tty ]; then
+    step "Embeddings"
+    if "$target" init --with-embeddings < /dev/tty; then
+        embedding_result=configured
+    else
+        embedding_result=failed
+        say "the embedding step failed; run it yourself to finish it:"
+        say "  engram init --with-embeddings"
+    fi
 fi
 
 # --- 9. Claude Code plugin ---
@@ -934,7 +1070,7 @@ fi
 
 echo
 if $apply; then
-    echo "Summary:"
+    echo "${T_BOLD}Summary:${T_RESET}"
     echo "  Installed engram to: $target"
     if $no_path; then
         echo "  PATH: not modified (--no-path)"
@@ -1002,6 +1138,20 @@ if $apply; then
     else
         echo "  Vector search (sqlite-vec): skipped"
     fi
+    case "$embedding_result" in
+        configured)
+            echo "  Embeddings: configured (details above)"
+            ;;
+        skipped)
+            echo "  Embeddings: skipped"
+            ;;
+        manual)
+            echo "  Embeddings: not configured (no terminal to ask); run: engram init --with-embeddings"
+            ;;
+        failed)
+            echo "  Embeddings: NOT configured (init reported an error above); run: engram init --with-embeddings"
+            ;;
+    esac
     case "$grant_result" in
         granted)
             echo "  MCP tool permissions: granted (recall, remember, digest, status)"
