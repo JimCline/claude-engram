@@ -91,9 +91,20 @@ These are not style preferences. Each one is a way this goes wrong that is invis
   disagree about whether writing the last cell wraps now or on the next character, and that
   difference is a blank row. If you are adding a segment to a line that already fills the width,
   you are the one who pushed something off the edge — say so, or fix it while you are there.
-- **Decay stale activity.** Past a minute or two, the newest event describes history, not what is
-  happening. Drop the activity word and keep only durable numbers, or the status line freezes
-  showing "indexing" forever and stops meaning anything.
+- **Clear stale activity, and know which clock you are on.** The newest event describes what
+  happened, not what is happening, so an activity word has to be dropped once it ages out —
+  otherwise the line freezes on "indexing" forever and stops meaning anything. Keep the durable
+  numbers when you drop it. **A short threshold does nothing on its own**: by default the script
+  re-runs only when a new assistant message arrives, so any age test is evaluated once per turn
+  and a fresh event stays frozen on screen until the next one. `refreshInterval` in the
+  `statusLine` block re-runs it on a timer (minimum 1 second) and is what makes a short threshold
+  mean anything. It costs a render per second — measure yours and say what it is.
+- **`index` and `embedding` are not instants, and must not be put on that timer.** They carry
+  `phase`, so how long to keep showing them is a fact and not a guess (D55): show one while its
+  `started` has no later `finished` or `failed`. A five-second rule blanks an embedding pass that
+  is still running — one batch was measured at 28 seconds — and it blanks it in the direction that
+  looks like nothing is wrong. Bound a dangling `started` anyway, generously: a killed process
+  never writes its second half, exactly as `server-stop` is best-effort for the same reason.
 - **Be silent when there is nothing to say.** No log, no readable log, no records: print nothing
   and exit 0. This runs on every status line update and must never be what breaks their prompt.
 - **Drain stdin.** Claude Code pipes session JSON in. A script that never reads it can block.
@@ -138,6 +149,8 @@ holding one hand-written record with a current timestamp, run it again, and show
 Three checks that each catch a defect the happy path cannot:
 
 - Plant a record under a **different** `session_id` and confirm it does not appear.
+- Plant one just inside and just outside your freshness window, and an `index`/`embedding`
+  `started` well outside it, and confirm the first two behave and the third still shows.
 - Run at `COLUMNS=80` and confirm every row fits, then at `COLUMNS=200` for the single-line case.
 - Delete the log entirely and confirm the script still exits 0 and prints their other segments.
 
