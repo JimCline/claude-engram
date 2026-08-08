@@ -129,5 +129,31 @@ public static class DefaultConfig
 
         [primer]
         max_tokens = 300
+
+        [webhook]
+        # POST each event to a subscriber as it is recorded, so something outside Engram can
+        # react to it — a script that renders a status line, a dashboard showing live activity.
+        # A configured url is the switch; comment it out to deliver nothing. There is no
+        # `enabled` key, because two ways to turn one thing off is how a setting ends up
+        # disagreeing with itself.
+        #
+        # The body is one line of telemetry.jsonl, verbatim, one event per request, plus
+        # X-Engram-Event and X-Engram-Version headers so a shell script can route on the kind
+        # without a JSON parser.
+        #
+        # Delivery starts at the end of the log and never resumes: this is what happens while
+        # the server runs, and nothing else. That is deliberate — a restart after a day of
+        # downtime would otherwise replay thousands of events at whatever is listening. For
+        # history, read telemetry.jsonl directly; it is durable, plain text, and timestamped.
+        # For the same reason a failed POST is dropped rather than queued: delivery may never
+        # stall memory, and nothing a dashboard needs is lost when the file still holds it.
+        # url = "http://127.0.0.1:8787/engram"
+        # urls = ["http://127.0.0.1:8787/engram", "http://127.0.0.1:9000/hook"]
+        #
+        # Which events to deliver. "*" is every kind; name kinds to narrow it. file-touched is
+        # by far the most frequent — one per edited file — so a status line usually wants a
+        # list rather than the wildcard.
+        kinds = ["*"]
+        timeout_ms = 2000
         """;
 }

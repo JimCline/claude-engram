@@ -18,6 +18,20 @@ public static class TelemetryEventKind
     public const string SubagentStart = "subagent-start";
     public const string PreCompact = "pre-compact";
     public const string FileTouched = "file-touched";
+
+    /// <summary>
+    /// Every kind Engram emits.
+    /// </summary>
+    /// <remarks>
+    /// Enumerated so a subscriber's <c>kinds</c> filter can be checked against something. A kind
+    /// added above and not listed here is invisible to that check, which reports a real filter as
+    /// a typo — the one way this list can be wrong, and the reason it sits beside the constants.
+    /// </remarks>
+    public static IReadOnlyList<string> All { get; } =
+    [
+        Recall, Remember, Digest, Browse, Expand, Revise,
+        SessionStart, ServerStart, SessionOpen, SubagentStart, PreCompact, FileTouched,
+    ];
 }
 
 public sealed record TelemetryRecord(
@@ -55,6 +69,33 @@ public static class Telemetry
         lock (AppendLock)
         {
             DurableAppend.TryAppend(path, payload, AppendRetryBudget);
+        }
+    }
+
+    /// <summary>
+    /// Reads back one line of the log, or null if it is not a record.
+    /// </summary>
+    /// <remarks>
+    /// Public so a reader of the log — the webhook tail, and whatever reads history later — parses
+    /// it through the same source-generated context that wrote it, rather than growing a second
+    /// idea of the shape. Malformed is null rather than an exception: a line caught mid-rotation,
+    /// or written by an older build, must cost that line and not the read.
+    /// </remarks>
+    public static TelemetryRecord? TryParse(string line)
+    {
+        if (string.IsNullOrWhiteSpace(line))
+        {
+            return null;
+        }
+
+        try
+        {
+            return System.Text.Json.JsonSerializer.Deserialize(
+                line, TelemetryJsonContext.Default.TelemetryRecord);
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            return null;
         }
     }
 

@@ -125,6 +125,7 @@ public static class Diagnostics
         Try(checks, "metal", list => CheckMetal(home, embedding, list));
         Try(checks, "backups", list => list.Add(CheckBackups(home, connection, config)));
         Try(checks, "edit queue", list => list.Add(CheckQueue(home)));
+        Try(checks, "webhook", list => CheckWebhook(config, list));
         Try(checks, "code analysis", list => list.Add(CheckRoslyn(environment)));
         Try(checks, "tree-sitter", list => list.Add(CheckTreeSitter(environment, home)));
 
@@ -134,6 +135,53 @@ public static class Diagnostics
         }
 
         return new DiagnosticReport(checks);
+    }
+
+    /// <summary>Where events are delivered as they are recorded, if anywhere.</summary>
+    /// <remarks>
+    /// <para>No subscriber is <c>Off</c>, not a fault: delivery is opt-in and the overwhelming
+    /// majority of instances want none (D37).</para>
+    /// <para>A URL that will not parse is <c>Broken</c>, matching how a bad embedding endpoint is
+    /// reported and for the same reason: nothing degrades, delivery simply does not happen, and
+    /// the person who typed a URL is waiting on the other end of it. A misfiled <c>kinds</c> entry
+    /// is only a warning — it delivers less rather than nothing, and it is the failure mode that
+    /// shows up nowhere else, since a filter matching no events looks exactly like a quiet
+    /// instance.</para>
+    /// <para>This reports the configuration, never whether anything arrived. Reaching the
+    /// subscriber to find out would make <c>doctor</c> emit an event of its own, and a check whose
+    /// observation is indistinguishable from the thing observed is the trap D42 records.</para>
+    /// </remarks>
+    private static void CheckWebhook(ConfigFile config, List<Diagnosis> checks)
+    {
+        var settings = WebhookSettings.Read(config);
+
+        foreach (var problem in settings.Problems)
+        {
+            checks.Add(new Diagnosis(
+                "webhook", DiagnosisState.Broken, problem, "fix or comment out url in config.toml"));
+        }
+
+        if (settings.Problems.Count == 0)
+        {
+            checks.Add(settings.Urls.Count == 0
+                ? new Diagnosis("webhook", DiagnosisState.Off, "no subscriber configured")
+                : new Diagnosis(
+                    "webhook",
+                    DiagnosisState.Ok,
+                    $"{string.Join(", ", settings.Urls)} — "
+                    + (settings.Kinds.Contains(WebhookSettings.EveryKind)
+                        ? "every event"
+                        : string.Join(", ", settings.Kinds))));
+        }
+
+        foreach (var unknown in settings.Unknown)
+        {
+            checks.Add(new Diagnosis(
+                "webhook",
+                DiagnosisState.Warn,
+                $"[webhook] {unknown}",
+                $"one of: {string.Join(", ", TelemetryEventKind.All)}"));
+        }
     }
 
     /// <summary>What the primer tells the agent about where its durable memory lives.</summary>

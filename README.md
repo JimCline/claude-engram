@@ -453,6 +453,36 @@ candidates instead was a real bug — a weekend-plans query returned seven hits,
 engineering notes reached through a shared word stem, and reported `high`, which is the
 value that tells the model memory has the question covered.
 
+### Reacting to what Engram does
+
+Engram records what it does — every recall, every capture, every session start — as one JSON object
+per line in `~/.engram/telemetry.jsonl`. Point `[webhook] url` at something and the server POSTs each
+record as it lands, so a script can react in real time:
+
+```toml
+[webhook]
+url = "http://127.0.0.1:8787/engram"
+kinds = ["remember", "recall", "session-start"]   # or ["*"] for everything
+timeout_ms = 2000
+```
+
+The request body is that log line **verbatim**, one event per request, plus `X-Engram-Event` and
+`X-Engram-Version` headers so a shell script can route on the kind without parsing JSON. A live feed
+and a read of the file are therefore the same data in the same shape.
+
+Two properties worth knowing before you build on it:
+
+- **It starts at the end of the log and never resumes.** You get what happens while the server is
+  running, and nothing else — otherwise a restart after a day of downtime would replay thousands of
+  `file-touched` events at whatever is listening. For history, read `telemetry.jsonl` directly; it is
+  durable, plain text and timestamped.
+- **A failed delivery is dropped, not queued.** Delivery is never allowed to stall memory, and a
+  subscriber that is down is muted with a doubling backoff rather than retried per event. This is
+  safe precisely because the file still has everything.
+
+`engram doctor` reports the configuration — a URL that will not parse is an error, and a `kinds`
+entry Engram never emits is a warning that narrows delivery rather than switching it off.
+
 ### Keeping it healthy
 
 `engram doctor` checks the whole instance and says what to type about anything wrong —

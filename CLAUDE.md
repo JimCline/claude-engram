@@ -1,7 +1,7 @@
 # Engram — working rules
 
 Read `docs/engram-implementation-plan.md` before any non-trivial change. It holds
-fifty-four decisions (D1–D54) that resolve questions the spec left open, and each one was
+fifty-five decisions (D1–D55) that resolve questions the spec left open, and each one was
 reached by argument or measurement, not preference. `docs/engram-schema.sql` is the authority for
 database shape.
 
@@ -468,6 +468,56 @@ logging path beside the one already there. Publishing is **per committed batch**
 eight batches and one was measured at 28 seconds. `--watch` redraws through `Tui.Frame`, which
 inherits D52's row budget entire; the bar is a terminal decoration and a pipe gets key-and-value
 lines, because that output is what a script and an agent parse (D54).
+
+**The webhook delivers the telemetry log; it is not a second event system.** Every kind Engram
+records already lands in `telemetry.jsonl`, so `WebhookService` tails that file rather than being
+notified at the point of emission — which is what makes a subscriber's live feed and a dashboard's
+history the same data, parsed by the same `Telemetry.TryParse`. The body of each POST is the log
+line **verbatim**, one event per request; an envelope was rejected because it adds a nesting level
+every subscriber unwraps for no information and makes the live feed parse differently from the file,
+which is the one property the feed exists to have. **Only the server delivers**: the producers are
+hooks that must not do outbound HTTP, since `file-touched` holds a 10 ms budget and may not even
+open the database (D4), and a POST costs far more than the open it is forbidden. Writing a line and
+exiting keeps emission free.
+
+**There is no cursor and no resume — the tail starts at end-of-file.** So the feed is what happens
+while the server runs, which is a contract in one sentence and needs no staleness threshold; the
+alternative replays a day of `file-touched` at a status-line script after any restart. Nothing is
+lost, because the log is durable and timestamped: history is a read of the file, which is what a
+dashboard wanting more than the tail should do anyway. **A failed delivery is dropped, never
+queued**, for the same reason — delivery may not stall the tail, and the durable log recovers
+anything a dashboard actually needs. Each subscriber gets **at most one failing attempt per poll**
+and is then muted with a doubling backoff: a subscriber that accepts and hangs, rather than
+refusing, costs the full timeout per record, and 64 records against 2 s is a two-minute poll during
+which nothing else is delivered. Muting is **per URL**, so a closed dashboard cannot take a status
+line down with it. The poll loop catches its own exceptions; letting one out of `ExecuteAsync` ends
+the `BackgroundService` for the life of the server, so a single unreadable record would silently
+stop every event after it.
+
+Three things measured while building it, none guessable. **A reader can starve `DurableAppend` and
+the loss is silent**: its writer opens `FileShare.None`, which an open reader refuses, and after the
+500 ms budget it *returns* rather than throwing — so a telemetry record disappears with no error.
+Relaxing the writer to `FileShare.Read` admits readers but was measured to let **two appenders both
+succeed**, destroying exactly the cross-process lost-update protection that `None` is there for, so
+the reader cannot be made harmless from the writer's side. In practice the tail holds the file for
+microseconds twice a second against a 500 ms retry budget, so collisions retry rather than drop —
+but do not add a second reader without revisiting this. **`TelemetryEventKind.All` must be checked
+against the constants by reflection, not by walking itself**: the obvious test iterates `All` and
+asserts each entry is accepted, which is a tautology — deleting a kind from the list means it is
+simply never visited, and that version passed with the defect in place. **A `BackgroundService`
+test needs a real barrier**: `StartAsync` promises only that `ExecuteAsync` was handed to the
+scheduler, so events written straight after it can beat the tail to its starting mark; that failed
+under load, passed in isolation, and looked exactly like a broken feature. The startup log line is
+emitted after the mark is taken, so waiting for it is the guarantee (D55).
+
+**A misfiled `kinds` entry narrows delivery; it may not switch it off.** Unknown kinds land in
+`WebhookSettings.Unknown`, which `doctor` warns about, and never in `Problems` — `IsEnabled` is
+cleared by `Problems`, so folding them in would stop delivering the kinds that *were* spelled
+correctly. That is the same trap a retired key set for the vector lane (D33), and it is why a bad
+*URL* is different: that one is `Broken`, because nothing degrades, delivery simply does not happen,
+and someone is waiting at the other end of it. There is deliberately no `enabled` key — a
+configured URL is the switch, since two ways to turn one thing off is how a setting disagrees with
+itself (D55).
 
 ## Build constraints
 

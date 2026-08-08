@@ -3794,6 +3794,67 @@ session that wrote a fact and the one that queries it.
 
 ---
 
+## D55 — The webhook delivers the telemetry log, starting at its end
+
+**Question.** Something outside Engram wants to react to memory activity as it happens — a script
+that renders Claude Code's status line, and later a dashboard showing live and long-term use. What
+emits, what does it emit, and what happens when the subscriber is not there?
+
+**Decision.** `[webhook] url` (or `urls`) configures subscribers. `WebhookService`, a hosted service
+in the server, tails `telemetry.jsonl` and POSTs each new record. The body is the log line verbatim,
+one event per request, with `X-Engram-Event` and `X-Engram-Version` headers so a shell script can
+route without a JSON parser. The tail starts at end-of-file and never resumes. A failed delivery is
+dropped, the subscriber is muted with a doubling backoff to 30 s, and each subscriber gets at most
+one failing attempt per poll.
+
+**Why the log rather than a new event bus.** Every kind Engram records is already appended to
+`telemetry.jsonl` by hooks and by the server alike. Tailing it is the only design in which the live
+feed and a reader of history are the same data — a fast path for MCP events would be where the two
+views begin to drift. It also means emission stays free: `file-touched` holds a 10 ms budget and is
+forbidden from opening the database (D4), and an outbound POST costs far more than the open it may
+not do. Only the long-lived server can afford to deliver, and it is the only thing that does.
+
+**Why no cursor.** A resume point makes a restart after downtime replay thousands of `file-touched`
+events describing edits from days ago, at a status line that renders "now". Starting at the end
+gives a contract in one sentence — *this is what happened while the server was running* — with no
+staleness threshold to tune. Nothing is lost: the log is durable, plain text and timestamped, so
+history is a read of the file, which is what a dashboard should be doing for anything beyond the
+tail. That same durability is what makes dropping a failed delivery safe rather than lossy.
+
+**Why one failing attempt per subscriber per poll.** A subscriber that refuses fails instantly; one
+that accepts and hangs costs the full timeout. Without the bound, 64 records against a 2 s timeout
+is a two-minute poll in which nothing is delivered to anyone. Muting is per URL for the same reason
+a status line must not go dark because an unrelated dashboard was closed.
+
+**Rejected: an envelope around the record.** `{"schema":1,"event":{…}}` adds a nesting level every
+subscriber unwraps for no information, and makes the live feed parse differently from the file —
+the one property this feed exists to have.
+
+**Rejected: an `enabled` key.** A configured URL is the switch. Two ways to turn one thing off is
+how a setting ends up disagreeing with itself.
+
+**Measured, and none of it guessable.** (1) A reader can starve `DurableAppend`: its writer opens
+`FileShare.None`, which an open reader refuses, and after the 500 ms budget it *returns* rather than
+throwing, so the record vanishes with no error. Relaxing the writer to `FileShare.Read` admits
+readers but was measured to let two appenders both succeed, destroying the cross-process
+lost-update protection `None` exists for — so the reader cannot be made harmless from the writer's
+side. The tail holds the file for microseconds twice a second against a 500 ms retry budget, so
+collisions retry rather than drop; a second reader would need this revisited. (2) The obvious test
+for `TelemetryEventKind.All` walks `All` and asserts each entry is accepted, which is a tautology:
+deleting a kind means it is never visited, and that version passed with the defect in place. The
+guard reads the constants by reflection instead. (3) `StartAsync` promises only that `ExecuteAsync`
+was scheduled, so a test writing events immediately after it can beat the tail to its starting mark
+— that failed under load, passed in isolation, and looked exactly like a broken feature. The
+startup log line is emitted after the mark is taken, so waiting for it is the barrier.
+
+**Diagnosis.** No subscriber is `Off`, not a fault. A malformed URL is `Broken`, matching a bad
+embedding endpoint: nothing degrades, delivery simply does not happen, and someone is waiting at
+the other end. A `kinds` entry Engram never emits is only `Warn` and lands in
+`WebhookSettings.Unknown` rather than `Problems` — `Problems` clears `IsEnabled`, so folding it in
+would stop delivering the kinds that were spelled correctly, the same trap a retired key set for the
+vector lane (D33). `doctor` reports configuration only; reaching the subscriber to check would make
+the check emit an event of its own.
+
 *Open items deliberately left for later: entity-resolution fuzziness thresholds (start
 exact + alias + case-insensitive, per spec §12); whether `UserPromptSubmit` recall
 earns default-on (decide from M0/M1 coverage data); archive FTS for history search

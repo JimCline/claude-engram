@@ -67,6 +67,11 @@ internal static class ServeCommand
         // the bound that justifies Warning everywhere else does not apply to it.
         builder.Logging.AddFilter(typeof(EmbeddingBacklogService).FullName, LogLevel.Information);
 
+        // The webhook states once, at startup, where it is delivering and what it is filtered to.
+        // That line is the only place a subscriber that never fires can be told apart from one
+        // that was never configured, and it costs one line per server rather than one per event.
+        builder.Logging.AddFilter(typeof(WebhookService).FullName, LogLevel.Information);
+
         builder.WebHost.UseUrls($"http://127.0.0.1:{resolvedPort}");
 
         builder.Services.AddHttpContextAccessor();
@@ -85,6 +90,12 @@ internal static class ServeCommand
         // second daemon. It self-disables when no provider is configured, which is the ordinary
         // case, so registering it unconditionally costs a started-and-returned task.
         builder.Services.AddHostedService<EmbeddingBacklogService>();
+
+        // Delivery of the telemetry log to whoever subscribed. Registered unconditionally for the
+        // same reason as the backlog — with no URL configured it returns immediately, which is the
+        // ordinary case — and it is the only component permitted to make outbound HTTP, because
+        // every other producer of these events is a hook on a latency budget.
+        builder.Services.AddHostedService<WebhookService>();
 
         builder.Services.AddMcpServer()
             // The SDK defaults HttpServerTransportOptions.Stateless to true as of the
