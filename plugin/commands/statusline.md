@@ -51,6 +51,12 @@ a dashboard never disagree.
 
 Every record has `timestamp` (ISO-8601, **UTC**), `session_id`, `kind`. Then, by kind:
 
+**`session_id` is two id spaces, not one.** Hook records — `file-touched`, `user-prompt`,
+`session-start`, `subagent-start`, `pre-compact` — carry Claude Code's session id, the same one
+arriving on stdin. Everything else carries the MCP transport's `Mcp-Session-Id`, or `server`, or
+`cli`. The two never share a value and no record connects them (D43), so a tool call cannot be
+attributed to the session that caused it.
+
 | kind | means | extra fields |
 |---|---|---|
 | `file-touched` | a file was edited | `path` |
@@ -70,6 +76,21 @@ These are not style preferences. Each one is a way this goes wrong that is invis
 
 - **Seek to the end; never read the file.** It grows without bound — hundreds of KB within days.
   `tail -c 8192 | grep '^{' | tail -1` costs the same on a 300 KB log as on a 3 MB one.
+- **One log serves every session on the machine.** Unfiltered, this window shows a file edited in
+  some other project — observed, and it reads as a bug in Engram rather than as the log being
+  shared. But **filtering on `session_id` alone is the wrong fix**: by the two id spaces above it
+  would drop every `recall`, `remember`, `browse` and `expand`, which is most of what is worth
+  showing. Keep a record when it is **either** this session's **or** of a kind nobody can
+  attribute anyway — MCP tool calls, and `index` / `embedding` / `server-*`, which are global.
+  Only another session's hook records fall out, and those are the whole leak.
+- **Claude Code cuts a long line; it does not wrap it.** One line of output is one row, so a line
+  wider than the terminal loses its tail, and a resize takes segments with it. `COLUMNS` and
+  `LINES` are exported to the script (Claude Code v2.1.153+) — `tput` cannot see the terminal
+  because the output is captured, so read those instead. A script that packs its segments into
+  rows itself keeps everything visible at any width. Leave one column unwritten: terminals
+  disagree about whether writing the last cell wraps now or on the next character, and that
+  difference is a blank row. If you are adding a segment to a line that already fills the width,
+  you are the one who pushed something off the edge — say so, or fix it while you are there.
 - **Decay stale activity.** Past a minute or two, the newest event describes history, not what is
   happening. Drop the activity word and keep only durable numbers, or the status line freezes
   showing "indexing" forever and stops meaning anything.
@@ -112,5 +133,14 @@ echo '{"session_id":"test","model":{"display_name":"Opus"}}' | <their script>
 
 An empty activity slot is expected when nothing has happened recently — that is the decay working,
 not a failure. To prove the branch that matters, point `ENGRAM_HOME` at a throwaway directory
-holding one hand-written record with a current timestamp, run it again, and show that too. Report
-the per-render cost if it is above about 50 ms.
+holding one hand-written record with a current timestamp, run it again, and show that too.
+
+Three checks that each catch a defect the happy path cannot:
+
+- Plant a record under a **different** `session_id` and confirm it does not appear.
+- Run at `COLUMNS=80` and confirm every row fits, then at `COLUMNS=200` for the single-line case.
+- Delete the log entirely and confirm the script still exits 0 and prints their other segments.
+
+Then break each guard you added and show it failing before restoring it — a filter that was never
+tested against a foreign record is indistinguishable from no filter. Report the per-render cost if
+it is above about 50 ms.
