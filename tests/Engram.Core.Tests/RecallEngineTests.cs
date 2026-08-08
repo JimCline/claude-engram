@@ -125,6 +125,38 @@ public class RecallEngineTests
         Assert.Equal(0, RecallEngine.LanesThatFound(candidate with { OverlapRank = null, LexicalRank = null }));
     }
 
+    /// <summary>
+    /// The marker is the only thing distinguishing a handle that heads a supersession thread from
+    /// one that goes nowhere, and expanding the wrong handle reports "1 version" — indistinguishable
+    /// from a belief that was never revised.
+    /// </summary>
+    [Fact]
+    public void Pack_AFactThatSupersededAnother_CarriesItsVersionCountOnTheLine()
+    {
+        var revised = new CannedFact(
+            "f900", "colour", "prefers", "Green.", "user", "topic", 0, Versions: 2);
+
+        var result = RecallEngine.Pack("colour green prefers", [revised], RecallEngine.DefaultBudgetTokens);
+
+        Assert.Contains("[f900]", result.Text);
+        Assert.Contains("· v2)", result.Text);
+    }
+
+    /// <summary>
+    /// Marking everything is exactly as useless as marking nothing, so the unrevised case is the
+    /// half worth guarding.
+    /// </summary>
+    [Fact]
+    public void Pack_AFactNobodyRevised_CarriesNoVersionMarker()
+    {
+        var plain = new CannedFact("f901", "colour", "prefers", "Green.", "user", "topic", 0);
+
+        var result = RecallEngine.Pack("colour green prefers", [plain], RecallEngine.DefaultBudgetTokens);
+
+        Assert.Contains("[f901]", result.Text);
+        Assert.DoesNotContain("· v", result.Text);
+    }
+
     [Fact]
     public void Pack_NonsenseQuery_ReturnsNoneCoverageInUnderFiveLines()
     {

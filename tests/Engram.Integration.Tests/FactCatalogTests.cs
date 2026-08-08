@@ -47,6 +47,79 @@ public class FactCatalogTests
         Assert.Equal(expected.Subject, actual.Subject);
     }
 
+    /// <summary>
+    /// Recall returns live facts only, so a revised belief and one held all along arrive as the
+    /// same line. The version count is what separates them, and it has to survive the trip from
+    /// the store to the object the ranker packs.
+    /// </summary>
+    [Fact]
+    public void ReadLongTerm_MarksAFactThatSupersededAnother()
+    {
+        using var sandbox = new SandboxHome(initialize: false);
+        EngramInitializer.Initialize(sandbox.Home);
+        using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
+
+        var write = new FactWrite(
+            "/user/about-you/colour", "preference", "prefers", "Orange.", "user", "stated");
+        FactStore.Remember(connection, write, T0);
+        FactStore.Remember(connection, write with { Body = "Green." }, T0.AddSeconds(9));
+
+        var catalog = FactCatalog.ReadLongTerm(connection, T0.AddMinutes(1));
+        var live = Assert.Single(catalog, f => f.Body == "Green.");
+
+        Assert.Equal(2, live.Versions);
+    }
+
+    /// <summary>
+    /// A fact nobody revised must not be advertised as a thread. This is the half that fails when
+    /// the count is wired up wrongly rather than not at all — marking everything is as useless as
+    /// marking nothing, because the marker exists to say which handle is worth expanding.
+    /// </summary>
+    [Fact]
+    public void ReadLongTerm_LeavesAnUnrevisedFactAtOneVersion()
+    {
+        using var sandbox = new SandboxHome(initialize: false);
+        EngramInitializer.Initialize(sandbox.Home);
+        using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
+
+        FactStore.Remember(
+            connection,
+            new FactWrite("/user/about-you/colour", "preference", "prefers", "Green.", "user", "stated"),
+            T0);
+
+        var catalog = FactCatalog.ReadLongTerm(connection, T0.AddMinutes(1));
+
+        Assert.All(catalog, fact => Assert.Equal(1, fact.Versions));
+    }
+
+    /// <summary>
+    /// The count and <see cref="FactStore.History"/> must agree, because the marker's whole job is
+    /// to send a reader to that call. They are keyed independently — the count groups every thread
+    /// in one query, History addresses one by path and predicate — so nothing but a test stops them
+    /// diverging, and the symptom would be a handle promising two versions and returning one.
+    /// </summary>
+    [Fact]
+    public void TheVersionCount_MatchesWhatExpandingTheHistoryReturns()
+    {
+        using var sandbox = new SandboxHome(initialize: false);
+        EngramInitializer.Initialize(sandbox.Home);
+        using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
+
+        var write = new FactWrite(
+            "/user/about-you/colour", "preference", "prefers", "Orange.", "user", "stated");
+        FactStore.Remember(connection, write, T0);
+        FactStore.Remember(connection, write with { Body = "Green." }, T0.AddSeconds(9));
+        FactStore.Remember(connection, write with { Body = "Blue." }, T0.AddSeconds(20));
+
+        var live = Assert.Single(
+            FactCatalog.ReadLongTerm(connection, T0.AddMinutes(1)),
+            f => f.Body == "Blue.");
+        var history = FactStore.History(connection, "/user/about-you/colour", "prefers");
+
+        Assert.Equal(history.Count, live.Versions);
+        Assert.Equal(3, live.Versions);
+    }
+
     [Fact]
     public void ReadLongTerm_StillRanksThroughTheExistingRecallPath()
     {

@@ -1,7 +1,7 @@
 # Engram — working rules
 
 Read `docs/engram-implementation-plan.md` before any non-trivial change. It holds
-fifty-six decisions (D1–D56) that resolve questions the spec left open, and each one was
+fifty-seven decisions (D1–D57) that resolve questions the spec left open, and each one was
 reached by argument or measurement, not preference. `docs/engram-schema.sql` is the authority for
 database shape.
 
@@ -488,7 +488,12 @@ eight batches and one was measured at 28 seconds. `--watch` redraws through `Tui
 inherits D52's row budget entire; the bar is a terminal decoration and a pipe gets key-and-value
 lines, because that output is what a script and an agent parse (D54).
 
-**Memory is timestamped to the second and must be read back that way, in the reader's zone.**
+**Memory is timestamped to the second and must be read back at that resolution, in the reader's
+zone — the render stops where the data does.** It stopped at the minute first, and the case that
+showed that was wrong is the one the read path exists to serve: a superseded preference at 00:02:11
+and its replacement at 00:02:20 rendered identically, so the chain showed *that* one belief closed
+another without showing which came first. Any unit coarser than the stored one has to be re-argued
+the next time two facts land inside it, which is the same bug the day format had.
 `valid_from` and `created_at` are unix seconds, but the read path rendered `yyyy-MM-dd` in UTC —
 two defects in one line, both silent. The model could report which *day* a memory was made and never
 what time, so every fact from one working session was mutually unordered on screen, and the analysis
@@ -499,6 +504,24 @@ west of Greenwich every fact recorded after mid-afternoon rendered with *tomorro
 agent whose context states today's date locally. `MomentText` is the one renderer, it takes a
 `TimeZoneInfo` so the boundary is testable rather than asserted, and six characters a fact is the
 whole cost.
+
+**A handle that leads somewhere has to say so, because the fact on the line cannot.** Recall returns
+live beliefs, so one that replaced another and one held all along arrive as the same line; the earlier
+version is reachable only through `engram_expand … history`, which needs the right handle to be given
+it. Measured on this instance: `favorite color` returns two live facts, both saying green — one a
+single version, one heading a thread whose previous entry says orange. Expanding the wrong one reports
+`1 version`, which reads exactly like *never revised*, and nothing separated them except that the right
+one's body happened to mention the old value. That is luck, and it fails silently in the direction of
+"there is no history here". So `CannedFact.Versions` carries the thread length and the recall line
+gains `· v2` when it exceeds one. `FactStore.VersionCounts` groups on `e.path` and `f.predicate` —
+**not** `subject_id`, which is the indexed and otherwise more natural key — because this number's only
+job is to advertise `History`, and `History` addresses a thread by path; counting by a different key
+than the call being advertised is how a marker comes to promise two versions and the expand it invited
+returns one. One query for the whole catalog rather than one per fact: recall packs a handful but ranks
+every live belief, so a per-fact lookup would put a round trip behind each of them. Threads of one
+version are omitted from the result, which keeps it small, and a fact whose thread is unknown reads as
+one — a count nobody looked up must not be advertised as a revision. Marking everything is exactly as
+useless as marking nothing, so the unrevised case is the half worth guarding (D57).
 
 **The webhook delivers the telemetry log; it is not a second event system.** Every kind Engram
 records already lands in `telemetry.jsonl`, so `WebhookService` tails that file rather than being

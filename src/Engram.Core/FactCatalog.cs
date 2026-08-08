@@ -37,6 +37,7 @@ public static class FactCatalog
     {
         var facts = FactStore.ReadLive(connection);
         var topics = FactStore.ReadEntityNames(connection, CannedFactSeeder.TopicKind);
+        var versions = FactStore.VersionCounts(connection);
         var catalog = new List<CannedFact>(facts.Count);
         var sessionPrefix = SessionFacts.Root + "/";
 
@@ -47,7 +48,8 @@ public static class FactCatalog
                 continue;
             }
 
-            catalog.Add(ToCannedFact(fact, now, topics));
+            versions.TryGetValue((fact.SubjectPath, fact.Predicate), out var count);
+            catalog.Add(ToCannedFact(fact, now, topics, count));
         }
 
         return catalog;
@@ -89,7 +91,16 @@ public static class FactCatalog
             out factId);
     }
 
-    public static CannedFact ToCannedFact(StoredFact fact, DateTimeOffset now, IReadOnlyDictionary<string, string>? topicNames = null) => new(
+    /// <param name="versions">
+    /// Length of the supersession thread this fact belongs to, from
+    /// <see cref="FactStore.VersionCounts"/>. Zero means the caller did not look, and reads as
+    /// one — a fact whose thread is unknown must not be advertised as revised.
+    /// </param>
+    public static CannedFact ToCannedFact(
+        StoredFact fact,
+        DateTimeOffset now,
+        IReadOnlyDictionary<string, string>? topicNames = null,
+        int versions = 1) => new(
         Id: HandleFor(fact.Id),
         Subject: fact.SubjectName,
         Predicate: fact.Predicate,
@@ -97,7 +108,8 @@ public static class FactCatalog
         Scope: fact.Scope,
         Topic: TopicOf(fact.SubjectPath, topicNames),
         AgeDays: AgeDaysOf(fact, now),
-        Evidence: fact.Evidence);
+        Evidence: fact.Evidence,
+        Versions: versions > 1 ? versions : 1);
 
     /// <summary>
     /// The display text of a fact's topic: the second path segment, resolved through the

@@ -24,7 +24,7 @@ public class MomentTextTests
     {
         var instant = At("2026-08-07T01:30:00Z");
 
-        Assert.Equal("2026-08-06 18:30", MomentText.In(instant, Pacific));
+        Assert.Equal("2026-08-06 18:30:00", MomentText.In(instant, Pacific));
     }
 
     /// <summary>
@@ -37,8 +37,8 @@ public class MomentTextTests
         var morning = At("2026-08-06T09:05:00Z");
         var evening = At("2026-08-06T21:47:00Z");
 
-        Assert.Equal("2026-08-06 09:05", MomentText.In(morning, TimeZoneInfo.Utc));
-        Assert.Equal("2026-08-06 21:47", MomentText.In(evening, TimeZoneInfo.Utc));
+        Assert.Equal("2026-08-06 09:05:00", MomentText.In(morning, TimeZoneInfo.Utc));
+        Assert.Equal("2026-08-06 21:47:00", MomentText.In(evening, TimeZoneInfo.Utc));
         Assert.NotEqual(
             MomentText.In(morning, TimeZoneInfo.Utc),
             MomentText.In(evening, TimeZoneInfo.Utc));
@@ -53,10 +53,37 @@ public class MomentTextTests
         Assert.NotEqual(MomentText.In(first, Pacific), MomentText.In(second, Pacific));
     }
 
+    /// <summary>
+    /// The pair that showed minute resolution was the day bug one level finer. These are the real
+    /// <c>valid_from</c> values of a superseded preference and the fact that replaced it — nine
+    /// seconds apart, and indistinguishable under the format this replaced, so the render could
+    /// show that one belief closed another without showing which came first.
+    /// </summary>
+    [Fact]
+    public void TwoFactsSecondsApart_AreDistinguishable()
+    {
+        var superseded = At("2026-08-08T07:02:11Z");
+        var replacement = At("2026-08-08T07:02:20Z");
+
+        Assert.NotEqual(
+            MomentText.In(superseded, TimeZoneInfo.Utc),
+            MomentText.In(replacement, TimeZoneInfo.Utc));
+    }
+
+    /// <summary>
+    /// The render stops exactly where the stored data does. Anything coarser is a truncation that
+    /// has to be re-argued the next time two facts land inside whatever unit was chosen.
+    /// </summary>
+    [Fact]
+    public void TheRender_KeepsEverySecondTheStoreHolds()
+    {
+        Assert.Equal("2026-08-07 01:30:47", MomentText.In(At("2026-08-07T01:30:47Z"), TimeZoneInfo.Utc));
+    }
+
     [Fact]
     public void InUtc_TheRenderMatchesTheStoredInstant()
     {
-        Assert.Equal("2026-08-07 01:30", MomentText.In(At("2026-08-07T01:30:00Z"), TimeZoneInfo.Utc));
+        Assert.Equal("2026-08-07 01:30:00", MomentText.In(At("2026-08-07T01:30:00Z"), TimeZoneInfo.Utc));
     }
 
     [Fact]

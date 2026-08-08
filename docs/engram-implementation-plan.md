@@ -3930,6 +3930,50 @@ session-start hook tests documented when the detached maintenance child started 
 kind, and name the kinds the exchange may produce; a total asserts something about the whole file
 rather than about the thing under test.
 
+## D57 — A handle that leads somewhere has to say so
+
+**Problem.** Asked to show what a preference used to be, the tools could already answer:
+`engram_recall` returns handles, `engram_expand … history` walks `FactStore.History` and returns the
+closed facts along with the live one. No database access was needed and none of that is new. What
+was new was watching it done on real data and noticing the answer arrived by luck.
+
+`favorite color` returns **two** live facts, both saying green. One is a single version. The other
+heads a thread whose previous entry says orange, closed thirty seconds after it was written. The
+recall line — `[f4671] My favorite color is green. (user · 0d)` — is identical in shape for both,
+because recall returns what is *believed*, and a belief that replaced something looks exactly like
+one held all along. Expand the wrong handle and the tool reports `1 version`, which reads precisely
+like *this was never revised*. The only thing that distinguished them was that the right one's body
+happened to mention the old value in passing. That is not a design, and it fails silently in the
+direction of asserting there is no history.
+
+**So the line carries the thread length.** `CannedFact.Versions`, rendered as `· v2` when it exceeds
+one, absent otherwise. The marker is not the history and does not try to be: it is the one bit that
+turns choosing a handle from a guess into a lookup, and it costs three characters on the facts that
+have it and nothing on the facts that do not. Inlining the previous version instead was rejected —
+closed facts are by definition not believed, and spending the same token budget on them as on live
+ones inverts what the budget is for.
+
+**The count is keyed the way `History` addresses a thread, not the way the schema indexes one.**
+`VersionCounts` groups on `e.path` and `f.predicate`. `subject_id` is the indexed column,
+`ux_fact_live` is built on it, and it is the obviously right key for any other purpose — but this
+number exists solely to advertise `History`, and `History` takes a path. Counting by a different key
+than the call being advertised is how a marker comes to promise two versions and the expand it
+invited returns one; paths follow their entity on rename (D2), so the two keys are not
+interchangeable in a store old enough to have had one. `TheVersionCount_MatchesWhatExpandingTheHistoryReturns`
+asserts the agreement directly rather than asserting a number, since a number can be right for one
+store and the invariant is what has to hold.
+
+**One query for the catalog, not one per fact.** Recall packs a handful of facts but ranks every live
+belief in the store, so a per-fact lookup puts a round trip behind each of them. `HAVING COUNT(*) > 1`
+means the result holds only threads that were actually revised, which is a small set in any real
+store — most beliefs are never replaced. A fact whose thread was not looked up reads as one version:
+a count nobody took must not be rendered as a revision.
+
+**Marking everything is exactly as useless as marking nothing**, which is why the unrevised case gets
+its own guard at both tiers. Falsified both halves: forcing `VersionCounts` to match nothing fails the
+two integration tests that expect a thread and leaves the control passing, and forcing the render never
+to mark fails the unit test and leaves the plain one passing.
+
 *Open items deliberately left for later: entity-resolution fuzziness thresholds (start
 exact + alias + case-insensitive, per spec §12); whether `UserPromptSubmit` recall
 earns default-on (decide from M0/M1 coverage data); archive FTS for history search

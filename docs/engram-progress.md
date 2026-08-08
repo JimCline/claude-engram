@@ -1,6 +1,6 @@
 # Engram — progress snapshot
 
-**As of 2026-08-08.** Working tree clean, 56 decisions (D1–D56). M3's tier 0 shipped overnight
+**As of 2026-08-08.** Working tree clean, 57 decisions (D1–D57). M3's tier 0 shipped overnight
 on an explicit user override of D6's gate; tier 1 (D47) and grammar v2 (D48) followed.
 
 This is a handoff, not an authority. `CLAUDE.md` holds the invariants,
@@ -14,7 +14,7 @@ disagree, they win and this file is stale.
 
 1. `CLAUDE.md` — the invariants that are easy to break by accident. All of them were paid
    for by a real defect.
-2. `docs/engram-implementation-plan.md` — D1–D56. Skim the headings; read in full any
+2. `docs/engram-implementation-plan.md` — D1–D57. Skim the headings; read in full any
    decision you are about to touch.
 3. This file — for what is in flight and what the last session learned the hard way.
 

@@ -1,5 +1,12 @@
 namespace Engram.Core;
 
+/// <param name="Versions">
+/// How many facts exist on this subject and predicate, live and closed together — so 1 means
+/// nothing was ever replaced and 2 or more means this handle heads a supersession thread that
+/// <c>engram_expand … history</c> can walk. Recall returns live facts only, which makes a
+/// revised belief indistinguishable from one that was always held; the count is the only thing
+/// in reach that separates them.
+/// </param>
 public sealed record CannedFact(
     string Id,
     string Subject,
@@ -8,7 +15,8 @@ public sealed record CannedFact(
     string Scope,
     string Topic,
     int AgeDays,
-    string? Evidence = null);
+    string? Evidence = null,
+    int Versions = 1);
 
 public static class CannedFacts
 {

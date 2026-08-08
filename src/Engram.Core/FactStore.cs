@@ -378,6 +378,45 @@ public static class FactStore
     }
 
     /// <summary>
+    /// How many versions each supersession thread holds, keyed the way <see cref="History"/>
+    /// addresses one. Threads of a single version are omitted, so the result is small — most
+    /// beliefs are never revised.
+    /// </summary>
+    /// <remarks>
+    /// Grouped on <c>e.path</c> and <c>f.predicate</c> rather than on <c>subject_id</c>, which
+    /// would be the more natural key and the indexed one, because this number's only job is to
+    /// tell a reader that <see cref="History"/> has something to show — and History addresses a
+    /// thread by path. Counting by a different key than the method being advertised is how a
+    /// marker comes to promise two versions and the expand it invited returns one.
+    ///
+    /// One query for the whole catalog, not one per fact: recall packs a handful of facts but
+    /// the catalog it ranks is every live belief in the store, and a per-fact lookup would put
+    /// a round trip behind each of them.
+    /// </remarks>
+    public static IReadOnlyDictionary<(string Path, string Predicate), int> VersionCounts(
+        SqliteConnection connection)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText =
+            """
+            SELECT e.path, f.predicate, COUNT(*)
+              FROM fact f
+              JOIN entity e ON e.id = f.subject_id
+             GROUP BY e.path, f.predicate
+            HAVING COUNT(*) > 1;
+            """;
+
+        var counts = new Dictionary<(string, string), int>();
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            counts[(reader.GetString(0), reader.GetString(1))] = reader.GetInt32(2);
+        }
+
+        return counts;
+    }
+
+    /// <summary>
     /// Lexical search over live facts (D3). Ranked by bm25, best first.
     /// </summary>
     public static IReadOnlyList<StoredFact> Search(SqliteConnection connection, string query, int limit)

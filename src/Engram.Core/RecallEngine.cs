@@ -528,8 +528,16 @@ public static class RecallEngine
         _ => "none",
     };
 
+    /// <summary>
+    /// The line a model reads a fact off. The version marker is the only signal that a handle
+    /// leads anywhere: recall returns live beliefs, so a revised one and one held all along are
+    /// the same line, and picking the wrong handle to expand reports "1 version" — which reads
+    /// exactly like "never changed". Marking the thread head turns that from luck into a lookup.
+    /// </summary>
     private static string FormatFactLine(CannedFact fact) =>
-        $"[{fact.Id}] {fact.Body} ({fact.Scope} · {fact.AgeDays}d)";
+        fact.Versions > 1
+            ? $"[{fact.Id}] {fact.Body} ({fact.Scope} · {fact.AgeDays}d · v{fact.Versions})"
+            : $"[{fact.Id}] {fact.Body} ({fact.Scope} · {fact.AgeDays}d)";
 
     private static string FormatSessionFactLine(SessionFact fact)
     {
