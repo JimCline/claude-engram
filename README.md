@@ -480,6 +480,11 @@ Two properties worth knowing before you build on it:
   subscriber that is down is muted with a doubling backoff rather than retried per event. This is
   safe precisely because the file still has everything.
 
+Work that takes time reports both ends, so a subscriber never has to guess how long to keep saying
+it is happening: `index` and `embedding` each carry a `phase` of `started`, `finished` or `failed`.
+Neither carries counts — the index report says what was written, and how far along a backfill is
+lives in `engram embed --status`, which is right whether or not anything is subscribed.
+
 `engram doctor` reports the configuration — a URL that will not parse is an error, and a `kinds`
 entry Engram never emits is a warning that narrows delivery rather than switching it off.
 

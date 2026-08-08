@@ -522,6 +522,21 @@ scheduler, so events written straight after it can beat the tail to its starting
 under load, passed in isolation, and looked exactly like a broken feature. The startup log line is
 emitted after the mark is taken, so waiting for it is the guarantee (D55).
 
+**Work with a duration reports both ends, and reports transitions rather than samples.** `index`
+and `embedding` carry a `phase` — `started`, `finished`, `failed` — because without the second half
+anything displaying activity has to guess how long to keep displaying it, and a guess about how long
+a repository takes is not a design. The backlog emits on the idle/working edge, not per pass: a
+backfill is hundreds of batches and putting each into `telemetry.jsonl` would change what that file
+is, since it is what D18 and D43 read to answer how memory is used. Progress belongs in
+`embedding.json`, which is maintained for that question already (D54). Neither event carries counts —
+a nearby number in a field meaning something else is exactly what D43 traced a wrong conclusion back
+to. Two consequences measured on the published binary, both caught only by tier 3: `session-start`
+spawns the maintenance child, so an `index` run now writes into the same log during a session-start
+test, and four end-to-end tests that counted *every* line of `telemetry.jsonl` broke. Those counts
+were already a race — the child is detached — so they filter by kind now. Sizing matters in the
+guard too: at 12 facts and `MaxBatch` 4 the backfill completes in one pass, so "once per transition"
+and "once per pass" emit identically and the test passed with the guard deleted (D55).
+
 **A misfiled `kinds` entry narrows delivery; it may not switch it off.** Unknown kinds land in
 `WebhookSettings.Unknown`, which `doctor` warns about, and never in `Problems` — `IsEnabled` is
 cleared by `Problems`, so folding them in would stop delivering the kinds that *were* spelled

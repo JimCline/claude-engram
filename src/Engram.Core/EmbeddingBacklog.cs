@@ -82,6 +82,7 @@ public sealed class EmbeddingBacklog(
         Publish(outcome: "starting", error: null);
 
         var lastReported = default(BackfillOutcome?);
+        var working = false;
 
         while (!cancellationToken.IsCancellationRequested)
         {
@@ -101,6 +102,12 @@ public sealed class EmbeddingBacklog(
                 // than every two seconds.
                 log?.Invoke($"Embedding pass failed: {ex.Message}");
                 Publish(outcome: "failed", error: ex.Message);
+
+                if (working)
+                {
+                    working = false;
+                    Note("failed");
+                }
                 await DelayAsync(IdleInterval, cancellationToken).ConfigureAwait(false);
                 continue;
             }
@@ -113,12 +120,27 @@ public sealed class EmbeddingBacklog(
             {
                 log?.Invoke(
                     $"Embedded {result.Embedded} fact(s); {result.Remaining} pending.");
+
+                if (!working)
+                {
+                    working = true;
+                    Note("started");
+                }
             }
-            else if (result.Outcome != BackfillOutcome.Completed && result.Outcome != lastReported)
+            else
             {
-                // Said once per change of state, not once per pass — a mismatched index would
-                // otherwise write a line every thirty seconds for as long as it stayed wrong.
-                log?.Invoke($"Embedding backlog {result.Outcome}: {result.Remaining} pending.");
+                if (working)
+                {
+                    working = false;
+                    Note("finished");
+                }
+
+                if (result.Outcome != BackfillOutcome.Completed && result.Outcome != lastReported)
+                {
+                    // Said once per change of state, not once per pass — a mismatched index would
+                    // otherwise write a line every thirty seconds for as long as it stayed wrong.
+                    log?.Invoke($"Embedding backlog {result.Outcome}: {result.Remaining} pending.");
+                }
             }
 
             // Every pass, including the idle ones that log nothing. The timestamp is what tells a
@@ -136,11 +158,37 @@ public sealed class EmbeddingBacklog(
 
         log?.Invoke("Embedding backlog stopped.");
 
+        // A server stopped mid-backfill would otherwise leave "embedding" as the last thing anyone
+        // heard, with nothing ever arriving to end it. The same reason the note below is removed
+        // rather than stamped: whoever knows the work ended is the only one who can say so.
+        if (working)
+        {
+            working = false;
+            Note("finished");
+        }
+
         // Removed rather than stamped "stopped": a note left behind would carry a timestamp that
         // was true when written, and anything reading it later has to decide whether to believe
         // it. Absent is unambiguous, and the store still answers how much work is outstanding.
         EmbeddingProgress.Clear(home);
     }
+
+    /// <summary>
+    /// Records a change between idle and working, and nothing else.
+    /// </summary>
+    /// <remarks>
+    /// Transitions rather than samples. A pass is up to eight batches and a full backfill is
+    /// hundreds of them, so publishing progress here would put several hundred rows per backfill
+    /// into the file D18 and D43 read to answer how memory is actually used, changing what that
+    /// file is. How far along it is belongs in <c>embedding.json</c>, which is already maintained
+    /// for exactly that question and is correct whether or not anyone is subscribed (D54).
+    /// </remarks>
+    private void Note(string phase) =>
+        Telemetry.Append(home, new TelemetryRecord(
+            Timestamp: DateTimeOffset.UtcNow.ToString("o"),
+            SessionId: "server",
+            Kind: TelemetryEventKind.Embedding,
+            Phase: phase));
 
     private void NoteBatch(IReadOnlyList<string> bodies)
     {

@@ -19,6 +19,12 @@ public static class TelemetryEventKind
     public const string PreCompact = "pre-compact";
     public const string FileTouched = "file-touched";
 
+    /// <summary>A run of <c>engram index</c>, which had recorded nothing at all until now.</summary>
+    public const string Index = "index";
+
+    /// <summary>The embedding backlog moving between idle and working.</summary>
+    public const string Embedding = "embedding";
+
     /// <summary>
     /// Every kind Engram emits.
     /// </summary>
@@ -31,6 +37,7 @@ public static class TelemetryEventKind
     [
         Recall, Remember, Digest, Browse, Expand, Revise,
         SessionStart, ServerStart, SessionOpen, SubagentStart, PreCompact, FileTouched,
+        Index, Embedding,
     ];
 }
 
@@ -46,7 +53,15 @@ public sealed record TelemetryRecord(
     [property: JsonPropertyName("long_term_fact_count")] int? LongTermFactCount = null,
     [property: JsonPropertyName("prior_session_fact_count")] int? PriorSessionFactCount = null,
     [property: JsonPropertyName("agent_id")] string? AgentId = null,
-    [property: JsonPropertyName("agent_type")] string? AgentType = null);
+    [property: JsonPropertyName("agent_type")] string? AgentType = null,
+
+    /// <summary>
+    /// Where a piece of work stands: <c>started</c>, <c>finished</c>, <c>failed</c>. Only kinds
+    /// that have a duration set it. It is deliberately not a count — a nearby number in a field
+    /// meaning something else is how D43 happened — and detail belongs in the note the doing
+    /// process already writes (D54), not duplicated into an append-only log.
+    /// </summary>
+    [property: JsonPropertyName("phase")] string? Phase = null);
 
 [JsonSerializable(typeof(TelemetryRecord))]
 internal sealed partial class TelemetryJsonContext : JsonSerializerContext;

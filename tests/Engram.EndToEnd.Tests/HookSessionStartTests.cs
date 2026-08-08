@@ -4,6 +4,22 @@ namespace Engram.EndToEnd.Tests;
 
 public class HookSessionStartTests
 {
+    /// <summary>
+    /// The session-start records, and only those.
+    /// </summary>
+    /// <remarks>
+    /// telemetry.jsonl is a shared log and these tests are about one hook. Session start also
+    /// spawns the maintenance child, which records its own indexing, so counting every line
+    /// asserts something about the whole file instead. That count was already a race the
+    /// assertions never meant to include — the child is detached, so how many of its records have
+    /// landed by the time this reads is a matter of machine load.
+    /// </remarks>
+    private static IReadOnlyList<JsonElement> SessionStartRecords(TestHome home) =>
+        File.ReadAllLines(Path.Combine(home.Root, "telemetry.jsonl"))
+            .Select(line => JsonDocument.Parse(line).RootElement)
+            .Where(record => record.GetProperty("kind").GetString() == "session-start")
+            .ToList();
+
     [Fact]
     public void SessionStart_ExitsZero_EmitsValidJsonContract_PrimerUnder300Tokens()
     {
@@ -71,9 +87,7 @@ public class HookSessionStartTests
         Assert.Equal(0, exitCode);
         Assert.Equal(string.Empty, stderr);
 
-        var telemetryPath = Path.Combine(home.Root, "telemetry.jsonl");
-        var line = File.ReadAllLines(telemetryPath).Single();
-        var sessionId = JsonDocument.Parse(line).RootElement.GetProperty("session_id").GetString();
+        var sessionId = Assert.Single(SessionStartRecords(home)).GetProperty("session_id").GetString();
 
         Assert.False(string.IsNullOrEmpty(sessionId));
     }
@@ -91,12 +105,11 @@ public class HookSessionStartTests
         Assert.Equal(0, first.ExitCode);
         Assert.Equal(0, second.ExitCode);
 
-        var telemetryPath = Path.Combine(home.Root, "telemetry.jsonl");
-        var lines = File.ReadAllLines(telemetryPath);
-        Assert.Equal(2, lines.Length);
+        var records = SessionStartRecords(home);
+        Assert.Equal(2, records.Count);
 
-        var sessionIds = lines
-            .Select(line => JsonDocument.Parse(line).RootElement.GetProperty("session_id").GetString())
+        var sessionIds = records
+            .Select(record => record.GetProperty("session_id").GetString())
             .ToList();
 
         Assert.Equal(["session-aaa", "session-bbb"], sessionIds);
@@ -120,8 +133,7 @@ public class HookSessionStartTests
             .GetProperty("hookSpecificOutput").GetProperty("additionalContext").GetString();
         Assert.False(string.IsNullOrWhiteSpace(primer));
 
-        var record = JsonDocument.Parse(
-            File.ReadAllLines(Path.Combine(home.Root, "telemetry.jsonl")).Single()).RootElement;
+        var record = Assert.Single(SessionStartRecords(home));
 
         var longTerm = record.GetProperty("long_term_fact_count");
         Assert.NotEqual(JsonValueKind.Null, longTerm.ValueKind);
@@ -145,8 +157,7 @@ public class HookSessionStartTests
 
         Assert.Equal(0, EngramProcess.Run(home.Root, "hook", "session-start").ExitCode);
 
-        var record = JsonDocument.Parse(
-            File.ReadAllLines(Path.Combine(home.Root, "telemetry.jsonl")).Single()).RootElement;
+        var record = Assert.Single(SessionStartRecords(home));
 
         Assert.Equal(JsonValueKind.Null, record.GetProperty("fact_count").ValueKind);
     }

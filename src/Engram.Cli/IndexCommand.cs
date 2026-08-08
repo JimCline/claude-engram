@@ -85,6 +85,11 @@ internal static class IndexCommand
             return 1;
         }
 
+        // Emitted for a dry run too. The scan is the slow half and it happens either way, so
+        // "is Engram busy with the repo" is answered the same for both; what differs is whether
+        // anything is written, which the report says.
+        Note(home, "started");
+
         try
         {
             using var connection = apply
@@ -100,13 +105,37 @@ internal static class IndexCommand
                 DateTimeOffset.UtcNow);
 
             Print(report, stdout);
+            Note(home, "finished");
             return 0;
         }
         catch (SqliteException e) when (e.Message.Contains("no such table", StringComparison.OrdinalIgnoreCase))
         {
             stderr.WriteLine("error: this store predates the code index tables. Re-run with --apply,");
             stderr.WriteLine("which migrates after snapshotting, or run 'engram doctor' to see where it stands.");
+            Note(home, "failed");
             return 1;
+        }
+    }
+
+    /// <summary>
+    /// Records that indexing is under way, so something watching the event stream can say so.
+    /// </summary>
+    /// <remarks>
+    /// The session id is the literal "cli" because this command has no session — D43 already
+    /// established that the id spaces here are disjoint and do not combine, so a third honest
+    /// value costs nothing and a borrowed one would invite exactly the arithmetic that went wrong
+    /// before. A finished phase is what lets a reader stop saying "indexing"; without the pair,
+    /// the only alternative is a timer, and a timer is a guess about how long a repo takes.
+    /// </remarks>
+    private static void Note(EngramHome home, string phase)
+    {
+        if (File.Exists(home.ConfigPath))
+        {
+            Telemetry.Append(home, new TelemetryRecord(
+                Timestamp: DateTimeOffset.UtcNow.ToString("o"),
+                SessionId: "cli",
+                Kind: TelemetryEventKind.Index,
+                Phase: phase));
         }
     }
 
