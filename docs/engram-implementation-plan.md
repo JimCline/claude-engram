@@ -2913,6 +2913,69 @@ ellipses the specs instead, so a second guard asserts the spec line survives un-
 restored exactly (no clipping plus the concatenated description), and the prose concatenated back
 into the spec line alone.
 
+### D53 — a scan is bounded, and a partial scan may not be treated as an answer
+
+**Decision.** `RepoScanner` takes a `ScanBudget` — a time allowance covering the whole scan, and a
+file ceiling covering only the directory walk — and reports which one stopped it. Nothing that reads
+a scan may treat a truncated one as complete: `CodeIndexer` skips deletions entirely, and `doctor`
+warns instead of offering to index the directory.
+
+**Why, measured.** `engram doctor` run from a home directory printed nothing, held 100% of a core
+and **7.8 GB resident** at 106 seconds, and had to be killed — it never terminated on its own. A
+stack sample showed it in `stat` and `opendir`: the `indexing` row calls `RepoScanner.Scan` on the
+working directory, and outside a git checkout that falls through to `Walk`, which had no time
+budget, no depth cap and no file ceiling, accumulating every path it saw.
+
+Pruning was not the missing piece and adding patterns would not have fixed it. The walk already
+prunes at the directory and skips embedded checkouts, but none of the configured globs — `bin`,
+`obj`, `node_modules`, `.git` — describe `~/Library`, a package cache or a downloads folder. A plain
+`find` counted **1,318,043** files under that home in 20 seconds and had not finished. The same
+repository lists **289** files through `git ls-files` and **4,318** through an unpruned walk, so
+roughly three hundred times separates the largest plausible target from the accident, and a ceiling
+of 100,000 sits clear of both.
+
+**The bound alone would have been a worse bug.** `CodeIndexer` computes deletions as *every
+previously-indexed file absent from this scan*. Truncate the scan and every path past the cut is
+absent for a reason that has nothing to do with the disk, so a slow scan would have become a
+destructive one, retracting the code facts for most of a repository. By D8 those are derived state
+and rebuildable, which is why this is a defect rather than a catastrophe — but a bound that silently
+retracts thousands of facts is not a fix. Hence `ScanStop`, `Truncated`, and the rule that absence
+is only evidence when the scan finished.
+
+**Two bounds, not one spelling of the same one.** A tree of a million empty directories runs forever
+under a file ceiling, because the collected list never grows — only the clock stops it. The ceiling
+answers memory instead, and it is deliberately kept off the git path: a monorepo listing 150,000
+files through `git ls-files` is completely enumerated, and calling it partial would disable its
+deletions for good. Time still applies to a git listing, because classifying those files is Engram's
+work rather than git's.
+
+**Found by publishing the first fix and running the reported command.** Bounding only the walk left
+doctor at **8.38 s** in that home directory: the walk stopped at its ceiling in about two seconds and
+the classification pass then spent six more reading the head of each of 100,000 candidates to tell
+source from binary from generated. The budget now covers both halves off one clock, and the check
+sits on the first candidate rather than in a separate pre-check — two checks against one clock cannot
+be told apart by a test, since whichever fires first answers for both and the other could be deleted
+with the suite still green. After: **2.0 s and 258 MB**, against >106 s and 7.8 GB, with the row
+saying the count is partial. Inside a real checkout it is unchanged at 0.00 s and 1 MB, because git
+answers there and the walk never runs.
+
+**Doctor warns rather than reporting `Off`,** and only in the truncated case. Left as it was, the row
+answers a home directory with `-> engram index --apply`, an instruction to index the thing that just
+could not be walked. `Warn` never sets exit 1, so D37's rule that only `Broken` fails is intact.
+
+**Falsified nine ways,** each checksummed: the walk not checking the clock between directories, not
+checking the ceiling, the summary not saying the count is partial, the ceiling applied after the fact
+so git listings truncate too, classification unbounded again, a partial scan driving deletions again,
+doctor offering to index what it could not walk, and — the other direction — each budget set tight
+enough to fire on ordinary work, which must break the tests that say ordinary work is unaffected.
+Without that last pair the bound could have been zero and everything still passed.
+
+**Not measured:** the clock check inside the walk's per-directory entry loop, which exists for a
+single directory holding millions of entries. Every deterministic test for it is shadowed by the
+per-directory check against the same clock, and the timing-dependent version is the kind of guard
+that gets deleted for flakiness rather than fixed. The ceiling test covers the same loop's structure;
+the time branch through it is reasoned, not measured.
+
 ## PreCompact cannot inject context
 
 Spec §10.1 assumes `PreCompact` can "inject one instruction" the same way `SessionStart`

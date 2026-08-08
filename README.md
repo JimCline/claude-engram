@@ -55,7 +55,7 @@ shipped but nothing has yet been leaned on it.
 
 Licensed under [Apache-2.0](LICENSE).
 
-Start with the implementation plan — it records fifty-two decisions (D1–D52) resolving
+Start with the implementation plan — it records fifty-three decisions (D1–D53) resolving
 questions the spec left open, the places where the spec contradicts itself, and for each
 one the argument or measurement that settled it. `CLAUDE.md` holds the invariants that are
 easy to break by accident, most of which were paid for by breaking them.

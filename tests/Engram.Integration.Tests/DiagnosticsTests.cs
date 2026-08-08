@@ -792,4 +792,52 @@ public sealed class DiagnosticsTests : IDisposable
 
         Assert.Fail($"the stand-in embedding server never answered: {Complaint(process)}");
     }
+
+    // ---- doctor in a directory too large to scan ----
+
+    /// <summary>
+    /// The advice is the point, not the state. Left as <c>Off</c> with its usual fix line, the row
+    /// answers a home directory with "engram index --apply" — an instruction to index the thing
+    /// that just could not be walked.
+    /// </summary>
+    [Fact]
+    public void ADirectoryTooLargeToScan_WarnsInsteadOfOfferingToIndexIt()
+    {
+        using var sandbox = new SandboxHome();
+        var directory = Path.Combine(sandbox.Home.Root, "enormous");
+        Directory.CreateDirectory(directory);
+        File.WriteAllText(Path.Combine(directory, "a.cs"), "class A;\n");
+        using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
+
+        var row = Diagnostics.CheckRepo(
+            directory,
+            ConfigFile.Empty,
+            connection,
+            new ScanBudget(TimeSpan.Zero, MaxFiles: 1_000));
+
+        Assert.Equal(DiagnosisState.Warn, row.State);
+        Assert.Contains("partial", row.Detail, StringComparison.Ordinal);
+        Assert.NotNull(row.Fix);
+        Assert.DoesNotContain("engram index", row.Fix, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The half that would catch a budget so tight it fires on real work: an ordinary directory is
+    /// still reported flat, with the offer to index it intact.
+    /// </summary>
+    [Fact]
+    public void AnOrdinaryUnindexedDirectory_IsStillOffOfferingToIndexIt()
+    {
+        using var sandbox = new SandboxHome();
+        var directory = Path.Combine(sandbox.Home.Root, "project");
+        Directory.CreateDirectory(directory);
+        File.WriteAllText(Path.Combine(directory, "a.cs"), "class A;\n");
+        using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
+
+        var row = Diagnostics.CheckRepo(directory, ConfigFile.Empty, connection);
+
+        Assert.Equal(DiagnosisState.Off, row.State);
+        Assert.DoesNotContain("partial", row.Detail, StringComparison.Ordinal);
+        Assert.Equal("engram index --apply", row.Fix);
+    }
 }

@@ -101,6 +101,42 @@ public class CodeIndexerTests
             "SELECT COUNT(*) FROM file_state WHERE path = 'Program.cs';"));
     }
 
+    /// <summary>
+    /// The reason bounding the walk needed a second change. Absence drives deletion, so a scan
+    /// that stops early looks exactly like a repository whose files were all removed — the bound
+    /// on its own would have converted a slow scan into a destructive one.
+    /// </summary>
+    [Fact]
+    public void PartialScan_DeletesNothing_ThoughEveryIndexedFileIsMissingFromIt()
+    {
+        using var sandbox = new SandboxHome();
+        var repo = CreateFixture(sandbox);
+        using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
+        Index(connection, sandbox, repo, apply: true);
+
+        var before = CodeFacts(connection).Count;
+        Assert.True(before > 0, "the fixture has to be indexed for this to prove anything");
+
+        var report = CodeIndexer.Index(
+            connection,
+            sandbox.Home,
+            ConfigFile.Empty,
+            IndexingSettings.Default,
+            new IndexOptions(
+                repo,
+                Apply: true,
+                Drain: false,
+                Full: true,
+                Budget: new ScanBudget(TimeSpan.Zero, 1_000)),
+            DateTimeOffset.UtcNow);
+
+        Assert.Equal(0, report.Deleted);
+        Assert.Equal(before, CodeFacts(connection).Count);
+        Assert.Equal(1L, ScalarCount(connection,
+            "SELECT COUNT(*) FROM file_state WHERE path = 'Program.cs';"));
+        Assert.Contains(report.Notes, note => note.Contains("partial", StringComparison.Ordinal));
+    }
+
     [Fact]
     public void RenamedFile_KeepsItsEntityIds_AndFilesTheOldPathAsAnAlias()
     {

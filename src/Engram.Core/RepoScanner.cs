@@ -19,12 +19,53 @@ public enum ScanSource
     DirectoryWalk,
 }
 
+/// <summary>Why a walk stopped. Anything but <see cref="Complete"/> means the count is a floor.</summary>
+public enum ScanStop
+{
+    Complete,
+    TimeBudget,
+    FileCeiling,
+}
+
+/// <summary>What a scan is allowed to spend before it gives up and says so.</summary>
+/// <remarks>
+/// <para><b>Time bounds the whole scan; the ceiling bounds only the walk.</b> They are not two
+/// spellings of one limit. A tree of a million empty directories runs forever under a file ceiling
+/// alone, because <c>found</c> never grows — only the clock stops it. The ceiling answers the other
+/// resource, memory, and it is deliberately kept off the git path: a monorepo that lists 150,000
+/// files through <c>git ls-files</c> is completely enumerated, and calling it partial would disable
+/// its deletions permanently. Time still applies there, because classifying those files is
+/// Engram's own work rather than git's.</para>
+///
+/// <para>Measured on the machine this was found on: <c>engram doctor</c> in a home directory sat at
+/// 100% of a core and <b>7.8 GB resident</b> after 106 seconds, still walking, having printed
+/// nothing. A plain <c>find</c> — C, no globbing, no per-entry allocation — counted 1,318,043 files
+/// there in 20 seconds and had not reached the end. The same repository lists 289 files through
+/// <c>git ls-files</c> and 4,318 through an unpruned walk, so three hundred times separates the
+/// largest plausible target from the accident and the ceiling has room to sit well clear of both.</para>
+/// </remarks>
+public sealed record ScanBudget(TimeSpan Time, int MaxFiles)
+{
+    /// <summary>For work the user asked for. Matches what <c>git ls-files</c> already gets.</summary>
+    public static ScanBudget Default { get; } = new(GitFileLister.Timeout, 100_000);
+
+    /// <summary>
+    /// For <c>doctor</c>, which is run when something is already wrong and has to answer about it
+    /// quickly. It reports rather than acts, so a partial count costs it nothing.
+    /// </summary>
+    public static ScanBudget Diagnostic { get; } = new(TimeSpan.FromSeconds(2), 100_000);
+}
+
 public sealed record RepoScan(
     ScanSource Source,
     IReadOnlyList<string> Files,
-    IReadOnlyDictionary<SkipReason, int> Skipped)
+    IReadOnlyDictionary<SkipReason, int> Skipped,
+    ScanStop Stop = ScanStop.Complete)
 {
     public int SkippedTotal => Skipped.Values.Sum();
+
+    /// <summary>Whether <see cref="Files"/> is everything, or only what fitted in the budget.</summary>
+    public bool Truncated => Stop != ScanStop.Complete;
 
     /// <summary>A one-line summary for <c>doctor</c> and the indexer's log.</summary>
     public string Summary()
@@ -36,10 +77,16 @@ public sealed record RepoScan(
 
         var source = Source == ScanSource.Git ? "git" : "directory walk";
         var skipped = string.Join(", ", detail);
+        var partial = Stop switch
+        {
+            ScanStop.TimeBudget => ", partial: the walk ran out of time",
+            ScanStop.FileCeiling => ", partial: the walk hit its file ceiling",
+            _ => string.Empty,
+        };
 
         return skipped.Length == 0
-            ? $"{Files.Count} files via {source}"
-            : $"{Files.Count} files via {source}, skipped {skipped}";
+            ? $"{Files.Count} files via {source}{partial}"
+            : $"{Files.Count} files via {source}, skipped {skipped}{partial}";
     }
 }
 
@@ -64,23 +111,51 @@ public sealed record RepoScan(
 /// </remarks>
 public static class RepoScanner
 {
-    public static RepoScan Scan(string root, IndexingSettings settings, IFileLister? lister = null)
+    /// <summary>How often the clock is read inside a directory. Reading it per entry is itself a cost.</summary>
+    private const int ClockInterval = 1024;
+
+    public static RepoScan Scan(
+        string root,
+        IndexingSettings settings,
+        IFileLister? lister = null,
+        ScanBudget? budget = null)
     {
         ArgumentNullException.ThrowIfNull(root);
         ArgumentNullException.ThrowIfNull(settings);
 
         var filter = new IndexFilter(settings);
         var full = Path.GetFullPath(root);
+        var allowance = budget ?? ScanBudget.Default;
+        var clock = Stopwatch.StartNew();
 
         var listed = settings.UseGit ? (lister ?? new GitFileLister()).List(full) : null;
         var source = listed is null ? ScanSource.DirectoryWalk : ScanSource.Git;
 
         var files = new List<string>();
         var skipped = new Dictionary<SkipReason, int>();
-        var candidates = listed ?? Walk(full, filter, skipped);
+        var stop = ScanStop.Complete;
+        var candidates = listed ?? Walk(full, filter, skipped, allowance, clock, out stop);
+
+        // One clock across both halves, because finding a candidate is the cheaper half.
+        // Classifying one reads its head to tell source from binary from generated, and the run
+        // that found this bug spent two seconds walking and then six more inspecting the 100,000
+        // paths the walk had already been stopped from exceeding. A budget that covers only
+        // enumeration bounds the wrong thing.
+        var inspected = 0;
 
         foreach (var relative in candidates.Distinct(StringComparer.Ordinal))
         {
+            // From the first candidate, not only every ClockInterval after it: a walk that has
+            // already spent the whole budget must not then start classifying what it found. Written
+            // as one check rather than a pre-check plus a periodic one because two checks against
+            // the same clock cannot be told apart by a test — whichever runs first answers for both,
+            // and the other could be deleted with the suite still green.
+            if (inspected++ % ClockInterval == 0 && clock.Elapsed >= allowance.Time)
+            {
+                stop = ScanStop.TimeBudget;
+                break;
+            }
+
             var verdict = filter.Inspect(relative, Path.Combine(full, relative));
             if (verdict.Include)
             {
@@ -94,7 +169,7 @@ public static class RepoScanner
 
         files.Sort(StringComparer.Ordinal);
 
-        return new RepoScan(source, files, skipped);
+        return new RepoScan(source, files, skipped, stop);
     }
 
     /// <summary>
@@ -110,15 +185,39 @@ public static class RepoScanner
     /// belong to its own identity, and it counts once rather than per file, matching what
     /// <c>git ls-files</c> reports for the same shape. A directory <i>named</i> <c>.git</c> is
     /// the scanned root's own plumbing and is skipped without comment.</para>
+    ///
+    /// <para><b>It is bounded, and it says when the bound was reached.</b> Pruning is only as good
+    /// as the patterns, and none of the defaults describe a home directory — <c>Library</c>,
+    /// package caches and download folders are neither checkouts nor <c>node_modules</c>, so
+    /// <c>engram doctor</c> run from <c>$HOME</c> walked all of it. The alternative to a bound is
+    /// not a slower answer, it is no answer plus an exhausted machine, which is what
+    /// <see cref="ScanBudget"/> records. Truncation is reported rather than absorbed: a caller
+    /// that treats a partial list as complete draws the opposite conclusion about every path past
+    /// the cut.</para>
     /// </remarks>
-    private static List<string> Walk(string root, IndexFilter filter, Dictionary<SkipReason, int> skipped)
+    private static List<string> Walk(
+        string root,
+        IndexFilter filter,
+        Dictionary<SkipReason, int> skipped,
+        ScanBudget budget,
+        Stopwatch clock,
+        out ScanStop stop)
     {
         var found = new List<string>();
         var pending = new Stack<string>();
+        var inspected = 0;
+
+        stop = ScanStop.Complete;
         pending.Push(root);
 
         while (pending.Count > 0)
         {
+            if (clock.Elapsed >= budget.Time)
+            {
+                stop = ScanStop.TimeBudget;
+                return found;
+            }
+
             var directory = pending.Pop();
 
             IEnumerable<string> entries;
@@ -133,6 +232,21 @@ public static class RepoScanner
 
             foreach (var entry in entries)
             {
+                // Also inside the loop, not only per directory: one directory may hold millions of
+                // entries, and checking on the pop alone bounds how many directories are visited
+                // rather than how much work is done.
+                if (++inspected % ClockInterval == 0 && clock.Elapsed >= budget.Time)
+                {
+                    stop = ScanStop.TimeBudget;
+                    return found;
+                }
+
+                if (found.Count >= budget.MaxFiles)
+                {
+                    stop = ScanStop.FileCeiling;
+                    return found;
+                }
+
                 var relative = Path.GetRelativePath(root, entry).Replace('\\', '/');
 
                 if (Directory.Exists(entry))

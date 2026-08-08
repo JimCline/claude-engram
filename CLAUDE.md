@@ -1,7 +1,7 @@
 # Engram — working rules
 
 Read `docs/engram-implementation-plan.md` before any non-trivial change. It holds
-fifty-two decisions (D1–D52) that resolve questions the spec left open, and each one was
+fifty-three decisions (D1–D53) that resolve questions the spec left open, and each one was
 reached by argument or measurement, not preference. `docs/engram-schema.sql` is the authority for
 database shape.
 
@@ -399,6 +399,30 @@ that builds its own `TuiChoice` list proves nothing about the picker; draw `Embe
 itself, or the falsification passes with the defect restored. One column is left unwritten because
 terminals disagree about whether the last cell wraps now or later, and that difference is a row this
 cannot see (D52).
+
+**A scan is bounded, and absence is only evidence when it finished.** `RepoScanner.Scan` takes a
+`ScanBudget` and reports which bound stopped it. Both exist and they are not one rule twice: the
+clock covers the whole scan, while the file ceiling covers only the walk — a tree of a million empty
+directories runs forever under a ceiling, because the collected list never grows, and the ceiling is
+deliberately kept off the git path since a monorepo listing 150,000 files is completely enumerated
+and calling it partial would disable its deletions for good. Measured, and the numbers are why the
+bound is not a preference: `engram doctor` from a home directory printed nothing, held 100% of a core
+and **7.8 GB resident** at 106 seconds, and had to be killed. Outside a checkout `Scan` falls through
+to `Walk`, which had no budget at all; the configured globs (`bin`, `obj`, `node_modules`, `.git`)
+describe none of `~/Library`, a package cache or a downloads folder, so adding patterns was never the
+fix — a plain `find` counted 1,318,043 files there in 20 seconds without finishing, against 289 via
+`git ls-files` and 4,318 unpruned for a real repository. The **bound on its own would have been the
+worse bug**: `CodeIndexer` derives deletions from every indexed file absent from the scan, so a
+truncated one reads as a repository whose files were all removed, and a slow scan would have become a
+destructive one. Nothing may treat a partial scan as complete — the indexer skips deletions and says
+so, and `doctor` warns rather than answering a home directory with `engram index --apply`, which is an
+instruction to index the thing that could not be walked (`Warn`, never `Broken`, so D37's exit code is
+intact). Bounding only the enumeration is half a fix and publishing it is what showed that: the walk
+stopped at its ceiling in two seconds and classification then spent six more reading the head of
+100,000 candidates. One clock covers both halves, and its check sits **on the first candidate** rather
+than in a separate pre-check, because two checks against one clock cannot be told apart by a test —
+whichever fires first answers for both, and the other can be deleted with the suite still green.
+2.0 s and 258 MB after, unchanged at 0.00 s inside a checkout where git answers (D53).
 
 ## Build constraints
 

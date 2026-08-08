@@ -814,9 +814,20 @@ public static class Diagnostics
             spooled > SpoolCompactor.Threshold ? "engram queue compact --apply" : null);
     }
 
-    private static Diagnosis CheckRepo(string repoRoot, ConfigFile config, SqliteConnection? connection)
+    /// <param name="budget">
+    /// Injected so a test can reach the truncated branch without building a tree big enough to
+    /// exhaust the real one. Doctor's own budget is short by <see cref="ScanBudget.Diagnostic"/>.
+    /// </param>
+    internal static Diagnosis CheckRepo(
+        string repoRoot,
+        ConfigFile config,
+        SqliteConnection? connection,
+        ScanBudget? budget = null)
     {
-        var scan = RepoScanner.Scan(repoRoot, IndexingSettings.Read(config));
+        var scan = RepoScanner.Scan(
+            repoRoot,
+            IndexingSettings.Read(config),
+            budget: budget ?? ScanBudget.Diagnostic);
 
         if (connection is null)
         {
@@ -844,6 +855,19 @@ public static class Diagnostics
         using var reader = command.ExecuteReader();
         if (!reader.Read())
         {
+            // A truncated scan is the one case where "not indexed" is worth flagging rather than
+            // reporting flat: the directory is too big to be a project, so "engram index --apply"
+            // would be an instruction to index it anyway. Warn, never Broken — nothing about the
+            // installation is wrong, and only Broken sets exit 1 (D37).
+            if (scan.Truncated)
+            {
+                return new Diagnosis(
+                    "indexing",
+                    DiagnosisState.Warn,
+                    $"{scan.Summary()} in {repoRoot}",
+                    "too large to scan; run this from inside the project you want indexed");
+            }
+
             // Not indexed is a choice, not a fault (D37) — indexing starts on the next
             // session start once enabled, or right now by hand.
             return new Diagnosis(

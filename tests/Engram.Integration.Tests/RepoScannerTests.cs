@@ -437,4 +437,181 @@ public class RepoScannerTests
         Assert.NotNull(listed);
         Assert.Contains(awkward, listed);
     }
+
+    // ---- the walk is bounded, and says when it stopped ----
+
+    /// <summary>
+    /// The ceiling is the memory bound. It stops mid-walk rather than after it, which is the whole
+    /// difference: a scan that collects everything and then trims has already paid for everything.
+    /// </summary>
+    [Fact]
+    public void Walk_AtTheFileCeiling_StopsThereAndReportsItAsPartial()
+    {
+        using var repo = new TempRepo();
+        for (var i = 0; i < 50; i++)
+        {
+            repo.Write($"src/file{i:D2}.cs", "class A;\n");
+        }
+
+        var scan = RepoScanner.Scan(
+            repo.Root,
+            Settings,
+            new NotACheckout(),
+            new ScanBudget(TimeSpan.FromMinutes(5), MaxFiles: 10));
+
+        Assert.Equal(10, scan.Files.Count);
+        Assert.Equal(ScanStop.FileCeiling, scan.Stop);
+        Assert.True(scan.Truncated);
+    }
+
+    /// <summary>
+    /// Zero rather than a small number on purpose: a budget measured against a wall clock makes any
+    /// other value a race, and a flaky guard gets deleted rather than fixed.
+    /// </summary>
+    /// <remarks>
+    /// The embedded checkout is what makes this about the <i>walk</i>. Reporting the scan partial is
+    /// something the caller could do afterwards, having already walked everything — the original
+    /// bug exactly. Only the walk records an embedded checkout, and only by enumerating the
+    /// directory holding it, so a skip count of zero is proof it stopped before doing any of that.
+    /// </remarks>
+    [Fact]
+    public void Walk_OutOfTime_StopsBeforeEnumeratingAnything()
+    {
+        using var repo = new TempRepo();
+        repo.Write("src/app.cs", "class A;\n");
+        repo.Write("vendored/.git/HEAD", "ref: refs/heads/main\n");
+
+        var scan = RepoScanner.Scan(
+            repo.Root,
+            Settings,
+            new NotACheckout(),
+            new ScanBudget(TimeSpan.Zero, MaxFiles: 1_000));
+
+        Assert.Equal(ScanStop.TimeBudget, scan.Stop);
+        Assert.True(scan.Truncated);
+        Assert.Empty(scan.Files);
+        Assert.Equal(0, scan.SkippedTotal);
+    }
+
+    /// <summary>The same tree walked without a budget, so the zero-skip assertion above means something.</summary>
+    [Fact]
+    public void Walk_WithTimeToSpare_DoesReachTheEmbeddedCheckout()
+    {
+        using var repo = new TempRepo();
+        repo.Write("src/app.cs", "class A;\n");
+        repo.Write("vendored/.git/HEAD", "ref: refs/heads/main\n");
+
+        var scan = RepoScanner.Scan(repo.Root, Settings, new NotACheckout());
+
+        Assert.Equal(ScanStop.Complete, scan.Stop);
+        Assert.Equal(1, scan.Skipped.GetValueOrDefault(SkipReason.EmbeddedCheckout));
+    }
+
+    /// <summary>
+    /// The other half, and the one that would catch a bound set so tight it fires on real work:
+    /// an ordinary tree under an ordinary budget is complete, and says so.
+    /// </summary>
+    [Fact]
+    public void Walk_WithinItsBudget_IsComplete()
+    {
+        using var repo = new TempRepo();
+        for (var i = 0; i < 50; i++)
+        {
+            repo.Write($"src/file{i:D2}.cs", "class A;\n");
+        }
+
+        var scan = RepoScanner.Scan(repo.Root, Settings, new NotACheckout());
+
+        Assert.Equal(50, scan.Files.Count);
+        Assert.Equal(ScanStop.Complete, scan.Stop);
+        Assert.False(scan.Truncated);
+    }
+
+    /// <summary>
+    /// The ceiling bounds the walk's memory and has no business on a git listing: a monorepo that
+    /// lists past it is completely enumerated, and calling that partial would disable its deletions
+    /// for good.
+    /// </summary>
+    [Fact]
+    public void TheFileCeiling_DoesNotReachAGitListing()
+    {
+        using var repo = new TempRepo();
+        repo.Write("a.cs", "class A;\n");
+        repo.Write("b.cs", "class B;\n");
+        repo.Write("c.cs", "class C;\n");
+
+        var scan = RepoScanner.Scan(
+            repo.Root,
+            Settings,
+            new StubLister("a.cs", "b.cs", "c.cs"),
+            new ScanBudget(TimeSpan.FromMinutes(5), MaxFiles: 1));
+
+        Assert.Equal(ScanSource.Git, scan.Source);
+        Assert.Equal(3, scan.Files.Count);
+        Assert.False(scan.Truncated);
+    }
+
+    /// <summary>
+    /// The half the first fix missed, caught by publishing it and running the reported command:
+    /// the walk stopped at its ceiling in about two seconds and then spent six more classifying
+    /// the hundred thousand paths it had collected, because reading each file's head to tell source
+    /// from binary is the more expensive half. A budget that stops only the enumeration bounds the
+    /// cheaper one.
+    /// </summary>
+    [Fact]
+    public void TheBudget_CoversClassificationAndNotOnlyEnumeration()
+    {
+        using var repo = new TempRepo();
+        for (var i = 0; i < 20; i++)
+        {
+            repo.Write($"f{i:D2}.cs", "class A;\n");
+        }
+
+        // A git listing, so nothing is walked at all and only the classification pass can stop.
+        var scan = RepoScanner.Scan(
+            repo.Root,
+            Settings,
+            new StubLister([.. Enumerable.Range(0, 20).Select(i => $"f{i:D2}.cs")]),
+            new ScanBudget(TimeSpan.Zero, MaxFiles: 1_000_000));
+
+        Assert.Equal(ScanSource.Git, scan.Source);
+        Assert.Equal(ScanStop.TimeBudget, scan.Stop);
+        Assert.Empty(scan.Files);
+    }
+
+    /// <summary>
+    /// The count alone reads as an answer. Whoever prints it has to be told it is a floor, and
+    /// which bound produced it — the two have different fixes.
+    /// </summary>
+    [Fact]
+    public void Summary_NamesWhichBoundStoppedTheWalk()
+    {
+        using var repo = new TempRepo();
+        for (var i = 0; i < 20; i++)
+        {
+            repo.Write($"f{i:D2}.cs", "class A;\n");
+        }
+
+        var ceiling = RepoScanner.Scan(
+            repo.Root, Settings, new NotACheckout(), new ScanBudget(TimeSpan.FromMinutes(5), 5));
+        var clock = RepoScanner.Scan(
+            repo.Root, Settings, new NotACheckout(), new ScanBudget(TimeSpan.Zero, 1_000));
+        var whole = RepoScanner.Scan(repo.Root, Settings, new NotACheckout());
+
+        Assert.Contains("file ceiling", ceiling.Summary(), StringComparison.Ordinal);
+        Assert.Contains("ran out of time", clock.Summary(), StringComparison.Ordinal);
+        Assert.DoesNotContain("partial", whole.Summary(), StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// doctor is run when something is already wrong, so its budget is short; the budget for work
+    /// the user asked for matches what git already gets. Asserted as a relationship rather than as
+    /// two numbers, so tuning either one does not break this.
+    /// </summary>
+    [Fact]
+    public void DiagnosticBudget_IsShorterThanTheOneForRequestedWork()
+    {
+        Assert.True(ScanBudget.Diagnostic.Time < ScanBudget.Default.Time);
+        Assert.Equal(GitFileLister.Timeout, ScanBudget.Default.Time);
+    }
 }

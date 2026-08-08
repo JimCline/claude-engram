@@ -1,6 +1,6 @@
 # Engram — progress snapshot
 
-**As of 2026-08-07.** Working tree clean, 52 decisions (D1–D52). M3's tier 0 shipped overnight
+**As of 2026-08-07.** Working tree clean, 53 decisions (D1–D53). M3's tier 0 shipped overnight
 on an explicit user override of D6's gate; tier 1 (D47) and grammar v2 (D48) followed.
 
 This is a handoff, not an authority. `CLAUDE.md` holds the invariants,
@@ -14,7 +14,7 @@ disagree, they win and this file is stale.
 
 1. `CLAUDE.md` — the invariants that are easy to break by accident. All of them were paid
    for by a real defect.
-2. `docs/engram-implementation-plan.md` — D1–D52. Skim the headings; read in full any
+2. `docs/engram-implementation-plan.md` — D1–D53. Skim the headings; read in full any
    decision you are about to touch.
 3. This file — for what is in flight and what the last session learned the hard way.
 
@@ -610,6 +610,44 @@ Eight falsifications, all checksummed. One no-opped on the first attempt: commen
 summary line printed from a catch-all branch that reads nothing, so it would have claimed
 `engram-first` whatever the config said. It now checks the config the install produced and runs a
 hook against it.
+
+### `doctor` in a home directory was a resource bomb (D53)
+
+Found while verifying the embedding config, not by looking for it: `engram doctor` run from `$HOME`
+printed nothing, held 100% of a core and **7.8 GB resident** at 106 seconds, and had to be killed. A
+stack sample put it in `stat` and `opendir`. The `indexing` row scans the working directory, and
+outside a git checkout that falls through to `RepoScanner.Walk`, which had no time budget, no depth
+cap and no ceiling.
+
+More patterns would not have fixed it. The walk already prunes at the directory and skips embedded
+checkouts, but none of `bin`, `obj`, `node_modules`, `.git` describe `~/Library`, a package cache or
+a downloads folder. Measured: a plain `find` counted 1,318,043 files under that home in 20 seconds
+without finishing, against 289 files via `git ls-files` and 4,318 unpruned for this repository — a
+gap of roughly three hundred times, which is what makes a 100,000 ceiling siteable rather than
+guessed.
+
+**The bound alone would have been the worse bug.** `CodeIndexer` derives deletions from every
+indexed file *absent* from the scan, so truncating one reads as a repository whose files were all
+removed. A slow scan would have become a destructive one. Absence is now only evidence when the
+scan finished.
+
+Publishing the first fix is what showed it was half a fix: bounding the walk left doctor at 8.38 s,
+because the walk stopped at its ceiling in ~2 s and the classification pass then spent six more
+reading the head of 100,000 candidates. One clock now covers both halves.
+
+| | before | after |
+|---|---|---|
+| `doctor` in `$HOME` | >106 s, 7.8 GB, killed | 2.0 s, 258 MB, honest partial count |
+| `doctor` in a checkout | 0.00 s | 0.00 s, 1 MB — git answers, no walk |
+
+| claim | status |
+|---|---|
+| a scan run outside a checkout terminates within its budget | measured — 2.0 s from a home directory holding >1.3 M files |
+| a partial scan never deletes anything | measured — the indexer is handed a scan that omits every indexed file and removes none |
+| doctor does not offer to index a directory it could not walk | measured — `Warn` with different advice, and `Off` with the usual advice for an ordinary one |
+| the ceiling never reaches a git listing | measured — a listing past the ceiling comes back complete |
+| the bounds do not fire on ordinary work | measured — falsified by setting each to zero, which must break the unaffected-work tests |
+| the clock check inside one huge directory's entry loop | **not measured** — every deterministic test is shadowed by the per-directory check against the same clock |
 
 ### The model picker was unusable, from one assumption (D52)
 

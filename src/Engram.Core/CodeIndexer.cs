@@ -3,7 +3,18 @@ using Microsoft.Data.Sqlite;
 
 namespace Engram.Core;
 
-public sealed record IndexOptions(string Root, bool Apply, bool Drain, bool Full, string? SidecarPath = null);
+/// <param name="Budget">
+/// What the directory walk may spend before it reports a partial list. Null takes
+/// <see cref="ScanBudget.Default"/>. Per run rather than per install, because it is the seam a test
+/// needs to reach the truncated path without building a tree large enough to exhaust the machine.
+/// </param>
+public sealed record IndexOptions(
+    string Root,
+    bool Apply,
+    bool Drain,
+    bool Full,
+    string? SidecarPath = null,
+    ScanBudget? Budget = null);
 
 public sealed record IndexReport(
     string RepoPath,
@@ -85,10 +96,23 @@ public static class CodeIndexer
 
         if (full)
         {
-            var scan = RepoScanner.Scan(root, settings);
+            var scan = RepoScanner.Scan(root, settings, budget: options.Budget ?? ScanBudget.Default);
             var onDisk = new HashSet<string>(scan.Files, StringComparer.Ordinal);
             targets = [.. scan.Files];
-            deletions = states.Keys.Where(rel => !onDisk.Contains(rel)).ToList();
+
+            // Absence is only evidence when the scan was allowed to finish. Every path past a
+            // budget cut is missing from `onDisk` for a reason that has nothing to do with the
+            // disk, so deleting on that evidence would retract the code facts for most of the
+            // repository — the bound would turn a slow scan into a destructive one.
+            if (scan.Truncated)
+            {
+                deletions = [];
+                notes.Add($"{scan.Summary()}; skipped deletions, because a partial scan cannot show a file is gone");
+            }
+            else
+            {
+                deletions = states.Keys.Where(rel => !onDisk.Contains(rel)).ToList();
+            }
         }
         else
         {

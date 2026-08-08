@@ -14,6 +14,12 @@
          a pure function over a documented kernel format, and the trap it guards against — a comm
          containing ')' — is unreachable through the public surface, which only takes a pid. -->
     <InternalsVisibleTo Include="Engram.Core.Tests" />
+
+    <!-- So a doctor check can be handed a scan budget without that budget becoming public API.
+         The alternative was a test that builds a directory large enough to exhaust the real
+         budget, which is slow, machine-dependent, and would be the first test deleted for
+         flakiness. Tier 2 is where core meets real files, so it is where this belongs. -->
+    <InternalsVisibleTo Include="Engram.Integration.Tests" />
   </ItemGroup>
 
   <!--
