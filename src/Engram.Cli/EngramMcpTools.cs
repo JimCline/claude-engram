@@ -506,12 +506,12 @@ public sealed class EngramMcpTools
         foreach (var entry in chain)
         {
             builder.Append("  [").Append(FactCatalog.HandleFor(entry.Id)).Append("] \"")
-                .Append(entry.Body).Append("\" (").Append(Day(entry.ValidFrom))
+                .Append(entry.Body).Append("\" (").Append(When(entry.ValidFrom))
                 .Append(", ").Append(entry.LearnedVia).Append(')');
 
             if (entry.ValidTo is { } closed)
             {
-                builder.Append(" — closed ").Append(Day(closed));
+                builder.Append(" — closed ").Append(When(closed));
                 if (reasons.TryGetValue(entry.Id, out var why))
                 {
                     builder.Append(": ").Append(why);
@@ -562,23 +562,22 @@ public sealed class EngramMcpTools
             : " It is not regenerable: it exists only because it was recorded, and nothing can recompute it.";
 
         return $"[{FactCatalog.HandleFor(fact.Id)}] {evidence} Learned via '{fact.LearnedVia}', "
-            + $"recorded {Day(fact.CreatedAt)}.{regenerable}";
+            + $"recorded {When(fact.CreatedAt)}.{regenerable}";
     }
 
     private static string ExpandSource(SqliteConnection connection, StoredFact fact)
     {
         var sitting = MemoryBrowser.Sitting(connection, fact.Id);
         var origin = sitting is { } s
-            ? $"recorded in session {s.ExternalId} (started {Day(s.StartedAt)})"
+            ? $"recorded in session {s.ExternalId} (started {When(s.StartedAt)})"
             : "recorded outside any tracked session — seeded, indexed, or written by the CLI";
 
         return $"[{FactCatalog.HandleFor(fact.Id)}] was {origin}, learned via '{fact.LearnedVia}' "
-            + $"on {Day(fact.CreatedAt)}."
-            + (fact.ValidTo is { } closed ? $" It was closed {Day(closed)}." : " It is currently believed.");
+            + $"on {When(fact.CreatedAt)}."
+            + (fact.ValidTo is { } closed ? $" It was closed {When(closed)}." : " It is currently believed.");
     }
 
-    private static string Day(long unixSeconds) =>
-        DateTimeOffset.FromUnixTimeSeconds(unixSeconds).ToString("yyyy-MM-dd");
+    private static string When(long unixSeconds) => MomentText.Local(unixSeconds);
 
     private static string CountText(int n, string noun) => n == 1 ? $"1 {noun}" : $"{n} {noun}s";
 }

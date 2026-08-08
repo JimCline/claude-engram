@@ -469,6 +469,18 @@ eight batches and one was measured at 28 seconds. `--watch` redraws through `Tui
 inherits D52's row budget entire; the bar is a terminal decoration and a pipe gets key-and-value
 lines, because that output is what a script and an agent parse (D54).
 
+**Memory is timestamped to the second and must be read back that way, in the reader's zone.**
+`valid_from` and `created_at` are unix seconds, but the read path rendered `yyyy-MM-dd` in UTC —
+two defects in one line, both silent. The model could report which *day* a memory was made and never
+what time, so every fact from one working session was mutually unordered on screen, and the analysis
+behind D44 — that two `coverage: none` recalls fired 82 minutes *before* the fact answering them was
+written — was not performable from tool output at all; it needed the store, because the read path had
+discarded exactly the resolution that decides it. The UTC half was worse because nothing shows it:
+west of Greenwich every fact recorded after mid-afternoon rendered with *tomorrow's* date, against an
+agent whose context states today's date locally. `MomentText` is the one renderer, it takes a
+`TimeZoneInfo` so the boundary is testable rather than asserted, and six characters a fact is the
+whole cost.
+
 **The webhook delivers the telemetry log; it is not a second event system.** Every kind Engram
 records already lands in `telemetry.jsonl`, so `WebhookService` tails that file rather than being
 notified at the point of emission — which is what makes a subscriber's live feed and a dashboard's
