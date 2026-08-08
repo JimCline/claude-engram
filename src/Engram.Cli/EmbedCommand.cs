@@ -12,11 +12,84 @@ namespace Engram.Cli;
 /// </remarks>
 public static class EmbedCommand
 {
+    /// <summary>
+    /// Prints the report once, or redraws it until interrupted with <c>--watch</c>.
+    /// </summary>
+    /// <remarks>
+    /// <para>Watching is the only thing here that redraws, and it goes through <see cref="Tui"/>
+    /// rather than writing escapes of its own — the row budget is the same rule D52 was paid for,
+    /// and a second implementation of it would drift the first time either changed. A block whose
+    /// height varies between frames would also break the arithmetic, so the block is padded to a
+    /// fixed height rather than trusting successive reports to be the same length.</para>
+    ///
+    /// <para>Not interactive means not redrawing: a pipe gets one report and exits even with
+    /// <c>--watch</c>, because a loop nobody can interrupt writing frames into a file is a way to
+    /// fill a disk, not a feature.</para>
+    /// </remarks>
+    private static int Status(string? homePath, string[] args, TextWriter stdout)
+    {
+        var home = EngramHome.ResolveFromProcess(homePath);
+        var tui = Tui.Detect();
+
+        if (!args.Contains("--watch") || !tui.Interactive)
+        {
+            foreach (var line in EmbedStatus.Lines(
+                EmbedStatus.Read(home, DateTimeOffset.UtcNow), DateTimeOffset.UtcNow, tui.Interactive))
+            {
+                stdout.WriteLine(line);
+            }
+
+            return 0;
+        }
+
+        var height = 0;
+        var rows = 0;
+
+        stdout.Write("\x1b[?25l");
+        try
+        {
+            while (true)
+            {
+                var now = DateTimeOffset.UtcNow;
+                var view = EmbedStatus.Read(home, now);
+                var lines = new List<string>(EmbedStatus.Lines(view, now, decorated: true));
+
+                // The tallest frame so far sets the height for every frame after it. Letting the
+                // block shrink would leave the rows it no longer writes on screen, below a cursor
+                // that has already moved back above them.
+                height = Math.Max(height, lines.Count);
+                while (lines.Count < height)
+                {
+                    lines.Add(string.Empty);
+                }
+
+                rows = tui.Frame(stdout, lines, rows);
+
+                if (view.Pending == 0 && view.Total > 0)
+                {
+                    return 0;
+                }
+
+                Thread.Sleep(EmbedStatus.WatchInterval);
+            }
+        }
+        finally
+        {
+            stdout.Write("\x1b[?25h");
+            stdout.Flush();
+        }
+    }
+
     public static int Run(string? homePath, string[] args, TextWriter stdout, TextWriter stderr)
     {
         ArgumentNullException.ThrowIfNull(args);
         ArgumentNullException.ThrowIfNull(stdout);
         ArgumentNullException.ThrowIfNull(stderr);
+
+        if (args.Contains("--status"))
+        {
+            return Status(homePath, args, stdout);
+        }
 
         if (args.Contains("--rebuild"))
         {
@@ -25,7 +98,7 @@ public static class EmbedCommand
 
         if (!args.Contains("--probe"))
         {
-            stderr.WriteLine("error: engram embed needs --probe or --rebuild.");
+            stderr.WriteLine("error: engram embed needs --status, --probe or --rebuild.");
             return 2;
         }
 

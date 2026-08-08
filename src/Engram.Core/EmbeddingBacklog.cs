@@ -50,6 +50,11 @@ public sealed class EmbeddingBacklog(
         _ => IdleInterval,
     };
 
+    private readonly List<string> recent = [];
+    private DateTimeOffset startedAt = DateTimeOffset.UtcNow;
+    private int sessionEmbedded;
+    private int sessionFailed;
+
     /// <summary>One pass over the queue. Opens its own connection and closes it.</summary>
     /// <remarks>
     /// Per pass rather than held open, so a <c>repair</c> that replaces the database file is not
@@ -65,12 +70,16 @@ public sealed class EmbeddingBacklog(
             embedder,
             settings.MaxBatch,
             maxBatches: 8,
-            cancellationToken).ConfigureAwait(false);
+            cancellationToken,
+            onBatchWritten: NoteBatch).ConfigureAwait(false);
     }
 
     public async Task RunAsync(CancellationToken cancellationToken)
     {
         log?.Invoke($"Embedding backlog started for {embedder.Space}.");
+
+        startedAt = DateTimeOffset.UtcNow;
+        Publish(outcome: "starting", error: null);
 
         var lastReported = default(BackfillOutcome?);
 
@@ -91,9 +100,14 @@ public sealed class EmbeddingBacklog(
                 // the work is still there; what matters is that the reason is said once rather
                 // than every two seconds.
                 log?.Invoke($"Embedding pass failed: {ex.Message}");
+                Publish(outcome: "failed", error: ex.Message);
                 await DelayAsync(IdleInterval, cancellationToken).ConfigureAwait(false);
                 continue;
             }
+
+            // Embedded is counted in NoteBatch, which fires once per committed batch and therefore
+            // sums to exactly this pass's total. Adding it again here would double it.
+            sessionFailed += result.Failed;
 
             if (result.Embedded > 0)
             {
@@ -107,6 +121,11 @@ public sealed class EmbeddingBacklog(
                 log?.Invoke($"Embedding backlog {result.Outcome}: {result.Remaining} pending.");
             }
 
+            // Every pass, including the idle ones that log nothing. The timestamp is what tells a
+            // reader the loop is alive, so a quiet loop that stops writing it is indistinguishable
+            // from a dead one — which is the whole point of recording it.
+            Publish(result.Outcome.ToString(), error: null);
+
             lastReported = result.Outcome;
 
             if (!await DelayAsync(NextDelay(result), cancellationToken).ConfigureAwait(false))
@@ -116,7 +135,45 @@ public sealed class EmbeddingBacklog(
         }
 
         log?.Invoke("Embedding backlog stopped.");
+
+        // Removed rather than stamped "stopped": a note left behind would carry a timestamp that
+        // was true when written, and anything reading it later has to decide whether to believe
+        // it. Absent is unambiguous, and the store still answers how much work is outstanding.
+        EmbeddingProgress.Clear(home);
     }
+
+    private void NoteBatch(IReadOnlyList<string> bodies)
+    {
+        foreach (var body in bodies)
+        {
+            recent.Insert(0, EmbeddingProgress.Summarize(body));
+        }
+
+        if (recent.Count > EmbeddingProgress.RecentKept)
+        {
+            recent.RemoveRange(EmbeddingProgress.RecentKept, recent.Count - EmbeddingProgress.RecentKept);
+        }
+
+        sessionEmbedded += bodies.Count;
+
+        // Published per batch, not per pass: a pass is up to eight batches and can run half a
+        // minute, which is long enough for a watcher to conclude nothing is happening.
+        Publish(outcome: "running", error: null);
+    }
+
+    private void Publish(string? outcome, string? error) =>
+        EmbeddingProgress.Write(
+            home,
+            new EmbeddingProgress(
+                DateTimeOffset.UtcNow,
+                startedAt,
+                Environment.ProcessId,
+                embedder.Space.ToString(),
+                sessionEmbedded,
+                sessionFailed,
+                outcome,
+                error,
+                [.. recent]));
 
     private static async Task<bool> DelayAsync(TimeSpan delay, CancellationToken cancellationToken)
     {

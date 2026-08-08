@@ -1,7 +1,7 @@
 # Engram — working rules
 
 Read `docs/engram-implementation-plan.md` before any non-trivial change. It holds
-fifty-three decisions (D1–D53) that resolve questions the spec left open, and each one was
+fifty-four decisions (D1–D54) that resolve questions the spec left open, and each one was
 reached by argument or measurement, not preference. `docs/engram-schema.sql` is the authority for
 database shape.
 
@@ -423,6 +423,29 @@ stopped at its ceiling in two seconds and classification then spent six more rea
 than in a separate pre-check, because two checks against one clock cannot be told apart by a test —
 whichever fires first answers for both, and the other can be deleted with the suite still green.
 2.0 s and 258 MB after, unchanged at 0.00 s inside a checkout where git answers (D53).
+
+**`embed --status` takes its counts from the store and everything else from the note.** The database
+is the authority on how many facts are embedded and how many wait, and it is right whether or not a
+server is up; what no reader can derive is whether a loop is alive, how fast it is going, what it is
+working on, or why it never started. Those exist only in the server process, so it writes
+`embedding.json` and everything else reads — the `metal.json` shape (D42), for the same reason.
+Counts are deliberately not duplicated into it: a second answer goes stale exactly when someone is
+most likely to be reading it, and after `stop` the measured store still says 208 of 873 while the
+file is correctly gone. Two rules the live run paid for and no test would have. **The reason a number
+is not moving is the answer** — a server was up with 873 pending and status said `not running — start
+the server with 'engram start'`, advice to do what had already been done, while the one process that
+knew (`qwen3-embedding-0.6b is not downloaded yet`) had written it to a log nobody asking that
+question opens; so a service that declines records why. And **a standing statement is not a
+heartbeat**: `Unavailable` is excluded from `LooksLive` outright, or a precise reason ages into
+`stalled or stopped` after forty-five seconds, which is worse than what it replaced. The note is
+cleared on `ApplicationStopping` beside the pid file and with the same ownership test, because a
+backlog that declined never enters `RunAsync` and so never reaches the loop's own cleanup. The
+backlog was **never silent** — it had logged `Embedded N fact(s)` since it was built and
+`SetMinimumLevel(LogLevel.Warning)` dropped every line, so the fix is one `AddFilter`, not a second
+logging path beside the one already there. Publishing is **per committed batch**, since a pass is
+eight batches and one was measured at 28 seconds. `--watch` redraws through `Tui.Frame`, which
+inherits D52's row budget entire; the bar is a terminal decoration and a pipe gets key-and-value
+lines, because that output is what a script and an agent parse (D54).
 
 ## Build constraints
 

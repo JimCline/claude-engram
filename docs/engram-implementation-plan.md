@@ -2976,6 +2976,87 @@ per-directory check against the same clock, and the timing-dependent version is 
 that gets deleted for flakiness rather than fixed. The ceiling test covers the same loop's structure;
 the time branch through it is reasoned, not measured.
 
+### D54 — the store answers how far, the server answers whether anything is moving
+
+**Decision.** `engram embed --status` reports the vector index's progress. Counts come from the
+database; liveness, rate, what is in flight, and the reason there is no loop come from
+`embedding.json`, which the server writes and everything else only reads. `--watch` redraws through
+`Tui.Frame` under D52's row budget, and the progress bar is a terminal decoration — a pipe gets
+key-and-value lines.
+
+**Why the split, rather than one source.** How many facts are embedded and how many are waiting is a
+query any process can run, and it is right whether or not a server is up. What no reader can derive
+is whether the loop is alive, how fast it is going, what it is working on, or why it never started:
+those exist only inside the running loop, so the loop has to write them down. `MetalRecord` is the
+same shape for the same reason (D42) — the process that knows records, the process that asks reads.
+Counts are deliberately **not** in the file: duplicating them would create a second answer that goes
+stale the moment the server stops, which is exactly the state someone is most likely to be reading it
+in.
+
+**The reason a number is not moving is the answer; the number is not.** Measured on a sandbox home
+with 873 facts pending and a server up on port 8799: `--status` said `not running — start the server
+with 'engram start'` — advice to do the thing that had already been done — while the server's log had
+carried the real answer sixteen seconds earlier, `qwen3-embedding-0.6b is not downloaded yet`. The
+only process that knows why there is no loop is the one that decided not to start it, and it was
+writing that to a file nobody asking this question has cause to open. So `EmbeddingBacklogService`
+records the reason as well as logging it, and status prints it in place of the generic advice. This
+was found by running the feature against a real server, not by a test.
+
+**A standing statement is not a heartbeat.** `Unavailable` is excluded from `LooksLive` outright.
+Left in, a precise reason would have aged into `stalled or stopped` after forty-five seconds — a
+worse message than the one it replaced, arrived at by a rule that was correct for the other case.
+
+**The note may not outlive the server that wrote it,** and the loop's own cleanup cannot do it: when
+the backlog declines, `RunAsync` is never entered. So the clear rides `ApplicationStopping` beside
+the pid file's, with the same ownership test — an orphan being replaced must not delete the record
+its replacement just wrote.
+
+**The backlog was never silent.** It had logged `Embedded N fact(s); M pending.` since it was built,
+and `builder.Logging.SetMinimumLevel(LogLevel.Warning)` dropped every line, so a fifteen-minute
+backfill left a log saying nothing about the only thing happening. The fix is one `AddFilter` entry,
+not new logging code — worth stating because the obvious diagnosis, *the loop reports nothing*, was
+wrong about the cause and would have produced a second logging path beside the one already there.
+
+**Published per committed batch, not per pass.** A pass is up to eight batches of sixteen, and the
+server log shows one measured at **28 seconds** — `Embedded 128 fact(s)` is a single line covering
+02:14:46 to 02:15:15. Publish per pass and a watcher sees a frozen screen for half a minute at a time
+and concludes nothing is happening. `sessionEmbedded` is counted in that callback only and never also
+from `result.Embedded`, which would double it.
+
+**Bounded and flattened at the point of recording.** The recent list keeps eight; bodies are cut to
+160 characters and have their newlines replaced, because this is read back into a fixed-height
+display and a body containing a newline costs a row the caller did not count — D52's defect, reached
+through the data rather than the layout.
+
+**No estimate from a rate nothing is producing.** `Eta` is null unless the backlog is live: a rate
+measured by a process that has since stopped predicts nothing about a queue nobody is working on, and
+an estimate is worse than none when it is confidently wrong. The rate is stated as a mean since the
+run began, and says so, because a one-shot reader cannot sample twice without waiting and waiting is
+what `--status` exists to avoid.
+
+**No fraction without a denominator.** A bar reading 100% for a store with nothing in it looks like
+success, so `Fraction` is null there and the line says `no store yet` instead.
+
+**Measured working, end to end.** Sandbox home, 873 pending facts, `qwen3-embedding-0.6b` on Metal:
+**4.5 facts/s**, eta `~3m 8s` at 3%, `last update 1s ago`, and eight in-flight bodies redrawn each
+pass. The command answers in a few milliseconds because it never touches the model. After `stop` the
+note is gone, the rate and eta are dashes, and the counts are still right — 208 of 873 — which is the
+whole argument for keeping them in the store rather than the file.
+
+**Falsified sixteen ways,** each break checksummed and each guard re-run against it: clipping removed
+from `Frame`, the first frame moving the cursor, counts read from the note instead of the store, the
+eta and the rate line each surviving a dead backlog, the bar drawn into a pipe, an empty store
+reported complete, a drain publishing nothing, the recent list unbounded, a timestampless note
+inventing a timestamp, the liveness window widened to a day, bodies keeping their newlines, an
+unavailable note ageing into `stalled`, status dropping the recorded reason, the service logging
+without recording, and a stopped server leaving its note behind. The last two republish the binary
+first, because a tier-3 test run against the previous publish proves nothing.
+
+**Not measured:** `--watch` over a long session on a terminal that is resized mid-run. `Frame`
+inherits D52's assertions at four widths, but the width is read once per frame and a resize between
+the move-up and the write is a row this cannot see — the same class of thing D52 left one column
+unwritten for.
+
 ## PreCompact cannot inject context
 
 Spec §10.1 assumes `PreCompact` can "inject one instruction" the same way `SessionStart`

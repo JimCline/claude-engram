@@ -151,4 +151,55 @@ public class TuiRenderTests
         var menuRows = VisibleLines(writer.ToString()).Take(EmbeddingSetup.ModelChoices().Count);
         Assert.DoesNotContain(menuRows, row => row.Contains('…', StringComparison.Ordinal));
     }
+
+    // ---- Frame: the same row budget, for a block that is not a menu ----
+
+    /// <summary>
+    /// Frame inherits D52's contract, so it inherits D52's assertions. A live status block that
+    /// redraws itself has precisely the failure mode the model menu had.
+    /// </summary>
+    [Theory]
+    [InlineData(24)]
+    [InlineData(40)]
+    [InlineData(80)]
+    [InlineData(200)]
+    public void Frame_LinesWiderThanTheTerminal_StillCostOneRowEach(int columns)
+    {
+        var writer = new StringWriter();
+        string[] lines = [new('a', 400), "short", new('b', 90)];
+
+        var rows = Tui.ForTest(columns).Frame(writer, lines, previousRows: 0);
+
+        Assert.Equal(lines.Length, rows);
+        foreach (var written in VisibleLines(writer.ToString()))
+        {
+            Assert.True(
+                written.Length < columns,
+                $"a row of {written.Length} columns cannot fit a {columns}-column terminal");
+        }
+    }
+
+    [Fact]
+    public void Frame_MovesUpExactlyAsFarAsTheLastFrameCameDown()
+    {
+        var tui = Tui.ForTest(80);
+        var first = new StringWriter();
+        var rows = tui.Frame(first, ["one", "two", "three"], previousRows: 0);
+
+        var second = new StringWriter();
+        tui.Frame(second, ["one", "two", "three"], rows);
+
+        Assert.Equal(3, rows);
+        Assert.StartsWith("\x1b[3A", second.ToString(), StringComparison.Ordinal);
+    }
+
+    /// <summary>The first frame has nothing above it, so it must not move the cursor at all.</summary>
+    [Fact]
+    public void Frame_TheFirstOne_DoesNotMoveTheCursorUp()
+    {
+        var writer = new StringWriter();
+        Tui.ForTest(80).Frame(writer, ["one"], previousRows: 0);
+
+        Assert.DoesNotMatch(@"\x1b\[\d+A", writer.ToString());
+    }
 }

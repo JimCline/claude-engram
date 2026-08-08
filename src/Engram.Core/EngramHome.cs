@@ -48,6 +48,15 @@ public sealed class EngramHome
     public string MetalRecordPath { get; }
 
     /// <summary>
+    /// What the running server's embedding backlog is doing, for readers outside that process.
+    /// </summary>
+    /// <remarks>
+    /// Derived state (D8), and only the part the store cannot answer: liveness, rate, what is being
+    /// embedded, and why a pass stopped. Counts stay in the database, which is their authority.
+    /// </remarks>
+    public string EmbeddingProgressPath { get; }
+
+    /// <summary>
     /// Which MCP tool permissions we granted in Claude Code's settings, so the uninstaller can
     /// take back exactly those and nothing the user wrote themselves.
     /// </summary>
@@ -72,6 +81,7 @@ public sealed class EngramHome
         LibDir = Path.Combine(root, "lib");
         BackupDir = Path.Combine(root, "backups");
         MetalRecordPath = Path.Combine(root, "metal.json");
+        EmbeddingProgressPath = Path.Combine(root, "embedding.json");
         GrantedPermissionsPath = Path.Combine(root, "granted-permissions.json");
         ClaudeSettingsPath = Path.Combine(userProfileDirectory, ".claude", "settings.json");
     }

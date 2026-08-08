@@ -144,6 +144,40 @@ public sealed class Tui
         }
     }
 
+    /// <summary>
+    /// Draws a block of lines in place, replacing the previous <paramref name="previousRows"/>, and
+    /// returns how many rows it wrote.
+    /// </summary>
+    /// <remarks>
+    /// The same contract as <see cref="Render"/> and for the same reason (D52): one logical line is
+    /// one physical row, so every line is clipped to the width and the caller feeds the count back.
+    /// A separate method rather than a reuse of <c>Render</c> because that one owns the menu's
+    /// marker-and-label layout, and widening it to serve both is how a layout change starts breaking
+    /// a redraw somewhere else.
+    /// </remarks>
+    internal int Frame(TextWriter stdout, IReadOnlyList<string> lines, int previousRows)
+    {
+        ArgumentNullException.ThrowIfNull(stdout);
+        ArgumentNullException.ThrowIfNull(lines);
+
+        if (previousRows > 0)
+        {
+            stdout.Write($"\x1b[{previousRows}A");
+        }
+
+        var room = Room;
+        var rows = 0;
+
+        foreach (var line in lines)
+        {
+            stdout.WriteLine(Ansi ? "\x1b[2K" + Clip(line, room) : Clip(line, room));
+            rows++;
+        }
+
+        stdout.Flush();
+        return rows;
+    }
+
     /// <summary>A free-text question. Plain mode is byte-identical to a bare prompt.</summary>
     public string Line(TextReader stdin, TextWriter stdout, string prompt)
     {
@@ -191,9 +225,7 @@ public sealed class Tui
             stdout.Write($"\x1b[{previousRows}A");
         }
 
-        // One column short of the terminal: writing into the last cell makes some terminals
-        // wrap immediately and others defer it, and the difference is a row this cannot see.
-        var room = Math.Max(MinimumWidth, width()) - 1;
+        var room = Room;
         var rows = 0;
 
         for (var i = 0; i < choices.Count; i++)
@@ -227,6 +259,13 @@ public sealed class Tui
         stdout.Flush();
         return rows;
     }
+
+    /// <summary>
+    /// Columns anything may write into: one short of the terminal, because writing the last cell
+    /// makes some terminals wrap immediately and others defer it, and that difference is a row the
+    /// redraw arithmetic cannot see.
+    /// </summary>
+    internal int Room => Math.Max(MinimumWidth, width()) - 1;
 
     /// <summary>One line, never wider than <paramref name="room"/>, ellipsed if it was.</summary>
     private static string Clip(string text, int room)

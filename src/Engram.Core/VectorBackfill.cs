@@ -51,12 +51,18 @@ public static class VectorBackfill
     /// <summary>
     /// Embeds pending facts until the queue is empty or <paramref name="maxBatches"/> is spent.
     /// </summary>
+    /// <param name="onBatchWritten">
+    /// The bodies just committed, per batch. Per batch rather than per pass because a pass is up to
+    /// eight of them — long enough that anything watching would see one update a minute and conclude
+    /// nothing was happening. Called after the commit, so it only ever reports work that is durable.
+    /// </param>
     public static async Task<BackfillResult> RunAsync(
         SqliteConnection connection,
         IEmbedder embedder,
         int batchSize = DefaultBatchSize,
         int maxBatches = int.MaxValue,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        Action<IReadOnlyList<string>>? onBatchWritten = null)
     {
         ArgumentNullException.ThrowIfNull(connection);
         ArgumentNullException.ThrowIfNull(embedder);
@@ -112,6 +118,8 @@ public static class VectorBackfill
             }
 
             var written = 0;
+            var bodies = onBatchWritten is null ? null : new List<string>(pending.Count);
+
             using (var transaction = EngramDatabase.BeginWrite(connection))
             {
                 for (var i = 0; i < pending.Count; i++)
@@ -135,6 +143,7 @@ public static class VectorBackfill
                     }
 
                     VectorIndex.Write(connection, transaction, pending[i].FactId, vector);
+                    bodies?.Add(pending[i].Text);
                     written++;
                 }
 
@@ -142,6 +151,11 @@ public static class VectorBackfill
             }
 
             embedded += written;
+
+            if (bodies is { Count: > 0 })
+            {
+                onBatchWritten!(bodies);
+            }
 
             if (written == 0)
             {

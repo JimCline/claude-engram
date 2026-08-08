@@ -31,6 +31,9 @@ internal sealed class EmbeddingBacklogService(
 
         if (resolution.Embedder is not { } embedder)
         {
+            // Whatever a previous run left describes a loop that is not going to run this time.
+            EmbeddingProgress.Clear(home);
+
             // Asking for a provider and not getting one is a warning; asking for none and
             // getting none is not news, and warning about it on every start would train
             // everyone to ignore this log.
@@ -41,6 +44,12 @@ internal sealed class EmbeddingBacklogService(
             else
             {
                 logger.LogWarning("Embeddings are unavailable: {Reason}", resolution.Reason);
+
+                // Recorded as well as logged, because "nothing is being embedded" is exactly the
+                // question `embed --status` is asked, and the reason is known only here. Not
+                // recorded for the None case: that one is legible from the config the reader can
+                // already see, and a note would put the same answer in two places.
+                EmbeddingProgress.WriteUnavailable(home, resolution.Reason);
             }
 
             return;

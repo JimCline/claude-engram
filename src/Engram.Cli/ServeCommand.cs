@@ -59,6 +59,14 @@ internal static class ServeCommand
         builder.Logging.SetMinimumLevel(LogLevel.Warning);
         builder.Logging.AddFilter("Microsoft.Hosting.Lifetime", LogLevel.Information);
 
+        // The backlog is the second exception, and it is one for the same reason: it is the only
+        // work this process does that a person waits on. It had been writing "Embedded N fact(s)"
+        // since it was built and every line was dropped here, so a 15-minute backfill left a log
+        // saying nothing about the only thing happening. It is quiet by construction rather than by
+        // filtering — a line per pass that embedded something, and nothing at all while idle — so
+        // the bound that justifies Warning everywhere else does not apply to it.
+        builder.Logging.AddFilter(typeof(EmbeddingBacklogService).FullName, LogLevel.Information);
+
         builder.WebHost.UseUrls($"http://127.0.0.1:{resolvedPort}");
 
         builder.Services.AddHttpContextAccessor();
@@ -112,6 +120,14 @@ internal static class ServeCommand
             if (PidFile.Read(home)?.Pid == identity.Pid)
             {
                 PidFile.Delete(home);
+            }
+
+            // Same rule for the embedding note, and the same ownership test. It states what this
+            // server decided about its backlog, including a decision not to run one — which the
+            // loop's own cleanup cannot clear, because in that case the loop never started.
+            if (EmbeddingProgress.Read(home)?.Pid == identity.Pid)
+            {
+                EmbeddingProgress.Clear(home);
             }
         });
 

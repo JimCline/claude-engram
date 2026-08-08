@@ -1,6 +1,6 @@
 # Engram — progress snapshot
 
-**As of 2026-08-07.** Working tree clean, 53 decisions (D1–D53). M3's tier 0 shipped overnight
+**As of 2026-08-08.** Working tree clean, 54 decisions (D1–D54). M3's tier 0 shipped overnight
 on an explicit user override of D6's gate; tier 1 (D47) and grammar v2 (D48) followed.
 
 This is a handoff, not an authority. `CLAUDE.md` holds the invariants,
@@ -14,7 +14,7 @@ disagree, they win and this file is stale.
 
 1. `CLAUDE.md` — the invariants that are easy to break by accident. All of them were paid
    for by a real defect.
-2. `docs/engram-implementation-plan.md` — D1–D53. Skim the headings; read in full any
+2. `docs/engram-implementation-plan.md` — D1–D54. Skim the headings; read in full any
    decision you are about to touch.
 3. This file — for what is in flight and what the last session learned the hard way.
 
@@ -610,6 +610,62 @@ Eight falsifications, all checksummed. One no-opped on the first attempt: commen
 summary line printed from a catch-all branch that reads nothing, so it would have claimed
 `engram-first` whatever the config said. It now checks the config the install produced and runs a
 hook against it.
+
+### There was no way to watch embeddings happen (D54)
+
+Jim, having switched models and restarted: *is there a way to monitor progress of embeddings?* There
+was not. `engram doctor` printed a count and nothing else, and the backlog — the only thing in the
+process anyone waits on — appeared to report nothing at all.
+
+The first diagnosis was wrong and worth recording. It was not that the loop said nothing: it had
+logged `Embedded N fact(s); M pending.` since it was built. `ServeCommand` sets
+`SetMinimumLevel(LogLevel.Warning)` with only `Microsoft.Hosting.Lifetime` raised, so every one of
+those lines was dropped on the floor. The fix is one `AddFilter` entry. Believing the first
+diagnosis would have produced a second logging path beside the one already there.
+
+`embed --status` splits on who can answer. The **store** owns the counts — it is right whether or not
+a server is up, and duplicating them into a file would create a second answer that goes stale exactly
+when someone is reading it. The **server** owns everything else: alive or not, how fast, what is in
+flight, and why there is no loop, none of which any other process can derive. It writes
+`embedding.json`; everything else reads it. `--watch` redraws it through `Tui.Frame`, which inherits
+D52's row budget entire.
+
+**The bug the live run found, and no test would have.** Running it against a real server in a sandbox
+with 873 facts pending, status said `not running — start the server with 'engram start'` — while the
+server was up. The server's log had said why sixteen seconds earlier: `qwen3-embedding-0.6b is not
+downloaded yet`. The one process that knows why there is no loop is the one that decided not to start
+it, and it was telling a file nobody asking that question opens. The service now records the reason
+where status reads it. Two consequences follow: a standing reason is excluded from `LooksLive`, or it
+ages into `stalled or stopped` and a precise message is replaced by a vague one after forty-five
+seconds; and the note is cleared on `ApplicationStopping` rather than by the loop, which in this case
+never runs at all.
+
+Measured live on a sandbox home, `qwen3-embedding-0.6b` on Metal:
+
+```
+qwen3-embedding-0.6b/1024 (local)
+
+  embedded   32 of 873 facts (3%)
+  remaining  841
+  rate       4.5/s mean since 22:14:46
+  eta        ~3m 8s
+  backlog    running, pid 41453, last update 1s ago
+
+  recently embedded
+    Every SQLite write transaction should open BEGIN IMMEDIATE — a deferred transaction…
+```
+
+| claim | status |
+|---|---|
+| the counts survive the server stopping | measured — 208 of 873 after `stop`, note gone, rate and eta dashed |
+| a rate and an eta appear only while something is running | measured, and falsified both ways |
+| the reason a declined backlog gave is what status prints | measured live, then guarded end to end |
+| a stopped server leaves no note behind | measured end to end, against the published binary |
+| the bar never reaches a pipe | measured |
+| `--watch` on a terminal resized mid-run | **not measured** — the width is read once per frame |
+
+Sixteen falsifications, each break checksummed; the two tier-3 ones republish first, since a test run
+against the previous publish proves nothing.
 
 ### `doctor` in a home directory was a resource bomb (D53)
 

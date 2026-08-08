@@ -55,7 +55,7 @@ shipped but nothing has yet been leaned on it.
 
 Licensed under [Apache-2.0](LICENSE).
 
-Start with the implementation plan — it records fifty-three decisions (D1–D53) resolving
+Start with the implementation plan — it records fifty-four decisions (D1–D54) resolving
 questions the spec left open, the places where the spec contradicts itself, and for each
 one the argument or measurement that settled it. `CLAUDE.md` holds the invariants that are
 easy to break by accident, most of which were paid for by breaking them.
@@ -430,6 +430,18 @@ when wrong and so are handled rather than typed: vector width is asked of the en
 stores vectors that rank like noise and error nowhere; and changing model or provider needs
 `engram embed --rebuild`, which refuses to run while the server is up rather than racing the
 embedder that server loaded at *its* startup.
+
+Embedding happens in the background, inside the server, so `engram embed --status` says how
+far it has got and whether it is still moving — and `--watch` redraws it live, with what is
+being embedded right now. The counts come from the store, so they are right whether or not a
+server is running; the rate, the eta and the in-flight list come from the server, because
+nothing else can know them. If there is no loop, it says why: a model that was never
+downloaded is reported there rather than only in the log.
+
+```
+engram embed --status                  # how far, how fast, and what is being embedded
+engram embed --status --watch          # the same, redrawn until it finishes
+```
 
 `engram explain <query>` shows why recall ranks what it ranks — every lane's contribution,
 what fused, and what got left outside the token budget. It runs the same `VectorLane` recall

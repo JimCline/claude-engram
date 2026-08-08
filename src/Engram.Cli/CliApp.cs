@@ -83,6 +83,7 @@ public static class CliApp
         writer.WriteLine("  probe [options]                    summarize telemetry and store density for the M0 adoption probe");
         writer.WriteLine("  permissions [options]              allow Claude Code to call Engram's memory tools unprompted");
         writer.WriteLine("  model <list|install|path>          list the local embedding models, or download one");
+        writer.WriteLine("  embed --status [--watch]           how far the vector index has got, and whether it is moving");
         writer.WriteLine("  embed --probe                      ask the configured endpoint how wide its vectors are");
         writer.WriteLine("  embed --rebuild                    discard the vector index and make it again from facts");
         writer.WriteLine();
@@ -92,6 +93,7 @@ public static class CliApp
         writer.WriteLine("       --model --endpoint --dim --api-key-env --force");
         writer.WriteLine("                                     leave --dim off and the endpoint is asked for it");
         writer.WriteLine("  model install <id> --use-it        download a model and switch the config to it");
+        writer.WriteLine("  embed --status [--watch]           progress, rate and what is being embedded; --watch redraws");
         writer.WriteLine("  embed --probe [--use-it]           report the width, and optionally write it to the config");
         writer.WriteLine("  embed --rebuild [--apply]          re-embed every live fact; needed after a model change");
         writer.WriteLine("  scan [path] [options]              report what indexing would read there, and what it would skip");
