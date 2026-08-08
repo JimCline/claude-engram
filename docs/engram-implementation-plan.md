@@ -1810,6 +1810,31 @@ append mode, which is precisely the rejected design; it fails. And `if (false)` 
 under warnings-as-errors, so forcing the `apply` parameter true does the same job. The second
 attempt at each failed as intended, which is the only evidence that either guard exists.
 
+**Amended: what replay cannot write, it skips and counts.** The rule above — never rewrite or close
+what the target already had — collided with the schema, and the schema won in the worst possible
+way. `ux_fact_live` permits one live fact per subject and predicate, so a journalled belief the
+target disagrees with cannot be inserted without closing the target's, which this decision forbids.
+Nothing said what to do instead, so the insert simply violated the index and `Replay` propagated a
+`SqliteException` that `ReplayInto` turned into "replay failed and nothing was written". Measured:
+a journal replayed into a home that had been through `init` — which arrives holding the seeded
+corpus under the same subjects and predicates — recovered **nothing at all**. That is the tool
+failing precisely in the situation it exists for, since a rebuilt home is an initialised one.
+
+Skipping is the only move left: the constraint forbids two, and D8 forbids closing one. So the
+conflict is counted and reported, separately from `AlreadyPresent`, because "already there" and
+"not recovered" are the two answers someone running a recovery tool is trying to tell apart. A
+conflicted fact gets no `idMap` entry, so a supersession aimed at it comes out unresolved rather
+than pointed at an unrelated row. Only live facts can collide — the index is partial on
+`valid_to IS NULL` — so a closed journal fact still lands beside whatever is believed now and adds
+to the record of how the belief got there.
+
+**One of the five new guards was worthless and the falsification is what said so.** The in-journal
+duplicate check exists for the *dry run*: an apply sees its own inserts through the transaction and
+resolves a merged bundle's second live fact without any help. The test asserted the apply, so
+deleting the check left it green. Rewritten to assert the dry run — the only caller that has no
+transaction to see through — it fails on the break, which is the difference between a guard and a
+decoration.
+
 ---
 
 ### D33 — Choosing an embedding provider is a command, and the line it writes says who wrote it
@@ -1853,6 +1878,27 @@ explicit intent the dry-run rule exists to require, so it acts.
 For `local`, the download runs before the config is written. A config naming a model that is not on
 disk describes an instance that cannot start, and it would have been written by the very command
 someone ran to avoid getting this wrong by hand.
+
+**Amended: leaving the rest of the file means retired keys live in it forever.** Changing one line
+is what protects a user's prose, and the cost is that a setting Engram stops reading is never
+removed from the configs that already have it. Three are in that state — `model_path`, `threads`
+and `idle_unload_minutes`, real until the embedder moved inside the server — and they read exactly
+like live settings. `model_path` is the one that matters: it looks like it selects the weights, and
+`EmbeddingModels` has selected them since. A person reading their own config would reasonably
+believe it does something.
+
+So `EmbeddingSettings.Retired` is an explicit list of key and replacement, and `doctor` warns for
+each one present. Explicit rather than "any key not in the shipped default", because `ConfigFile`
+is deliberately lenient about unknown keys — that is how a config survives a version bump and how
+someone leaves themselves a note — and reporting those would be doctor calling a user's own choice
+a fault, which D37 says is how people stop reading it. `Warn`, never `Broken`: a line that does
+nothing is untidy, not wrong, and exit 1 stays for what is actually broken.
+
+They ride a separate `Ignored` list rather than `Problems`, and that is the load-bearing half.
+`Problems` clears `IsUsable`, so folding retired keys in would have switched the vector lane off
+for every config old enough to contain one — turning a cosmetic report into an outage on upgrade,
+delivered by the change meant to tidy up. The guard for it asserts `IsUsable` stays true with all
+three present.
 
 ---
 

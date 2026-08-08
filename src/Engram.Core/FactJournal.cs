@@ -25,7 +25,11 @@ public sealed record JournalFact(
     long CreatedAt);
 
 /// <summary>What a replay did, or would do.</summary>
-public sealed record ReplayResult(int Written, int AlreadyPresent, int Unresolved);
+/// <param name="Conflicted">
+/// Live facts left out because the target already believes something else about that subject and
+/// predicate. Distinct from <paramref name="AlreadyPresent"/>: nothing was recovered for these.
+/// </param>
+public sealed record ReplayResult(int Written, int AlreadyPresent, int Unresolved, int Conflicted);
 
 /// <summary>
 /// The store's facts as plain text, and the way back from it.
@@ -274,6 +278,17 @@ public static class FactJournal
     /// append-only (D8), and a recovery tool that could silently retire live beliefs would be a
     /// worse problem than the one it was called to fix.</para>
     ///
+    /// <para><b>A live belief the target already holds is left alone, and the journalled one is
+    /// dropped.</b> The schema permits one live fact per subject and predicate
+    /// (<c>ux_fact_live</c>), so a journal whose fact disagrees with what the target currently
+    /// believes cannot be written without closing that belief — which is precisely what the
+    /// paragraph above forbids. Skipping is therefore the only move the constraint and D8 leave
+    /// open, and it is reported rather than silent, because the difference between "already there"
+    /// and "not recovered" is the whole question someone running a recovery tool is asking. Before
+    /// this, the insert simply violated the index and took the entire replay down with it — a
+    /// journal replayed into a store that had been initialised (and so carries the seeded corpus)
+    /// recovered nothing at all.</para>
+    ///
     /// <para><c>session_id</c> is deliberately dropped. Sessions are local to a store, so carrying
     /// the number across would point a recovered fact at an unrelated session or a missing one.
     /// The provenance that survives is the part that means something anywhere: the subject, the
@@ -290,7 +305,15 @@ public static class FactJournal
         var written = 0;
         var present = 0;
         var unresolved = 0;
+        var conflicted = 0;
         var idMap = new Dictionary<long, long>();
+
+        // Subject+predicate pairs this replay has already claimed a live fact for. This is what the
+        // dry run has instead of a transaction: an apply sees its own inserts through the store
+        // query, so a journal holding two live facts for one subject — which only a merged bundle
+        // can — resolves there without help. A dry run inserts nothing, so without this it would
+        // count both as writable and promise a recovery the apply cannot deliver.
+        var claimed = new HashSet<(string Subject, string Predicate)>();
 
         if (!apply)
         {
@@ -300,13 +323,17 @@ public static class FactJournal
                 {
                     present++;
                 }
+                else if (WouldDisplaceALiveBelief(connection, null, fact, claimed))
+                {
+                    conflicted++;
+                }
                 else
                 {
                     written++;
                 }
             }
 
-            return new ReplayResult(written, present, 0);
+            return new ReplayResult(written, present, 0, conflicted);
         }
 
         using var transaction = EngramDatabase.BeginWrite(connection);
@@ -318,6 +345,14 @@ public static class FactJournal
             {
                 idMap[fact.Id] = id;
                 present++;
+                continue;
+            }
+
+            if (WouldDisplaceALiveBelief(connection, transaction, fact, claimed))
+            {
+                // No idMap entry on purpose: nothing was written, so a supersession pointing at
+                // this fact has to come out as unresolved rather than aimed at some other row.
+                conflicted++;
                 continue;
             }
 
@@ -345,7 +380,47 @@ public static class FactJournal
         }
 
         transaction.Commit();
-        return new ReplayResult(written, present, unresolved);
+        return new ReplayResult(written, present, unresolved, conflicted);
+    }
+
+    /// <summary>
+    /// Whether writing this fact would need an existing live belief closed first — which replay
+    /// may never do.
+    /// </summary>
+    /// <remarks>
+    /// Only live facts can collide: <c>ux_fact_live</c> is partial on <c>valid_to IS NULL</c>, so a
+    /// closed fact from the journal lands beside whatever the target believes now and adds to the
+    /// supersession record rather than competing with it.
+    /// </remarks>
+    private static bool WouldDisplaceALiveBelief(
+        SqliteConnection connection,
+        SqliteTransaction? transaction,
+        JournalFact fact,
+        HashSet<(string Subject, string Predicate)> claimed)
+    {
+        if (fact.ValidTo is not null)
+        {
+            return false;
+        }
+
+        if (!claimed.Add((fact.Subject, fact.Predicate)))
+        {
+            return true;
+        }
+
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText =
+            """
+            SELECT 1 FROM fact f
+            JOIN entity e ON e.id = f.subject_id
+            WHERE e.path = $path AND f.predicate = $predicate AND f.valid_to IS NULL
+            LIMIT 1;
+            """;
+        command.Parameters.AddWithValue("$path", fact.Subject);
+        command.Parameters.AddWithValue("$predicate", fact.Predicate);
+
+        return command.ExecuteScalar() is not null;
     }
 
     private static long? Existing(SqliteConnection connection, SqliteTransaction? transaction, JournalFact fact)

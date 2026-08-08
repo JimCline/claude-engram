@@ -611,6 +611,34 @@ summary line printed from a catch-all branch that reads nothing, so it would hav
 `engram-first` whatever the config said. It now checks the config the install produced and runs a
 hook against it.
 
+### Two defects the session found in passing (D32, D33 amended)
+
+**`backup replay` recovered nothing into any initialised home.** Found while building a test
+sandbox, not by looking for it: `backup replay ~/.engram/backups/facts.jsonl --apply` into a home
+that had been through `init` came back `SQLite Error 19: UNIQUE constraint failed:
+fact.subject_id, fact.predicate` and wrote nothing. `ux_fact_live` allows one live fact per subject
+and predicate; D32 forbids replay from closing a live belief to make room; nothing said what to do
+when both apply, so the insert violated the index and the whole recovery aborted. That is the tool
+failing exactly where it is needed, because the store you are recovering into has been initialised
+by definition. Conflicts are now skipped and counted separately from "already present" — the two
+answers a recovery tool exists to tell apart.
+
+The falsification earned its keep. Five guards, one of which passed with its subject deleted: the
+in-journal duplicate check only matters in a *dry run*, since an apply sees its own inserts through
+the transaction, and the test had asserted the apply. Rewritten against the dry run, it fails.
+
+**Retired config keys read like live ones.** `model_path`, `threads` and `idle_unload_minutes` sit
+in `~/.engram/config.toml` under a `# -- llamasharp --` header and are read by nothing — they were
+real until the embedder moved inside the server (`68188bd`), and `ConfigEditor` only ever rewrites
+the single line it owns, so they stay forever. `model_path` looks like it picks the weights;
+`EmbeddingModels` has picked them for months. `doctor` now warns per key with what answers for it
+instead.
+
+The trap, avoided by writing the test for it: routing these through `Problems` would have cleared
+`IsUsable` and switched the vector lane off for every config old enough to hold one — a tidy-up
+that causes an outage on upgrade. They ride a separate `Ignored` list, and the guard asserts
+`IsUsable` stays true with all three present.
+
 ### There was no way to watch embeddings happen (D54)
 
 Jim, having switched models and restarted: *is there a way to monitor progress of embeddings?* There

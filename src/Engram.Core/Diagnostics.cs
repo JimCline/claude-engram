@@ -481,6 +481,19 @@ public static class Diagnostics
             checks.Add(new Diagnosis("embedding", DiagnosisState.Broken, problem, "edit [embedding] in config.toml"));
         }
 
+        // Ahead of every early return below, so it is reported whatever the provider is — a config
+        // that predates a key's retirement is no more likely to be one with embeddings switched on.
+        // Warn rather than Broken: the lines do nothing, which is untidy rather than wrong, and D37
+        // reserves exit 1 for what is actually broken.
+        foreach (var stale in settings.Ignored)
+        {
+            checks.Add(new Diagnosis(
+                "embedding",
+                DiagnosisState.Warn,
+                $"[embedding] {stale}; the line is ignored",
+                "delete it from config.toml"));
+        }
+
         if (settings.Provider == EmbeddingProvider.None)
         {
             checks.Add(new Diagnosis(

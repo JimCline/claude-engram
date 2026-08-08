@@ -28,6 +28,78 @@ public class EmbeddingSettingsTests
     }
 
     [Fact]
+    public void TheShippedDefault_CarriesNoneOfTheRetiredKeys()
+    {
+        var settings = EmbeddingSettings.Read(ConfigFile.Parse(DefaultConfig.Content));
+
+        Assert.Empty(settings.Ignored);
+    }
+
+    /// <summary>
+    /// A key Engram wrote and no longer reads is named, because it reads exactly like a live
+    /// setting — <c>model_path</c> in particular looks like it selects the weights, and has not
+    /// since the embedder moved inside the server.
+    /// </summary>
+    [Fact]
+    public void ARetiredKey_IsNamedAlongWithWhatAnswersForItNow()
+    {
+        var settings = Read(
+            """
+            [embedding]
+            provider = "local"
+            model = "nomic-embed-text-v1.5"
+            model_path = "~/.engram/models/nomic-embed-text-v1.5.Q8_0.gguf"
+            """);
+
+        var ignored = Assert.Single(settings.Ignored);
+        Assert.StartsWith("model_path", ignored, StringComparison.Ordinal);
+        Assert.Contains("`model`", ignored, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The load-bearing half. Retired keys are kept out of <c>Problems</c> on purpose: folding them
+    /// in would clear <c>IsUsable</c>, and every config written before those keys were retired would
+    /// silently lose its vector lane on upgrade — a far worse outcome than the untidiness.
+    /// </summary>
+    [Fact]
+    public void ARetiredKey_DoesNotSwitchOffTheVectorLane()
+    {
+        var settings = Read(
+            """
+            [embedding]
+            provider = "local"
+            model = "nomic-embed-text-v1.5"
+            model_path = "~/.engram/models/nomic-embed-text-v1.5.Q8_0.gguf"
+            threads = 4
+            idle_unload_minutes = 5
+            """);
+
+        Assert.Equal(3, settings.Ignored.Count);
+        Assert.Empty(settings.Problems);
+        Assert.True(settings.IsUsable);
+        Assert.NotNull(settings.Space);
+    }
+
+    /// <summary>
+    /// The parser is lenient about unknown keys by design — that is how a config survives a version
+    /// bump and how someone leaves themselves a note. Only keys Engram itself retired are reported,
+    /// or doctor would call a user's own choice a fault (D37).
+    /// </summary>
+    [Fact]
+    public void AKeyEngramNeverWrote_IsLeftAloneRatherThanReported()
+    {
+        var settings = Read(
+            """
+            [embedding]
+            provider = "none"
+            reminder_to_self = "try the bigger model next week"
+            """);
+
+        Assert.Empty(settings.Ignored);
+        Assert.Empty(settings.Problems);
+    }
+
+    [Fact]
     public void ALocalModel_TakesItsWidthFromTheRegistry()
     {
         var settings = Read(

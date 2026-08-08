@@ -161,6 +161,29 @@ public sealed class DiagnosticsTests : IDisposable
     }
 
     /// <summary>
+    /// A line Engram wrote and no longer reads is untidy rather than wrong, so it warns and the
+    /// instance stays healthy — D37 keeps exit 1 for what is actually broken. Reported ahead of the
+    /// provider branch on purpose: a config old enough to carry a retired key is no more likely to
+    /// be one with embeddings switched on.
+    /// </summary>
+    [Fact]
+    public void ARetiredEmbeddingKey_WarnsWithoutFailingTheInstance()
+    {
+        using var sandbox = new SandboxHome();
+        WriteConfig(sandbox, "[embedding]\nprovider = \"none\"\nmodel_path = \"~/somewhere/a.gguf\"\n");
+
+        var report = Run(sandbox);
+
+        var warned = report.Checks.First(
+            check => check.Name == "embedding" && check.State == DiagnosisState.Warn);
+
+        Assert.Contains("model_path", warned.Detail, StringComparison.Ordinal);
+        Assert.Contains("ignored", warned.Detail, StringComparison.Ordinal);
+        Assert.Equal("delete it from config.toml", warned.Fix);
+        Assert.Equal(0, report.Broken);
+    }
+
+    /// <summary>
     /// D18 says an instance without embeddings is a supported configuration, not a degraded one.
     /// A doctor that fails on a choice the user made is one people stop reading, which costs the
     /// real faults their audience.

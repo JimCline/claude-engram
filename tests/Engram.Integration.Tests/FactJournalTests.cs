@@ -385,4 +385,165 @@ public sealed class FactJournalTests
         Assert.Equal(1, result.Unresolved);
         Assert.Equal(["closed, but by what?"], Bodies(connection));
     }
+
+    // ---- a target that believes something else ----
+
+    /// <summary>
+    /// The reported defect. <c>ux_fact_live</c> permits one live fact per subject and predicate, so
+    /// a journalled belief that disagrees with the target's cannot be inserted — and the insert used
+    /// to raise SQLITE_CONSTRAINT and abort the whole replay, recovering nothing.
+    /// </summary>
+    [Fact]
+    public void Replay_WhenTheTargetBelievesSomethingElse_SkipsThatFactRatherThanFailing()
+    {
+        using var source = new SandboxHome(initialize: false);
+        using (var connection = EngramDatabase.OpenInitialized(source.Home))
+        {
+            Write(connection, "/project/a", "what the journal remembers", T0);
+            Write(connection, "/project/b", "only in the journal", T0.AddMinutes(1));
+            FactJournal.Write(connection, source.Home, T0.AddMinutes(2));
+        }
+
+        using var target = new SandboxHome(initialize: false);
+        using var rebuilt = EngramDatabase.OpenInitialized(target.Home);
+        Write(rebuilt, "/project/a", "what the store believes now", T0.AddHours(1));
+
+        var result = FactJournal.Replay(rebuilt, Reread(source.Home), apply: true);
+
+        Assert.Equal(1, result.Conflicted);
+        Assert.Equal(1, result.Written);
+        Assert.Equal(0, result.AlreadyPresent);
+
+        // The target's belief is untouched — replay may never close one to make room (D8) — and
+        // everything that did not collide was still recovered.
+        Assert.Equal(["what the store believes now", "only in the journal"], Bodies(rebuilt));
+    }
+
+    /// <summary>
+    /// The shape the bug was found in: a journal replayed into a home that has been through
+    /// <c>init</c>, so the seeded corpus is already there under the same subjects and predicates.
+    /// Before the fix this recovered nothing at all.
+    /// </summary>
+    [Fact]
+    public void Replay_IntoAnInitialisedHome_RecoversWhatDoesNotCollide()
+    {
+        using var source = new SandboxHome(initialize: false);
+        using (var connection = EngramDatabase.OpenInitialized(source.Home))
+        {
+            Write(connection, "/project/mine", "a fact only this store has", T0);
+            FactJournal.Write(connection, source.Home, T0);
+        }
+
+        // Initialised, so the store arrives holding the canned corpus rather than nothing.
+        using var target = new SandboxHome();
+        using var rebuilt = EngramDatabase.OpenInitialized(target.Home);
+        var before = Bodies(rebuilt).Count;
+        Assert.True(before > 0, "an initialised home was expected to arrive seeded");
+
+        var journal = Reread(source.Home);
+        foreach (var seeded in FactJournal.Read(rebuilt).Take(3))
+        {
+            // Same subject and predicate, different body: what a second install's seed looks like
+            // to the first install's journal.
+            journal = [.. journal, seeded with { Body = seeded.Body + " (as the journal had it)" }];
+        }
+
+        var result = FactJournal.Replay(rebuilt, journal, apply: true);
+
+        Assert.Equal(3, result.Conflicted);
+        Assert.Equal(1, result.Written);
+        Assert.Equal(before + 1, Bodies(rebuilt).Count);
+    }
+
+    /// <summary>
+    /// A dry run that under-reports conflicts would promise a recovery the apply cannot deliver.
+    /// </summary>
+    [Fact]
+    public void Replay_ADryRun_ReportsTheSameConflictsTheApplyFinds()
+    {
+        using var source = new SandboxHome(initialize: false);
+        using (var connection = EngramDatabase.OpenInitialized(source.Home))
+        {
+            Write(connection, "/project/a", "what the journal remembers", T0);
+            Write(connection, "/project/b", "only in the journal", T0.AddMinutes(1));
+            FactJournal.Write(connection, source.Home, T0.AddMinutes(2));
+        }
+
+        using var target = new SandboxHome(initialize: false);
+        using var rebuilt = EngramDatabase.OpenInitialized(target.Home);
+        Write(rebuilt, "/project/a", "what the store believes now", T0.AddHours(1));
+
+        var facts = Reread(source.Home);
+        var dry = FactJournal.Replay(rebuilt, facts, apply: false);
+        var applied = FactJournal.Replay(rebuilt, facts, apply: true);
+
+        Assert.Equal(applied.Conflicted, dry.Conflicted);
+        Assert.Equal(applied.Written, dry.Written);
+    }
+
+    /// <summary>
+    /// Only live facts can collide — the uniqueness index is partial on <c>valid_to IS NULL</c> —
+    /// so a closed fact lands beside whatever the target believes now and adds to the record of how
+    /// the belief got there rather than competing with it.
+    /// </summary>
+    [Fact]
+    public void Replay_AClosedJournalFact_LandsBesideTheTargetsLiveBelief()
+    {
+        using var source = new SandboxHome(initialize: false);
+        using (var connection = EngramDatabase.OpenInitialized(source.Home))
+        {
+            Write(connection, "/project/a", "what was believed first", T0);
+            Write(connection, "/project/a", "what replaced it", T0.AddMinutes(1));
+            FactJournal.Write(connection, source.Home, T0.AddMinutes(2));
+        }
+
+        using var target = new SandboxHome(initialize: false);
+        using var rebuilt = EngramDatabase.OpenInitialized(target.Home);
+        Write(rebuilt, "/project/a", "what this store believes", T0.AddHours(1));
+
+        var result = FactJournal.Replay(rebuilt, Reread(source.Home), apply: true);
+
+        // The closed one is written, the live one collides.
+        Assert.Equal(1, result.Written);
+        Assert.Equal(1, result.Conflicted);
+        Assert.Contains("what was believed first", Bodies(rebuilt));
+    }
+
+    /// <summary>
+    /// Two live facts for one subject and predicate can only reach a journal through a merged
+    /// bundle, and the second must be reported rather than taking the replay down at the index.
+    /// </summary>
+    /// <remarks>
+    /// The dry run is the half that has to be asserted, and the first version of this test asserted
+    /// only the apply — which passed with the in-journal check deleted, because an apply sees its
+    /// own inserts through the transaction and resolves the collision without it. A dry run inserts
+    /// nothing, so it is the only caller that needs the pairs tracked, and the only one whose
+    /// numbers change when the tracking goes.
+    /// </remarks>
+    [Fact]
+    public void Replay_AJournalHoldingTwoLiveFactsForOneSubject_KeepsTheFirstAndReportsTheSecond()
+    {
+        using var source = new SandboxHome(initialize: false);
+        using (var connection = EngramDatabase.OpenInitialized(source.Home))
+        {
+            Write(connection, "/project/a", "the one that arrived first", T0);
+            FactJournal.Write(connection, source.Home, T0);
+        }
+
+        var facts = Reread(source.Home);
+        IReadOnlyList<JournalFact> merged =
+            [.. facts, .. facts.Select(f => f with { Id = f.Id + 1000, Body = "a second opinion" })];
+
+        using var target = new SandboxHome(initialize: false);
+        using var rebuilt = EngramDatabase.OpenInitialized(target.Home);
+
+        var dry = FactJournal.Replay(rebuilt, merged, apply: false);
+        Assert.Equal(1, dry.Written);
+        Assert.Equal(1, dry.Conflicted);
+
+        var applied = FactJournal.Replay(rebuilt, merged, apply: true);
+        Assert.Equal(1, applied.Written);
+        Assert.Equal(1, applied.Conflicted);
+        Assert.Equal(["the one that arrived first"], Bodies(rebuilt));
+    }
 }

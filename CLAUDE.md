@@ -143,7 +143,17 @@ Anything editing a user's file backs it up first and refuses to overwrite a valu
 create. For `config.toml` that means `ConfigEditor`, which changes one line and leaves the rest of
 the file — the prose in there explains the choices, and a TOML round-trip would delete it. A value
 Engram wrote carries `# written by engram` on its own line, because comparing against the shipped
-default alone makes the second run refuse the first run's edit (D33).
+default alone makes the second run refuse the first run's edit (D33). Leaving the rest of the file
+also means **a key Engram retires stays in that file forever**, reading exactly like a live setting:
+`model_path`, `threads` and `idle_unload_minutes` were real until the embedder moved inside the
+server, and `model_path` still looks like it picks the weights when `EmbeddingModels` has picked
+them since. So `EmbeddingSettings.Retired` names them and `doctor` warns. It is an explicit list,
+never "anything absent from the shipped default": `ConfigFile` is lenient about unknown keys on
+purpose — that is how a config survives a version bump and how someone leaves themselves a note —
+and reporting those would call a user's own choice a fault, which D37 says is how people learn to
+stop reading `doctor`. They ride `Ignored`, not `Problems`, and that split is load-bearing:
+`Problems` clears `IsUsable`, so folding them in would switch off the vector lane of every config
+old enough to have one.
 
 **`dim` is measured, not typed.** It is the only embedding setting that fails silently when wrong —
 a mismatched width stores vectors that rank like noise and error nowhere — and it is not derivable
@@ -233,7 +243,19 @@ rewritten whole and atomically alongside each snapshot. A `.db` snapshot only re
 schema version that wrote it — the journal is addressed by path and predicate, so it replays into
 any later one (D32). `backup replay` is additive and idempotent, matching on subject, predicate,
 body and `valid_from`: it never rewrites or closes a fact the target store already had, because a
-recovery tool that can retire live beliefs is worse than the loss it was called to fix.
+recovery tool that can retire live beliefs is worse than the loss it was called to fix. **What it
+therefore cannot write, it skips and counts — it does not abort.** `ux_fact_live` allows one live
+fact per subject and predicate, so a journalled belief the target disagrees with cannot go in
+without closing the target's, which the previous sentence forbids; the insert used to violate the
+index and take the whole replay down, so a journal replayed into any store that had been through
+`init` — which arrives seeded — recovered **nothing**. Conflicts are counted apart from
+`AlreadyPresent`, because "already there" and "not recovered" are the two answers a recovery tool
+exists to tell apart, and a conflicted fact gets no `idMap` entry so a supersession aimed at it
+comes out unresolved rather than pointed at some other row. Only *live* facts collide — the index
+is partial on `valid_to IS NULL` — so a closed one lands beside whatever is believed now. The
+`claimed` set is **for the dry run only**, and the test that says so had to be rewritten to prove
+it: an apply sees its own inserts through the transaction and resolves an in-journal duplicate
+without help, so the first version passed with the set deleted.
 
 **`doctor` reads; it may not repair.** It opens the store with `EngramDatabase.Open`, never
 `OpenInitialized` — the latter migrates on open and D31 makes that migration snapshot first, which

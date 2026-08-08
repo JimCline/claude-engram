@@ -30,6 +30,12 @@ public enum EmbeddingProvider
 /// <c>doctor</c> prints and what keeps "embeddings are off" distinguishable from "embeddings
 /// are on and broken".</para>
 /// </remarks>
+/// <param name="Ignored">
+/// Settings Engram itself once wrote here and no longer reads, described. Kept apart from
+/// <paramref name="Problems"/> deliberately: a retired key is not a misconfiguration, and folding
+/// it in would clear <see cref="IsUsable"/> and switch off the vector lane of everyone whose config
+/// predates the change.
+/// </param>
 public sealed record EmbeddingSettings(
     EmbeddingProvider Provider,
     string? Model,
@@ -38,15 +44,37 @@ public sealed record EmbeddingSettings(
     string? Endpoint,
     string? ApiKeyEnvironmentVariable,
     TimeSpan Timeout,
-    IReadOnlyList<string> Problems)
+    IReadOnlyList<string> Problems,
+    IReadOnlyList<string> Ignored)
 {
     public const string Section = "embedding";
     public const int DefaultMaxBatch = 16;
     public const int DefaultTimeoutSeconds = 60;
 
+    /// <summary>
+    /// Keys this section used to have, and what answers for them now.
+    /// </summary>
+    /// <remarks>
+    /// <para>An explicit list rather than "anything not in the shipped default". The parser is
+    /// lenient about unknown keys on purpose — that is how a config survives a version bump and how
+    /// someone leaves themselves a note — so warning about every key Engram does not recognise would
+    /// report a user's own choice as a fault, which D37 says is how people learn to stop reading
+    /// <c>doctor</c>. These three are different: Engram wrote them, they read exactly like live
+    /// settings, and <c>model_path</c> in particular looks like it selects the weights when the
+    /// model file has been chosen from <see cref="EmbeddingModels"/> ever since the embedder moved
+    /// inside the server. <c>ConfigEditor</c> only ever rewrites the single line it owns, so
+    /// anything retired stays in the file forever unless something says so.</para>
+    /// </remarks>
+    public static IReadOnlyList<(string Key, string Note)> Retired { get; } =
+    [
+        ("model_path", "the weights are chosen by `model` from Engram's own list — `engram model list`"),
+        ("threads", "llama.cpp's thread count is no longer configurable here"),
+        ("idle_unload_minutes", "the model is held by the server for as long as it runs"),
+    ];
+
     public static EmbeddingSettings Disabled { get; } = new(
         EmbeddingProvider.None, null, null, DefaultMaxBatch, null, null,
-        TimeSpan.FromSeconds(DefaultTimeoutSeconds), []);
+        TimeSpan.FromSeconds(DefaultTimeoutSeconds), [], []);
 
     /// <summary>True when a provider is configured and nothing is wrong with how.</summary>
     public bool IsUsable => Provider != EmbeddingProvider.None && Problems.Count == 0;
@@ -155,6 +183,15 @@ public sealed record EmbeddingSettings(
                 break;
         }
 
+        var ignored = new List<string>();
+        foreach (var (key, note) in Retired)
+        {
+            if (config.Raw(Section, key) is not null)
+            {
+                ignored.Add($"{key} — {note}");
+            }
+        }
+
         return new EmbeddingSettings(
             provider,
             model,
@@ -163,7 +200,8 @@ public sealed record EmbeddingSettings(
             endpoint,
             config.String(Section, "api_key_env"),
             TimeSpan.FromSeconds(timeout),
-            problems);
+            problems,
+            ignored);
     }
 
     private static EmbeddingProvider Unknown(List<string> problems, string name)

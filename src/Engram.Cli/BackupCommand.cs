@@ -317,6 +317,16 @@ public static class BackupCommand
             $"{(apply ? "Wrote" : "Would write")} {result.Written} {(result.Written == 1 ? "fact" : "facts")}"
                 + $", leaving {result.AlreadyPresent} already in the store.");
 
+        // Named separately from AlreadyPresent, because nothing was recovered for these and the
+        // difference is the question someone running a recovery tool is actually asking.
+        if (result.Conflicted > 0)
+        {
+            stdout.WriteLine(
+                $"  {result.Conflicted} {(result.Conflicted == 1 ? "fact was" : "facts were")} left out: the store "
+                    + "already believes something else about that subject and predicate, and replay "
+                    + "never closes a live belief to make room.");
+        }
+
         if (result.Unresolved > 0)
         {
             stdout.WriteLine(
@@ -399,6 +409,16 @@ public static class BackupCommand
         stdout.WriteLine(
             $"{(apply ? "Wrote" : "Would write")} {result.Written} {(result.Written == 1 ? "fact" : "facts")}"
                 + $", leaving {result.AlreadyPresent} already in the store.");
+
+        // Named separately from AlreadyPresent, because nothing was recovered for these and the
+        // difference is the question someone running a recovery tool is actually asking.
+        if (result.Conflicted > 0)
+        {
+            stdout.WriteLine(
+                $"  {result.Conflicted} {(result.Conflicted == 1 ? "fact was" : "facts were")} left out: the store "
+                    + "already believes something else about that subject and predicate, and replay "
+                    + "never closes a live belief to make room.");
+        }
 
         if (!apply)
         {
