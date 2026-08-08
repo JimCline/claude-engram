@@ -3974,6 +3974,32 @@ its own guard at both tiers. Falsified both halves: forcing `VersionCounts` to m
 two integration tests that expect a thread and leaves the control passing, and forcing the render never
 to mark fails the unit test and leaves the plain one passing.
 
+**Session lines carry no marker, and that is the addressing rather than an omission.** Recall renders
+through three formatters — `FormatFactLine` for long-term facts, `FormatSessionFactLine` and
+`FormatPriorSessionFactLine` for working memory — and only the first was given the marker, which
+looks like a gap the moment anyone notices it. It is not, because a session note's subject path is
+`/sessions/<id>[/<agent>]/<fingerprint(statement)>`: the leaf is a fingerprint **of the note's own
+text**, so rewording a note addresses a different path and starts its own history rather than
+extending the old note's. There is no earlier belief for a marker to point back at.
+
+The cheap version of that reasoning — *session notes are never superseded* — is false, and believing
+it would justify the wrong fix in either direction. Retract a note and restate it verbatim and the
+path does collect two rows: `SessionFacts.Append` returns the existing id only for a **live** match,
+and `FactStore.Forget` closes rather than deletes. So a session handle can head a two-version thread —
+holding one sentence twice, since matching the path is what required the text to be identical. A
+marker there would announce history carrying nothing the line above it already says. Both halves are
+pinned by tests (`ARewordedNote_GetsItsOwnHandle_RatherThanBecomingAVersionOfTheOldOne`,
+`ARestatedNoteAfterRetraction_HeadsAThreadHoldingOneStatementTwice`) rather than left as an argument,
+because the property is invisible in the formatter and the next reader will otherwise re-derive it
+from scratch or "fix" it. Falsified by dropping the fingerprint from `PathFor`, which makes the
+reworded note land on the old path: 2 failed, 13 passed, restored.
+
+Threading the count into the session tier was the other option and was rejected on cost against
+value. `ReadLongTerm` and `SessionFacts.Read` are called on adjacent lines of `EngramMcpTools.Recall`,
+so a shared map is reachable — but only by widening two public signatures used by the primer as well,
+or by paying a second `GROUP BY` over `fact` on every recall, to light up a marker whose thread is a
+restatement.
+
 *Open items deliberately left for later: entity-resolution fuzziness thresholds (start
 exact + alias + case-insensitive, per spec §12); whether `UserPromptSubmit` recall
 earns default-on (decide from M0/M1 coverage data); archive FTS for history search

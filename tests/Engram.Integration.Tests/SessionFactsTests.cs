@@ -61,6 +61,61 @@ public class SessionFactsTests
         Assert.Empty(prior);
     }
 
+    // Why a session line carries no `v{N}` marker while a long-term one does (D57). The marker
+    // exists to say a handle heads a supersession thread worth walking, and a session note's
+    // subject path ends in a fingerprint OF ITS OWN STATEMENT — so rewording a note addresses a
+    // different path and starts its own history rather than extending the old one. There is no
+    // earlier belief for a session handle to lead back to, which is what the marker would point at.
+    [Fact]
+    public void ARewordedNote_GetsItsOwnHandle_RatherThanBecomingAVersionOfTheOldOne()
+    {
+        using var sandbox = new SandboxHome();
+        using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
+
+        var first = SessionFacts.Append(
+            connection, "sess-a", "The timeout was the cause.", subject: null, evidence: null, agent: null, Now);
+        var second = SessionFacts.Append(
+            connection, "sess-a", "The timeout was not the cause after all.", subject: null, evidence: null, agent: null, Now);
+
+        Assert.NotEqual(first, second);
+        Assert.Empty(SessionVersionCounts(connection));
+    }
+
+    // The one route by which a session handle CAN reach two versions, kept as a test rather than
+    // an assumption because it is what decides whether the missing marker is a gap: retract a note
+    // and restate it verbatim. The thread that produces holds one sentence twice, so the marker
+    // would announce history that carries nothing the line above it does not already say.
+    [Fact]
+    public void ARestatedNoteAfterRetraction_HeadsAThreadHoldingOneStatementTwice()
+    {
+        using var sandbox = new SandboxHome();
+        using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
+
+        const string statement = "Concluded the timeout was the cause.";
+        var first = SessionFacts.Append(
+            connection, "sess-a", statement, subject: null, evidence: null, agent: null, Now);
+        Assert.True(FactStore.Forget(connection, first, "retracted by the user", Now));
+
+        var second = SessionFacts.Append(
+            connection, "sess-a", statement, subject: null, evidence: null, agent: null, Now);
+        Assert.NotEqual(first, second);
+
+        var counted = Assert.Single(SessionVersionCounts(connection));
+        Assert.Equal(2, counted.Value);
+
+        var chain = FactStore.History(connection, counted.Key.Path, counted.Key.Predicate);
+        Assert.Equal(2, chain.Count);
+        Assert.Equal(new[] { statement, statement }, chain.Select(f => f.Body));
+    }
+
+    // Version counts for the session subtree only. Keyed off the same root Read partitions on, so
+    // a note parked under /sessions by anything other than Append is counted the same way.
+    private static IReadOnlyList<KeyValuePair<(string Path, string Predicate), int>> SessionVersionCounts(
+        SqliteConnection connection) =>
+        FactStore.VersionCounts(connection)
+            .Where(pair => pair.Key.Path.StartsWith(SessionFacts.Root + "/", StringComparison.Ordinal))
+            .ToList();
+
     // A retracted note stays retracted for later sessions too — the prior-session tier reads
     // the same live set, so there is no second path that could resurrect it.
     [Fact]

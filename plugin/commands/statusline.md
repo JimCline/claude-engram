@@ -62,7 +62,7 @@ attributed to the session that caused it.
 | `file-touched` | a file was edited | `path` |
 | `user-prompt` | Engram captured something the user said in passing | — |
 | `remember` | the model chose to save a fact | `query` |
-| `recall` / `browse` / `expand` | the model read memory | `query`, `fact_count`, `coverage` |
+| `recall` / `browse` / `expand` | the model read memory | `query`, `fact_count`, `coverage`, and the three counts it splits into — `long_term_fact_count`, `session_fact_count`, `prior_session_fact_count` |
 | `digest` / `revise` | the model wrote up or corrected memory | — |
 | `session-start` / `subagent-start` | primer delivered | `long_term_fact_count`, `tokens_returned` |
 | `session-open` | first MCP tool call of a transport session | — |
@@ -112,9 +112,18 @@ These are not style preferences. Each one is a way this goes wrong that is invis
 - **Never open the database per render.** Do not call `engram status`, `engram recall`, or any
   other subcommand: process start alone is ~8 ms and the store open is another 1–1.5 ms, against a
   file read that costs microseconds. Read the log.
-- **`long_term_fact_count` only rides primer events**, so a count taken from the log is "as of the
-  last session start", not live. That is usually the right trade — say so if you show it, and do
-  not reach for the database to make it exact.
+- **`long_term_fact_count` means two different things, so filter by kind before you read it.**
+  Every record carries the whole field set with nulls in the slots that do not apply, and this one
+  is populated on seven kinds. On `session-start` and `subagent-start` it is the size of the whole
+  corpus; on `recall`, `browse`, `expand` and `remember` it is how many of *that call's* returned
+  facts came from long-term memory. Measured on a real log: 5053 on the primer, 7–22 on the
+  recalls beside it. So `grep -o '"long_term_fact_count":[0-9]*' | tail -1` renders `engram:11`
+  moments after a recall against a store holding 5053 — a plausible number, in the right place,
+  silently wrong. Grep `'"kind":"(session-start|subagent-start)"'` first. This is the same mistake
+  D43 traced a wrong adoption conclusion back to, and it looks correct until someone checks it
+  against the store.
+- **A primer count is "as of the last session start", not live.** That is the right trade — say so
+  if you show it, and do not reach for the database to make it exact.
 - **`file-touched` is deliberately lossy under load.** The hook that writes it refuses to wait for
   the log, so a burst of edits drops a small fraction — measured 2% idle, 30% on a busy machine.
   Fine for "something is happening"; useless for counting edits or deriving a rate. Do not build a

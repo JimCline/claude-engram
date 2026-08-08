@@ -539,6 +539,19 @@ public static class RecallEngine
             ? $"[{fact.Id}] {fact.Body} ({fact.Scope} · {fact.AgeDays}d · v{fact.Versions})"
             : $"[{fact.Id}] {fact.Body} ({fact.Scope} · {fact.AgeDays}d)";
 
+    /// <summary>
+    /// A session line carries no version marker, and the asymmetry with <see cref="FormatFactLine"/>
+    /// is a property of the addressing rather than an omission.
+    /// </summary>
+    /// <remarks>
+    /// A session note's subject path ends in a fingerprint of its own statement, so rewording one
+    /// addresses a different path and starts its own history instead of extending the old note's —
+    /// there is no earlier belief for the marker to point back at. The single route to a
+    /// multi-version session handle is retracting a note and restating it verbatim, which builds a
+    /// thread holding one sentence twice; marking that would announce history carrying nothing the
+    /// line above it already says. Both halves are pinned by tests, because the cheap reading of
+    /// this — "session notes are never superseded" — is false and would justify the wrong fix.
+    /// </remarks>
     private static string FormatSessionFactLine(SessionFact fact)
     {
         var scope = string.IsNullOrWhiteSpace(fact.Agent) ? "session" : $"session · {fact.Agent}";

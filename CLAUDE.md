@@ -521,7 +521,16 @@ returns one. One query for the whole catalog rather than one per fact: recall pa
 every live belief, so a per-fact lookup would put a round trip behind each of them. Threads of one
 version are omitted from the result, which keeps it small, and a fact whose thread is unknown reads as
 one — a count nobody looked up must not be advertised as a revision. Marking everything is exactly as
-useless as marking nothing, so the unrevised case is the half worth guarding (D57).
+useless as marking nothing, so the unrevised case is the half worth guarding. **Only the long-term
+formatter carries the marker, and the asymmetry is addressing rather than an omission**: a session
+note's path ends in a fingerprint *of its own statement*, so rewording one addresses a different path
+and starts its own history instead of extending the old note's — there is nothing earlier for a marker
+to point at. Do not "fix" that from the cheap reading, which is false: retract a note and restate it
+verbatim and the path does collect two rows, because `Append` returns an existing id only for a *live*
+match and `Forget` closes rather than deletes. That thread holds one sentence twice — matching the path
+is what forced the text to be identical — so the marker would announce history saying nothing the line
+already does. Both halves are pinned by tests in `SessionFactsTests`, because the property lives in the
+addressing and is invisible at the formatter (D57).
 
 **The webhook delivers the telemetry log; it is not a second event system.** Every kind Engram
 records already lands in `telemetry.jsonl`, so `WebhookService` tails that file rather than being
