@@ -55,7 +55,7 @@ shipped but nothing has yet been leaned on it.
 
 Licensed under [Apache-2.0](LICENSE).
 
-Start with the implementation plan — it records fifty-four decisions (D1–D54) resolving
+Start with the implementation plan — it records fifty-six decisions (D1–D56) resolving
 questions the spec left open, the places where the spec contradicts itself, and for each
 one the argument or measurement that settled it. `CLAUDE.md` holds the invariants that are
 easy to break by accident, most of which were paid for by breaking them.
@@ -530,7 +530,7 @@ engram backup replay --apply           # read facts.jsonl into the store, adding
 
 ### Slash commands
 
-`plugin/commands/` adds eight, all namespaced `/engram:`:
+`plugin/commands/` adds nine, all namespaced `/engram:`:
 
 | Command | What it does |
 | --- | --- |
@@ -542,6 +542,7 @@ engram backup replay --apply           # read facts.jsonl into the store, adding
 | `/engram:stop` | Stop it. |
 | `/engram:forget <id>` | Retract anything memory holds — a captured fact, a session note, a shipped one. |
 | `/engram:doctor` | Read-only diagnosis: resolved binary, port holder, home contents, telemetry, log tail. |
+| `/engram:statusline` | Add live Engram activity to your status line — adds a segment to whatever you already have rather than replacing it. |
 
 The split in how they reach engram is deliberate. `recall`, `remember`, and `digest` go
 through the MCP tools, because that is where the ranking, the token budget, and the
