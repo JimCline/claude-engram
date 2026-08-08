@@ -101,10 +101,11 @@ These are not style preferences. Each one is a way this goes wrong that is invis
   mean anything. It costs a render per second — measure yours and say what it is.
 - **`index` and `embedding` are not instants, and must not be put on that timer.** They carry
   `phase`, so how long to keep showing them is a fact and not a guess (D55): show one while its
-  `started` has no later `finished` or `failed`. A five-second rule blanks an embedding pass that
-  is still running — one batch was measured at 28 seconds — and it blanks it in the direction that
-  looks like nothing is wrong. Bound a dangling `started` anyway, generously: a killed process
-  never writes its second half, exactly as `server-stop` is best-effort for the same reason.
+  `started` has no later `finished` or `failed`. Any freshness window short enough to be useful for
+  instants blanks an embedding pass that is still running — one batch was measured at 28 seconds —
+  and it blanks it in the direction that looks like nothing is wrong. Bound a dangling `started`
+  anyway, generously: a killed process never writes its second half, exactly as `server-stop` is
+  best-effort for the same reason.
 - **Be silent when there is nothing to say.** No log, no readable log, no records: print nothing
   and exit 0. This runs on every status line update and must never be what breaks their prompt.
 - **Drain stdin.** Claude Code pipes session JSON in. A script that never reads it can block.
