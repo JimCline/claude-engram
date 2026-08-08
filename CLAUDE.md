@@ -1,7 +1,7 @@
 # Engram — working rules
 
 Read `docs/engram-implementation-plan.md` before any non-trivial change. It holds
-fifty-seven decisions (D1–D57) that resolve questions the spec left open, and each one was
+fifty-eight decisions (D1–D58) that resolve questions the spec left open, and each one was
 reached by argument or measurement, not preference. `docs/engram-schema.sql` is the authority for
 database shape.
 
@@ -531,6 +531,55 @@ match and `Forget` closes rather than deletes. That thread holds one sentence tw
 is what forced the text to be identical — so the marker would announce history saying nothing the line
 already does. Both halves are pinned by tests in `SessionFactsTests`, because the property lives in the
 addressing and is invisible at the formatter (D57).
+
+**Recall pays for the corpus, not for the answer — and `explain` must pay for neither.** The spec's
+p50-under-50 ms lexical target had never been measured until D58: it is met at 5,097 live facts
+(16–21 ms once the published binary's ~8 ms process start is subtracted, ~24–29 ms on the wall
+clock) and missed at 50,097 (127 ms, ~135 ms wall), and missed by the **floor**, since a query
+matching nothing
+costs what one matching everything does. So indexes are not the bottleneck and index tuning is not
+the fix — warm SQL is ~3 ms of an ~18 ms pipeline, every plan is sane, and `ReadLive`'s full scan is
+inherent because recall wants every live fact and `ORDER BY f.id` is then free. The trap that cost
+the most time: FTS match count does not predict cost (`index` matches 45,119 rows and is fast,
+`latency` 45,001 and looked 8x slower), and that 8x turned out to be **explain-only overhead**. D30
+makes `explain` the measurable proxy for the ranker, which is exactly what makes this easy to get
+wrong, so split `Pack` from `explain` before concluding anything from a number measured through the
+command. That overhead was **not merely slow**: bound one parameter per candidate and
+`engram explain latency` on the 50,097-fact store dies with `SQLite Error 1: 'too many SQL variables'`
+at 45,001 candidates against a ceiling of 32,766 — measured as a controlled pair of binaries built
+either side of the fix, so the 1,220 ms once recorded for a hot term is time to crash, not time to
+answer. `RetrievalExplainer.ReadTiers` is bounded twice and the two are not one rule written twice:
+it reads only as far as the caller renders, via a **required** `displayLimit` — defaulting it to
+`int.MaxValue` reads as "no opinion" and is precisely the unbounded read — *and* it chunks at 500 ids
+regardless, because `--limit` is a number a user types and a bound a caller can raise is not a bound.
+Measured at 20,000 candidates: unbounded and unchunked 12.9x the no-match arm, unbounded but chunked
+1.89x, both together 1.3x — so chunking, specified as the correctness half, carries most of the
+latency too, and the tier-3 guard holds the pair rather than either half. That guard asserts a
+**ratio** and exit 0 on every sample, since the defect is also reachable as a throw past SQLite's
+variable ceiling and a crashed arm would otherwise time as the fastest one. Recall's own change is a
+move and not a redesign: `BuildCandidates` formats a line **after** the lane check rather than for
+every live fact, carrying the source record — a reference copy, where a `Func<string>` per entry
+would swap one allocation for another on the same O(corpus) path. Bounded materialization of the
+candidate set is designed and **deferred** — it buys 18 ms at 10x against a floor that breaches the
+target first at every store size. **The floor work itself is not deferred; it is the next scheduled
+item**, and the tripwire that would have gated it (15,000 live facts, or a measured p50 above 40 ms,
+against today's 5,097) now prices the work rather than authorizing it: fact growth here is a step
+function, since one `engram index --apply` can consume the whole 5,097-to-17,000 headroom in a
+single command, while the fix carries schema-migration lead time — and a tripwire crossable faster
+than its fix can ship is not a bound. The design is chosen: an **inverted literal-token index**
+(token → fact) over subject name plus body, merged into the same integer overlap score, picked
+because it is equivalence-testable — identical scores and ranks, diffable against a real store.
+Precomputed token *sets* were rejected as still O(corpus) (loading and intersecting 50k sets per
+recall), and restricting the overlap lane to what the indexed lanes already found was rejected
+because it corrupts D44: a lane that only scores what FTS returned cannot independently corroborate
+it, so "2+ lanes agree" decays toward tautology and coverage inflates in the direction that looks
+like success. One number is **not** settled and must be re-measured on a Release build before that
+work apportions effort: the 84 ms catalog read against tokenization's 59 ms came from a Debug/JIT
+test host and cannot be reconciled with the published binary's 127 ms whole pipeline (127 − 59 − 19
+leaves ~49 ms, with no room for an 84 ms read), so do not cite it as the larger half. An earlier
+217 ms reading for it was one cold JIT sample and is withdrawn outright. What is settled:
+`TokenEstimator.Estimate` is `Math.Ceiling(text.Length / 3.6)` — arithmetic on a length, never a
+tokenization, which is why deferring it was rejected (D58).
 
 **The webhook delivers the telemetry log; it is not a second event system.** Every kind Engram
 records already lands in `telemetry.jsonl`, so `WebhookService` tails that file rather than being

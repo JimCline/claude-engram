@@ -14,12 +14,15 @@ public class RetrievalExplainerTests
     // every candidate below is one this test wrote. A seeded sandbox would make each assertion
     // depend on which words the shipped corpus happens to use, which is a test that fails when
     // someone edits a fact body for unrelated reasons.
+    // The display limit is the CLI's own default rather than something unbounded, so the tier
+    // assertions below run against the bound production uses. These sandboxes are unseeded and
+    // write a handful of facts, so nothing here is near it.
     private static RetrievalExplanation Explain(
         SandboxHome sandbox,
         SqliteConnection connection,
         string query,
         int budget = 500) =>
-        RetrievalExplainer.Explain(connection, sandbox.Home, query, budget, null, T0, _ => null);
+        RetrievalExplainer.Explain(connection, sandbox.Home, query, budget, 20, null, T0, _ => null);
 
     private static long Write(SqliteConnection connection, string slug, string body, string learnedVia = "stated") =>
         FactStore.Remember(
@@ -161,6 +164,39 @@ public class RetrievalExplainerTests
         Assert.Equal("inferred", Assert.Single(explanation.Candidates, c => c.Candidate.FactId == inferred).Tier);
     }
 
+    /// <summary>
+    /// The tier is read for the candidates the caller will print and for no others.
+    /// </summary>
+    /// <remarks>
+    /// The clock cannot hold this. <c>ReadTiers</c> is bounded twice — by the display limit and by
+    /// 500-id chunking — and the two overlap in what they cost, so the end-to-end ratio guard fails
+    /// only when both are gone: with chunking left in place, restoring the unbounded candidate list
+    /// measures 1.89x against a passing 1.3x, and no margin separates those without becoming
+    /// intermittent. This asserts the bound itself instead, which is exact and needs no timing.
+    /// </remarks>
+    [Fact]
+    public void Explain_ReadsTheProvenanceTierOnlyAsFarAsTheCallerWillPrint()
+    {
+        using var sandbox = new SandboxHome(initialize: false);
+        using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
+        for (var i = 1; i <= 6; i++)
+        {
+            Write(connection, "bounded-" + i, $"Kestrel binds loopback for listener {i}.");
+        }
+
+        const int DisplayLimit = 3;
+        var explanation = RetrievalExplainer.Explain(
+            connection, sandbox.Home, "kestrel loopback binds", 500, DisplayLimit, null, T0, _ => null);
+
+        Assert.True(
+            explanation.Candidates.Count > DisplayLimit,
+            $"the store must rank more than {DisplayLimit} candidates or this asserts nothing "
+                + $"(it ranked {explanation.Candidates.Count})");
+
+        Assert.All(explanation.Candidates.Take(DisplayLimit), c => Assert.NotNull(c.Tier));
+        Assert.All(explanation.Candidates.Skip(DisplayLimit), c => Assert.Null(c.Tier));
+    }
+
     [Fact]
     public void Explain_WithEmbeddingsOff_ReportsTheVectorLaneOffRatherThanBroken()
     {
@@ -291,7 +327,7 @@ public class RetrievalExplainerTests
         Write(connection, "pragma", "Every connection sets its own pragmas.");
 
         var explanation = RetrievalExplainer.Explain(
-            connection, sandbox.Home, "pragmas", 500, "no-such-session", T0, _ => null);
+            connection, sandbox.Home, "pragmas", 500, 20, "no-such-session", T0, _ => null);
 
         Assert.DoesNotContain(explanation.Candidates, c => c.Candidate.Origin == FactOrigin.CurrentSession);
     }

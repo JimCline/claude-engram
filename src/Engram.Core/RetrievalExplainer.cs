@@ -74,11 +74,19 @@ public sealed record RetrievalExplanation(
 /// </remarks>
 public static class RetrievalExplainer
 {
+    /// <param name="displayLimit">
+    /// How many candidates the caller will actually render. Required rather than defaulted: the
+    /// obvious default of <see cref="int.MaxValue"/> reads as "no opinion" and is in fact the
+    /// unbounded read this parameter exists to prevent, kept for every caller that forgot to think
+    /// about it. Only <see cref="ExplainedCandidate.Tier"/> is affected — beyond this many
+    /// candidates it is null, and the report falls back to the origin it already has.
+    /// </param>
     public static RetrievalExplanation Explain(
         SqliteConnection connection,
         EngramHome home,
         string query,
         int budgetTokens,
+        int displayLimit,
         string? sessionExternalId,
         DateTimeOffset now,
         Func<string, string?> environment,
@@ -117,7 +125,7 @@ public static class RetrievalExplainer
             $"{Count(recall.Candidates.Count(c => c.OverlapRank is not null))} over subject and body, matched literally"));
 
         var salience = ReadSalience(connection, lanes);
-        var tiers = ReadTiers(connection, recall.Candidates);
+        var tiers = ReadTiers(connection, recall.Candidates, displayLimit);
 
         lanes.Add(new LaneReport(
             "RRF fusion",
@@ -232,24 +240,48 @@ public static class RetrievalExplainer
         return scores;
     }
 
+    /// <summary>
+    /// How each candidate the report can print was learned.
+    /// </summary>
+    /// <remarks>
+    /// <para>Bounded twice over, and the two bounds fix different faults. Reading only as far as
+    /// the caller renders is the latency half: every candidate beyond it is a row fetched for a
+    /// line nobody prints, which is how explain came to cost time proportional to the corpus
+    /// rather than to its own output. At 50,000 candidates that was a single statement carrying
+    /// 50,000 bound parameters.</para>
+    ///
+    /// <para>Chunking is the correctness half and does not follow from the first: the display
+    /// limit is a number a user types, so <c>--limit 100000</c> restores the hazard in full — and
+    /// crossing SQLite's variable ceiling is a hard failure, not a slow query. Neither bound
+    /// substitutes for the other.</para>
+    /// </remarks>
     private static Dictionary<long, string> ReadTiers(
         SqliteConnection connection,
-        IReadOnlyList<RecallCandidate> candidates)
+        IReadOnlyList<RecallCandidate> candidates,
+        int displayLimit)
     {
-        var ids = candidates.Where(c => c.FactId is not null).Select(c => c.FactId!.Value).Distinct().ToList();
+        const int ChunkSize = 500;
+
+        var ids = candidates
+            .Take(displayLimit)
+            .Where(c => c.FactId is not null)
+            .Select(c => c.FactId!.Value)
+            .Distinct()
+            .ToList();
+
         var tiers = new Dictionary<long, string>();
-        if (ids.Count == 0)
+        for (var start = 0; start < ids.Count; start += ChunkSize)
         {
-            return tiers;
-        }
+            var chunk = ids.GetRange(start, Math.Min(ChunkSize, ids.Count - start));
 
-        using var command = connection.CreateCommand();
-        command.CommandText = $"SELECT id, learned_via FROM fact WHERE id IN ({Placeholders(command, ids)});";
+            using var command = connection.CreateCommand();
+            command.CommandText = $"SELECT id, learned_via FROM fact WHERE id IN ({Placeholders(command, chunk)});";
 
-        using var reader = command.ExecuteReader();
-        while (reader.Read())
-        {
-            tiers[reader.GetInt64(0)] = reader.GetString(1);
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                tiers[reader.GetInt64(0)] = reader.GetString(1);
+            }
         }
 
         return tiers;

@@ -4000,6 +4000,126 @@ so a shared map is reachable — but only by widening two public signatures used
 or by paying a second `GROUP BY` over `fact` on every recall, to light up a marker whose thread is a
 restatement.
 
+## D58 — Recall's latency target, measured at last, and what it costs
+
+**Problem.** `docs/engram-spec.md:534` has asked for p50 under 50 ms on lexical recall since the
+beginning, and nobody had ever measured it. Neither had anything exercised the stated benefit of the
+no-ORM rule: there was no `EXPLAIN QUERY PLAN` anywhere in `src/` or `tests/`, so "hand-written SQL,
+so query plans stay visible" described a property no one had looked at.
+
+**The target is met today and missed at ten times today.** 16–21 ms through the published binary at
+5,097 live facts **once its ~8 ms process start is subtracted** — ~24–29 ms on the wall clock — and
+127 ms against a synthetic 50,097, ~135 ms on the wall clock. Carry that qualifier wherever these
+numbers go: the target is about retrieval, and a hook or a command pays the start as well. What
+matters is *how* it is missed:
+by the **floor**. A query matching nothing costs the same as one matching everything — measured 87 ms
+hot against 91 ms no-match on one run and 102 against 73 on another, where the spread within a query
+exceeds the gap between queries. There is no hot case to optimise. Recall pays for the corpus, not
+for the answer.
+
+**Indexes are not the bottleneck and index tuning is not the fix.** Warm SQL is roughly 3 ms of an
+18 ms pipeline at production size. Every plan is sane. `ReadLive`'s full scan is *inherent* rather
+than a missing index — recall wants every live fact, and SQLite prefers the scan precisely because
+`ORDER BY f.id` is then free. Anyone arriving here with an index to add should re-read this paragraph
+first.
+
+**The trap, which cost more time than the fix.** FTS match count does not predict cost. `index`
+matches 45,119 rows and is fast; `latency` matches 45,001 and looked 8x slower. The discriminator
+appeared to be *literal* token presence, because the overlap lane does not stem — and then even that
+dissolved: the 8x was **explain-only overhead**, not recall's. D30 makes `explain` the measurable
+proxy for the ranker, which is exactly what makes this easy to get wrong. Split `Pack` from `explain`
+before drawing any conclusion from a number measured through the command.
+
+**What was actually wrong was in `explain`, and it was two faults wearing one coat.**
+`RetrievalExplainer.ReadTiers` bound one SQL parameter per candidate: at 50,000 candidates, a
+50,000-parameter statement. This was described as a *latent* hard failure and it was not latent —
+it was already firing. Measured as a controlled pair, the same store and machine, a binary built
+from the commit before this work against one built after: `engram explain latency` on the 50,097-fact
+store dies with **`SQLite Error 1: 'too many SQL variables'`**, because that query reaches 45,001
+candidates against a default `SQLITE_MAX_VARIABLE_NUMBER` of 32,766. So the 1,220 ms previously
+recorded for a hot term is **time to crash, not time to answer**, and `explain` — the command D30
+makes the measurable proxy for the ranker — was simply unusable on any store large enough to need it.
+It now reads only as far as the caller renders — `Explain` takes a required
+`displayLimit`, and `ExplainCommand` passes the `--limit` it already breaks its print loop on —
+*and* chunks the read at 500 ids regardless, because `--limit` is a number a user types and a bound
+a caller can raise is not a bound. `ExplainedCandidate.Tier` goes null past the displayed set, where
+`WriteCandidates` already fell back to the candidate's origin.
+
+Measured at 20,000 candidates, and the split between the two is not what it was designed to be: the
+unbounded unchunked read costs **12.9x** the no-match arm, the unbounded but chunked read **1.89x**,
+and both bounds together **1.3x**. Chunking was specified as the correctness half and turns out to
+carry most of the latency at this size too. The controlled pair also produced **byte-identical**
+`explain` output on every query the before binary survives (`pragma connection`, `zzzznomatch`,
+`memory recall budget`), which shows that a null `Tier` past the display limit is invisible where
+`WriteCandidates` falls back. Be exact about how far that reaches: it covers `FormatFactLine` and
+nothing else. `zzzznomatch` renders zero candidates and so exercises no formatter at all, and none
+of the three invocations passed `--session`, so `FormatSessionFactLine` and
+`FormatPriorSessionFactLine` were never reached by it. The session formatters are covered by the
+integration suite, which is where working memory is populated. The tier-3 guard therefore holds the pair rather than
+each half — a ratio, on the model of `FileTouchedBudgetTests`, so a loaded machine moves both arms
+together, and asserting exit 0 on every sample because the defect it catches is also reachable as a
+throw, and a crashed arm would otherwise time as the fastest.
+
+**The one recall-side change is a move, not a redesign.** `RecallEngine.BuildCandidates` built every
+entry with its rendered line, including the majority the lane check then discards — on a no-match
+query, all of them. The line is now built after that check, for exactly the survivors. The entry
+carries the source fact rather than a `Func<string>`: both fact types are record *classes*, so this
+is a reference copy, whereas a closure per entry would trade one allocation per fact for another on
+the same O(corpus) path and buy nothing.
+
+**Bounded materialization of the candidate set was designed, priced and deferred.** It buys 18 ms at
+10x and about 2 ms at production. Its cost scales at ~0.4 µs per match against a floor scaling at
+~2.5 µs per fact, so the floor breaches the target first at every store size — which is the whole
+argument for not building it yet. The design exists and should not be re-derived: a bound of
+`budgetTokens + 1` on overlap-only candidates is provably packing-exact, since RRF is strictly
+decreasing in rank and every line estimates at least one token. Deferring it also keeps D44's
+coverage inputs untouched, since coverage is computed from `candidates.Count` and
+`Corroborated(candidates)` over the unbounded set.
+
+**The floor work is the next scheduled item. It was going to be deferred behind a tripwire and that
+ruling is withdrawn.** The tripwire was 15,000 live facts or a measured lexical p50 above 40 ms,
+whichever came first, against today's 5,097 live. Those figures stand — but as the *pricing* of the
+work, not as what authorizes starting it. The reason is that fact growth here is a **step function,
+not a slope**: the code indexer adds facts in batches, so a single `engram index --apply` on a real
+repository can consume the entire remaining headroom — 5,097 to roughly 17,000 — inside one command.
+The fix, meanwhile, carries schema-migration lead time: a new derived table, a D31 snapshot on the
+migration, and `repair` integration. **A tripwire that can be crossed faster than its fix can ship
+is not a bound**, and that asymmetry, not the absolute numbers, is what changed the answer. The
+floor still scales with **bytes, not rows**, and the code indexer remains the fastest-growing source,
+so calendar time was never the right clock either.
+
+**The design is chosen: an inverted literal-token index**, token → fact, over subject name plus body,
+merged into the same integer overlap score the lane already computes. It won on being
+**equivalence-testable**: it must produce identical scores and identical ranks to the lane running
+today, which is diffable against a real store rather than argued. A retrieval change that can be
+proven to change nothing is a different risk class from one that has to be believed.
+
+Both alternatives were rejected on their merits, and the second is the dangerous one. **Precomputed
+token sets** lose to the arithmetic: loading and intersecting 50,000 sets per recall is still
+O(corpus), so the shape of the cost is unchanged and only its constant moves. **Restricting the
+overlap lane to candidates the indexed lanes already returned** is worse than slow — it corrupts D44.
+A lane that can only score what FTS handed it cannot independently corroborate FTS, so "two or more
+lanes agree" decays toward a tautology, and coverage inflates in exactly the direction that looks
+like success. That is the same failure D44 was written to fix, reintroduced one layer down.
+
+**The catalog-versus-tokenizing split is unresolved and must be re-measured before any of that work
+apportions effort.** At 50k the catalog read was recorded at **84 ms** against per-fact tokenization's
+**59 ms**, which would make `FactCatalog.ReadLongTerm` the larger half — but that 84 ms came from a
+Debug/JIT test host and does not reconcile with the published binary's 127 ms for the whole pipeline:
+127 − 59 − 19 leaves about 49 ms, which has no room in it for an 84 ms read. One of those numbers is
+wrong and it is most likely the JIT one. Re-measure on a Release build first. (An earlier 217 ms
+reading for the same catalog read was a single cold JIT sample and is withdrawn outright.) Do not
+treat 84 ms as settled, and do not choose where to spend the floor work until this is resolved.
+`VersionCounts` deserves its own note regardless: it grows with total-ever-appended under an
+append-only store even if the live set plateaus. 1 ms today, 17–19 ms at 10x.
+
+**Errata, recorded so the wrong numbers are never cited again.** `TokenEstimator.Estimate` is
+`Math.Ceiling(text.Length / 3.6)` — arithmetic on a string length, not a tokenization. A proposal to
+defer it was rejected on exactly that ground, and it would additionally have blanked `explain`'s
+`tok` column, which reads `Tokens` for every displayed row rather than only the packed ones. And the
+1,200 ms hot-term figure measured `explain`, never recall — and, as above, measured it failing
+rather than answering.
+
 *Open items deliberately left for later: entity-resolution fuzziness thresholds (start
 exact + alias + case-insensitive, per spec §12); whether `UserPromptSubmit` recall
 earns default-on (decide from M0/M1 coverage data); archive FTS for history search

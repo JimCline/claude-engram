@@ -345,7 +345,7 @@ public sealed class VectorRecallTests : IDisposable
         WriteConfig(sandbox.Home, EmbeddingConfig(endpoint));
 
         var explanation = RetrievalExplainer.Explain(
-            sandbox.Connection, sandbox.Home, Query, 500, null, DateTimeOffset.UtcNow, _ => null);
+            sandbox.Connection, sandbox.Home, Query, 500, 20, null, DateTimeOffset.UtcNow, _ => null);
 
         var lane = Assert.Single(
             explanation.Lanes, l => l.Name.StartsWith("vector", StringComparison.Ordinal));

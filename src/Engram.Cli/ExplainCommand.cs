@@ -96,6 +96,7 @@ internal static class ExplainCommand
             home,
             query,
             budget ?? configured.BudgetTokens,
+            limit,
             session,
             DateTimeOffset.UtcNow,
             Environment.GetEnvironmentVariable,

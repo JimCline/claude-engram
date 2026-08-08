@@ -72,13 +72,29 @@ public sealed record RecallExplanation(
     RecallCoverage Coverage);
 
 /// <summary>One fact in the universe recall ranks over, before any lane has an opinion.</summary>
+/// <remarks>
+/// <para>Holds the fact it came from rather than a rendered line, because the line is only ever
+/// wanted for a candidate and most entries never become one: the scoring loop drops every fact no
+/// lane found, which on a query matching nothing is all of them. Rendering here would cost one
+/// interpolation per live fact whatever the query — measured by ablation at 19 ms over 50,000
+/// facts, roughly a quarter of a pack that runs 73–102 ms at that size — so the line is built past
+/// that check instead.</para>
+///
+/// <para>A source reference and not a <c>Func&lt;string&gt;</c>: both fact types are record
+/// <i>classes</i>, so carrying one copies a reference and boxes nothing, while a closure per entry
+/// would trade the interpolation for an allocation on the same O(corpus) path and buy nothing.
+/// Which of the three fields is populated follows from <see cref="FactOrigin"/>, which is what
+/// selects the formatter.</para>
+/// </remarks>
 file sealed record Entry(
     long? FactId,
     string Handle,
-    string Line,
     FactOrigin Origin,
     long SessionId,
-    int OverlapScore);
+    int OverlapScore,
+    CannedFact? LongTerm,
+    SessionFact? Session,
+    string? Discriminator);
 
 public static class RecallEngine
 {
@@ -396,10 +412,12 @@ public static class RecallEngine
             entries.Add(new Entry(
                 FactCatalog.TryParseHandle(fact.Id, out var id) ? id : null,
                 fact.Id,
-                FormatFactLine(fact),
                 FactOrigin.LongTerm,
                 0,
-                OverlapScore(queryTerms, fact.Subject + " " + fact.Body)));
+                OverlapScore(queryTerms, fact.Subject + " " + fact.Body),
+                fact,
+                null,
+                null));
         }
 
         foreach (var fact in currentSessionFacts)
@@ -407,10 +425,12 @@ public static class RecallEngine
             entries.Add(new Entry(
                 fact.FactId,
                 FactCatalog.HandleFor(fact.FactId),
-                FormatSessionFactLine(fact),
                 FactOrigin.CurrentSession,
                 fact.SessionId,
-                OverlapScore(queryTerms, (fact.Subject ?? string.Empty) + " " + fact.Statement)));
+                OverlapScore(queryTerms, (fact.Subject ?? string.Empty) + " " + fact.Statement),
+                null,
+                fact,
+                null));
         }
 
         foreach (var fact in priorSessionFacts)
@@ -418,10 +438,12 @@ public static class RecallEngine
             entries.Add(new Entry(
                 fact.FactId,
                 FactCatalog.HandleFor(fact.FactId),
-                FormatPriorSessionFactLine(fact, discriminators[fact.SessionId]),
                 FactOrigin.PriorSession,
                 fact.SessionId,
-                OverlapScore(queryTerms, (fact.Subject ?? string.Empty) + " " + fact.Statement)));
+                OverlapScore(queryTerms, (fact.Subject ?? string.Empty) + " " + fact.Statement),
+                null,
+                fact,
+                discriminators[fact.SessionId]));
         }
 
         // One overlap ranking over the whole universe rather than one per tier, so a rank means
@@ -448,16 +470,17 @@ public static class RecallEngine
                 continue;
             }
 
+            var line = FormatLine(entry.Origin, entry.LongTerm, entry.Session, entry.Discriminator);
             scored.Add(new RecallCandidate(
                 entry.FactId,
                 entry.Handle,
-                entry.Line,
+                line,
                 Reciprocal(overlap) + Reciprocal(lexical) + Reciprocal(vector),
                 overlap,
                 lexical,
                 vector,
                 entry.Origin,
-                TokenEstimator.Estimate(entry.Line),
+                TokenEstimator.Estimate(line),
                 Packed: false));
         }
 
@@ -526,6 +549,25 @@ public static class RecallEngine
         RecallCoverage.High => "high",
         RecallCoverage.Partial => "partial",
         _ => "none",
+    };
+
+    /// <summary>
+    /// Renders one surviving candidate through the formatter its tier owns.
+    /// </summary>
+    /// <remarks>
+    /// Takes the fields rather than the entry holding them because <c>Entry</c> is file-local and
+    /// C# forbids such a type in the signature of a member of a non-file-local one (CS9051).
+    /// </remarks>
+    private static string FormatLine(
+        FactOrigin origin,
+        CannedFact? longTerm,
+        SessionFact? session,
+        string? discriminator) => origin switch
+    {
+        FactOrigin.LongTerm => FormatFactLine(longTerm!),
+        FactOrigin.CurrentSession => FormatSessionFactLine(session!),
+        FactOrigin.PriorSession => FormatPriorSessionFactLine(session!, discriminator!),
+        _ => throw new InvalidOperationException($"no formatter for fact origin {origin}"),
     };
 
     /// <summary>
