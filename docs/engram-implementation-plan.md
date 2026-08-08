@@ -3855,6 +3855,81 @@ would stop delivering the kinds that were spelled correctly, the same trap a ret
 vector lane (D33). `doctor` reports configuration only; reaching the subscriber to check would make
 the check emit an event of its own.
 
+## D56 — The kinds that were declared and never emitted
+
+**Problem.** D55 gave the log a live subscriber, which made a gap visible that had been harmless
+while nothing watched: three of the things Engram does most often reached the log not at all.
+`TelemetryEventKind.ServerStart` and `TelemetryEventKind.FileTouched` were declared constants with
+**zero** emission sites, and the `user-prompt` hook — the one path that catches a fact the user
+states in passing, which D51 describes as the capture that cannot depend on the model opting in —
+had no kind at all. A subscriber therefore saw a system that edited nothing, started nothing, and
+captured nothing, and the only honest reading of that feed was that the features were off.
+
+**The capture event is its own kind.** `user-prompt`, not `remember`. Both end in a written fact,
+which is the argument for merging them and exactly why they must not merge: D18 and D43 read
+`remember` to answer whether *the model* reached for memory, and this path fires whether it did or
+not. Folding them together would inflate the single number those gates turn on, in the direction
+that looks like success — the same failure D43 traced to a count that meant one thing being read as
+another.
+
+It is emitted **after** the guard that asks whether anything was stored, not after the one that
+asks whether anything was worth capturing. Every prompt reaches this hook and most carry nothing,
+so recording the invocation would make the kind a proxy for "the user typed", which needs no
+telemetry and which any live feed would render as memory activity that did not happen. The test for
+this has to use a **restatement the store already holds** — a sentence that classifies exactly as it
+did the first time and is then dropped as a duplicate — because that is the only arrangement where
+the hook does all of its work and still writes nothing. Measured: moving the append above the guard
+left the obvious test, an ordinary working prompt, **passing**, since such a prompt returns at the
+earlier guard and never reaches either placement. That test asserts a real rule and says nothing
+about this one.
+
+**`server-start` is lifecycle, never a session count.** D14 retired an earlier record of this name
+because one-per-process only meant "a session" when the transport was stdio, and a daemon mints many
+sessions over one lifetime. That reasoning is about *counting sessions*, and `session-open` still
+owns it; it left the lifecycle itself unrecorded, which is a different question and the one a
+dashboard asks. `server-stop` is added as its counterpart and is best effort twice over: a process
+killed outright never reaches `ApplicationStopping`, and even on a clean exit the only thing that
+delivers events is the webhook service inside that same process, shutting down beside it. So its
+absence proves nothing, and no reader may infer "still up" from having seen no stop — liveness is
+pid plus start token, which `status` answers (D42).
+
+**The edit event, and the measurement that nearly inverted the design.** `file-touched` holds a hard
+10 ms budget and writes one spool file per invocation, on its own path, so the queue cannot lose an
+entry to contention (D4). A telemetry record is a *shared* file, and the first question is whether
+this hook can afford one at all. The answer is yes: **+0.11 ms at the minimum, +0.08 ms at p50** on
+the published binary.
+
+The first answer was **+0.78 ms**, and it was wrong in a way worth writing down, because it was
+about to buy a whole subsystem. At that figure the write does not fit — a documented p50 of 7.82 ms
+rising to 9.29 under an indexer-shaped writer lands the contended case past the budget — so the
+write was moved out of the hook into a `SpoolPromoter`: a `BackgroundService` in the server that
+polled the queue directory, promoted new entries into the log, and needed a starting mark, a
+no-resume contract, and five tests of its own. It was built, and it worked. The number was an
+artifact of the harness: the A/B loop ran the same arm first on every iteration, which charges arm A
+whatever the first of a pair costs. Alternating the order, and calibrating by running the **same
+binary against itself** — which reads ±0.07 ms — put the real cost inside the noise floor. The
+promoter was deleted. Two rules follow. Alternate arms, always. And calibrate against a known zero,
+because without it there is no way to tell a difference from the machinery measuring it.
+
+**What a drop costs is load-dependent, so no test may assert a delivery rate.** The append passes
+`TimeSpan.Zero` as its retry budget, the sole caller of the overload. That is not "retry briefly":
+`DurableAppend` evaluates `elapsed < retryBudget` *before* its back-off sleep, so zero is exactly
+one attempt and no sleep, and any small non-zero value is worse than either extreme — one collision
+sleeps up to 20 ms against a 10 ms budget. Measured over ten rounds on an idle machine: 2.0% of
+records lost at twenty concurrent editors, 1.6% at fifty. The same test **inside the full suite**,
+where another class is running its own fifty-way burst, lost **30%**. Both are the design working —
+a busy machine holds the log open longer, so more openers find it taken and drop, which is the
+entire point of refusing to wait. Two assertions encoding a rate were written and both failed on
+runs where nothing was wrong. What is asserted instead is everything that does not bend under load:
+every spool entry survives, no line is torn, every record names a real edit exactly once, and
+sequential edits lose nothing at all.
+
+**A shared log has no total.** The server now writes its own records into `telemetry.jsonl`, which
+broke an MCP end-to-end test that had been asserting a line count of five — the same trap the
+session-start hook tests documented when the detached maintenance child started recording. Count by
+kind, and name the kinds the exchange may produce; a total asserts something about the whole file
+rather than about the thing under test.
+
 *Open items deliberately left for later: entity-resolution fuzziness thresholds (start
 exact + alias + case-insensitive, per spec §12); whether `UserPromptSubmit` recall
 earns default-on (decide from M0/M1 coverage data); archive FTS for history search

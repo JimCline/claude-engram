@@ -56,11 +56,18 @@ public class McpServerTests
                 .Select(line => JsonDocument.Parse(line).RootElement.GetProperty("kind").GetString())
                 .ToList();
 
-            Assert.Equal(5, kinds.Count);
+            // Counted per kind rather than as a total. This is a shared log and the server writes
+            // its own lifecycle records into it, so a total asserts something about the whole file
+            // instead of about these four tool calls — the same reason the session-start hook tests
+            // stopped counting lines. Nothing unexpected still gets to slip in: the last assertion
+            // names every kind this exchange may produce.
             Assert.Equal(1, kinds.Count(k => k == "session-open"));
             Assert.Equal(2, kinds.Count(k => k == "recall"));
             Assert.Equal(1, kinds.Count(k => k == "remember"));
             Assert.Equal(1, kinds.Count(k => k == "digest"));
+            Assert.Equal(1, kinds.Count(k => k == "server-start"));
+            Assert.DoesNotContain(kinds, k =>
+                k is not ("session-open" or "recall" or "remember" or "digest" or "server-start"));
         }
         finally
         {

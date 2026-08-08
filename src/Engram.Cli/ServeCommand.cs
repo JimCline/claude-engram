@@ -124,10 +124,31 @@ internal static class ServeCommand
         app.MapGet("/health", () =>
             Results.Json(identity.ToHealthPayload(), HealthResponseJsonContext.Default.HealthResponsePayload));
 
+        // On ApplicationStarted rather than beside app.Run(), so the event means the server is
+        // accepting requests rather than about to try and possibly fail on a bound port.
+        app.Lifetime.ApplicationStarted.Register(() =>
+        {
+            if (File.Exists(home.ConfigPath))
+            {
+                Telemetry.Append(home, new TelemetryRecord(
+                    Timestamp: DateTime.UtcNow.ToString("o"),
+                    SessionId: "server",
+                    Kind: TelemetryEventKind.ServerStart));
+            }
+        });
+
         // Leave no pid file behind claiming a process that has exited — but only ours.
         // An orphan being replaced must not delete the record its replacement just wrote.
         app.Lifetime.ApplicationStopping.Register(() =>
         {
+            if (File.Exists(home.ConfigPath))
+            {
+                Telemetry.Append(home, new TelemetryRecord(
+                    Timestamp: DateTime.UtcNow.ToString("o"),
+                    SessionId: "server",
+                    Kind: TelemetryEventKind.ServerStop));
+            }
+
             if (PidFile.Read(home)?.Pid == identity.Pid)
             {
                 PidFile.Delete(home);

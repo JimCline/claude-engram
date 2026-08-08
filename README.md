@@ -485,6 +485,20 @@ it is happening: `index` and `embedding` each carry a `phase` of `started`, `fin
 Neither carries counts — the index report says what was written, and how far along a backfill is
 lives in `engram embed --status`, which is right whether or not anything is subscribed.
 
+The everyday activity a status line actually wants is there too:
+
+- **`file-touched`** — one per edit, carrying the `path` that changed. This is the highest-frequency
+  event by far, and the one place Engram accepts loss: the hook that writes it holds a 10 ms budget
+  and refuses to wait for the log, so under a heavy burst a small fraction of these are dropped
+  rather than delaying an edit. The queue the indexer actually reads never loses anything.
+- **`user-prompt`** — Engram captured something you said in passing. It fires only when a fact was
+  written, so it is not a proxy for "the user typed", and it is deliberately *not* filed under
+  `remember`: that kind means the model chose to save something, and the two must stay countable
+  apart.
+- **`server-start`** and **`server-stop`** — the server came up, or went down cleanly. Lifecycle
+  only. `server-stop` is best effort, so treat its absence as no information: a killed process never
+  sends one. Ask `engram status` whether the server is up.
+
 `engram doctor` reports the configuration — a URL that will not parse is an error, and a `kinds`
 entry Engram never emits is a warning that narrows delivery rather than switching it off.
 

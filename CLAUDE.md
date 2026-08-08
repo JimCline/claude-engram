@@ -1,7 +1,7 @@
 # Engram — working rules
 
 Read `docs/engram-implementation-plan.md` before any non-trivial change. It holds
-fifty-five decisions (D1–D55) that resolve questions the spec left open, and each one was
+fifty-six decisions (D1–D56) that resolve questions the spec left open, and each one was
 reached by argument or measurement, not preference. `docs/engram-schema.sql` is the authority for
 database shape.
 
@@ -64,8 +64,9 @@ that it is loaded.
 **Every write is `BEGIN IMMEDIATE`.** A deferred transaction that upgrades to a writer
 raises `SQLITE_BUSY_SNAPSHOT`, which `busy_timeout` cannot wait out (D4).
 
-**`file-touched` never opens the database.** It writes one spool file per invocation —
-its own, never a shared one — and exits. Its budget is 10 ms and it must hold
+**`file-touched` never opens the database.** It writes one spool file per invocation — its own,
+which is why the queue can never lose an entry to contention — and appends one telemetry record,
+which is shared and therefore may. Its budget is 10 ms and it must hold
 unconditionally, not just when nothing else is writing. Measured on the published binary:
 p50 7.82 ms, of which **+0.02 ms is the hook and the rest is process start**. Opening the
 database costs **1.0–1.5 ms**, measured by A/B-ing `probe` against homes with and without an
@@ -86,6 +87,24 @@ the published binary: piping the payload in costs 0.27 ms, and `user-prompt` par
 stdin, opens the store *and* writes a fact for 0.67 ms more than `file-touched` spent doing none of
 it. A spool entry is a timestamp then an optional path — optional, so the entries written before
 this existed still drain (D39).
+
+**The hook's one shared write never waits, and the measurement that allowed it nearly said the
+opposite.** `file-touched` appends a `file-touched` record so a live feed can see edits at all, and
+it is the sole caller of `Telemetry.Append`'s retry-budget overload, passing `TimeSpan.Zero`. That
+value is not "retry briefly": `DurableAppend` checks `elapsed < retryBudget` *before* its back-off
+sleep, so zero is exactly one attempt and no sleep, while any small non-zero budget would be worse
+than either extreme — one collision sleeps up to 20 ms against a 10 ms budget. Cost is **+0.11 ms
+at the minimum, +0.08 ms at p50** on the published binary. The first attempt at that number said
+**+0.78 ms** and very nearly moved this write into a polling service in the server that would have
+existed for no reason: the A/B loop ran the same arm first every iteration, which charges arm A
+whatever the first of a pair costs. Alternate the order, and calibrate by running the *same binary
+against itself* — that reads ±0.07 ms, which is the only way to know the difference you are
+measuring is larger than the harness. What a dropped collision costs is likewise measured, and it
+is load-dependent, so no test may assert a delivery rate: 2.0% lost at twenty concurrent editors on
+an idle machine, 1.6% at fifty, but **30% for the same test inside the full suite**. Zero torn
+lines and zero lost spool entries throughout, which is the pair that actually matters — the queue
+the indexer reads is per-invocation and cannot collide, and `FileShare.None` makes a collision cost
+a whole record rather than tear one (D56).
 
 This rule is about that hook, not about hooks: D4 justifies it entirely by per-edit
 frequency and write contention. The primer hooks — `session-start`, `subagent-start` —
@@ -536,6 +555,25 @@ test, and four end-to-end tests that counted *every* line of `telemetry.jsonl` b
 were already a race — the child is detached — so they filter by kind now. Sizing matters in the
 guard too: at 12 facts and `MaxBatch` 4 the backfill completes in one pass, so "once per transition"
 and "once per pass" emit identically and the test passed with the guard deleted (D55).
+
+**A kind that is declared but never emitted is a feature that reads as switched off.** `ServerStart`
+and `FileTouched` were constants with zero emission sites, and `user-prompt` — the one path that
+catches a fact stated in passing — had no kind at all, so the automatic capture that D51 calls
+unconditional was invisible to every reader of the log. Three rules came out of filling them in.
+The capture event is **its own kind, never `remember`**: D18 and D43 read `remember` to answer
+whether *the model* reached for memory, and a hook-driven capture folded into it would inflate the
+one number those gates turn on, in the direction that looks like success. It is recorded **after
+the "was anything stored" guard**, so the event means a fact was written rather than that the user
+typed — and the test for that must use a *restatement* the store already holds, because an ordinary
+working prompt returns at the earlier "was anything worth capturing" guard and never reaches either
+placement (measured: the obvious version passed with the guard moved). `server-start` is
+**lifecycle, never a session count** — D14 retired an earlier one precisely because one-per-process
+only meant "a session" under stdio, and `session-open` still owns that question; `server-stop` is
+best effort twice over, since a killed process never reaches `ApplicationStopping` and on a clean
+exit the webhook delivering it is shutting down beside it, so no reader may infer "still up" from
+having seen no stop. A shared log also means **no test may assert a total line count**: the server
+now writes its own records into it, which broke an MCP test that had been counting every line, the
+same trap the session-start hook tests already documented (D56).
 
 **A misfiled `kinds` entry narrows delivery; it may not switch it off.** Unknown kinds land in
 `WebhookSettings.Unknown`, which `doctor` warns about, and never in `Problems` — `IsEnabled` is

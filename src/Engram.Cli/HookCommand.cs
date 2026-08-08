@@ -118,6 +118,19 @@ internal static class HookCommand
             return 0;
         }
 
+        // Recorded here rather than above the guard, so the event means a fact was written. Every
+        // prompt reaches this hook and most carry nothing to capture; announcing those would make
+        // the kind a proxy for "the user typed", which is a thing nothing needed telemetry to know
+        // and which anything reacting to the feed would show as memory activity that did not happen.
+        // No count rides along, for the reason the record's own phase field gives.
+        if (File.Exists(home.ConfigPath))
+        {
+            Telemetry.Append(home, new TelemetryRecord(
+                Timestamp: DateTimeOffset.UtcNow.ToString("o"),
+                SessionId: sessionId,
+                Kind: TelemetryEventKind.UserPrompt));
+        }
+
         var nudge =
             "Engram captured what the user just stated, verbatim, as durable user-scoped memory:\n"
             + string.Join('\n', stored)
@@ -363,6 +376,8 @@ internal static class HookCommand
             Directory.CreateDirectory(home.QueueDir);
 
             var now = DateTime.UtcNow;
+            var touched = payload?.ToolInput?.FilePath is { Length: > 0 } file ? file : null;
+
             var spoolFileName = $"{now.Ticks}-{Environment.ProcessId}-{Guid.NewGuid().ToString("N")[..8]}.spool";
             var spoolPath = Path.Combine(home.QueueDir, spoolFileName);
 
@@ -372,9 +387,34 @@ internal static class HookCommand
 
             // Second line, and optional, so spool files written before this existed still parse
             // as an edit with no path rather than as a corrupt entry.
-            if (payload?.ToolInput?.FilePath is { Length: > 0 } path)
+            if (touched is not null)
             {
-                writer.WriteLine(path);
+                writer.WriteLine(touched);
+            }
+
+            // The one telemetry append in Engram that may not wait. The spool file above is
+            // per-invocation and so uncontended by construction, which is what D4 bought; this one
+            // is shared, and N concurrent edits mean N processes opening it. A zero retry budget
+            // makes that queue impossible to join — one attempt, and a record lost to a collision
+            // rather than a hook that overran.
+            //
+            // Both halves of that are measured on the published binary, against the version
+            // without this write, alternating which arm runs first: +0.11 ms at the minimum and
+            // +0.08 ms at p50, which is the harness noise floor (±0.07 ms, established by running
+            // the same binary against itself). An earlier reading of +0.78 ms was ordering bias
+            // and nothing else — it is what an always-A-first loop charges the first arm — and it
+            // was very nearly the reason this write was moved out of the hook and into a polling
+            // service in the server that would have existed for no reason.
+            if (File.Exists(home.ConfigPath))
+            {
+                Telemetry.Append(
+                    home,
+                    new TelemetryRecord(
+                        Timestamp: now.ToString("o"),
+                        SessionId: ResolveSessionId(payload),
+                        Kind: TelemetryEventKind.FileTouched,
+                        Path: touched),
+                    TimeSpan.Zero);
             }
         }
         catch
