@@ -19,7 +19,11 @@ internal sealed record HookStdinInput(
     [property: JsonPropertyName("agent_id")] string? AgentId = null,
     [property: JsonPropertyName("agent_type")] string? AgentType = null,
     [property: JsonPropertyName("prompt")] string? Prompt = null,
-    [property: JsonPropertyName("tool_input")] HookToolInput? ToolInput = null);
+    [property: JsonPropertyName("tool_input")] HookToolInput? ToolInput = null,
+    // PostCompact carries the whole compaction summary inline, so the harvester (D62 2b)
+    // never reads the transcript: no tail-read, no poll for a record a separate write path
+    // produces, no race. See docs/session-capture-design.md, "The PostCompact trigger".
+    [property: JsonPropertyName("compact_summary")] string? CompactSummary = null);
 
 // PostToolUse puts the edited file here, for the four tools file-touched matches on. Only
 // file_path is modelled: MultiEdit still names one file, and the rest of tool_input is that

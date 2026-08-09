@@ -36,6 +36,20 @@ public static class TelemetryEventKind
 
     public const string SubagentStart = "subagent-start";
     public const string PreCompact = "pre-compact";
+
+    /// <summary>
+    /// The PostCompact harvester (D62 2b) wrote at least one session fact from a compaction
+    /// digest block.
+    /// </summary>
+    /// <remarks>
+    /// Its own kind rather than <see cref="Remember"/>, for the same reason <see cref="UserPrompt"/>
+    /// is: D18 and D43 read <c>remember</c> to answer whether <i>the model</i> reached for memory,
+    /// and this path writes facts the model never asked to store. Recorded only when something was
+    /// actually written, matching <see cref="UserPrompt"/>'s rule that the event means a fact
+    /// landed, not that the hook merely ran.
+    /// </remarks>
+    public const string PostCompact = "post-compact";
+
     public const string FileTouched = "file-touched";
 
     /// <summary>
@@ -66,8 +80,8 @@ public static class TelemetryEventKind
     public static IReadOnlyList<string> All { get; } =
     [
         Recall, Remember, Digest, Browse, Expand, Revise,
-        SessionStart, ServerStart, ServerStop, SessionOpen, SubagentStart, PreCompact, FileTouched,
-        UserPrompt, Index, Embedding,
+        SessionStart, ServerStart, ServerStop, SessionOpen, SubagentStart, PreCompact, PostCompact,
+        FileTouched, UserPrompt, Index, Embedding,
     ];
 }
 

@@ -27,6 +27,15 @@ public static class CompactionDigest
 
     public static readonly IReadOnlyList<string> ExampleItems = [ExampleItem1, ExampleItem2];
 
+    /// <summary>
+    /// The agent name the PostCompact harvester (D62 2b) tags session facts with. A fact
+    /// captured automatically from a compaction summary must be marked as harvester-authored
+    /// rather than blended into recall at the same trust level as something the user directly
+    /// stated. Reusing <see cref="SessionFacts"/>' existing agent field costs no schema change:
+    /// the name threads into the fact's path and reads back out as <c>SessionFact.Agent</c>.
+    /// </summary>
+    public const string HarvesterAgent = "compaction-digest";
+
     public static readonly string Instruction = $"""
         Engram memory capture. This is an addition to your summary, not a change to it.
 

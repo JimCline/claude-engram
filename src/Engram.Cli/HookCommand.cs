@@ -14,7 +14,7 @@ internal static class HookCommand
         }
 
         var eventName = rest[0];
-        if (eventName is not ("session-start" or "subagent-start" or "pre-compact"
+        if (eventName is not ("session-start" or "subagent-start" or "pre-compact" or "post-compact"
             or "user-prompt" or "file-touched"))
         {
             return Usage(stderr);
@@ -43,6 +43,7 @@ internal static class HookCommand
             "session-start" => RunSessionStart(home, stdout, ReadPayload()),
             "subagent-start" => RunSubagentStart(home, stdout, ReadPayload()),
             "pre-compact" => RunPreCompact(home, stdout, ReadPayload()),
+            "post-compact" => RunPostCompact(home, ReadPayload()),
             "user-prompt" => RunUserPrompt(home, stdout, ReadPayload()),
             "file-touched" => RunFileTouched(home, ReadPayload()),
             _ => 0,
@@ -352,6 +353,60 @@ internal static class HookCommand
 
         stdout.Write(CompactionDigest.Instruction);
         stdout.Write('\n');
+
+        return 0;
+    }
+
+    // The harvester half of D62 (2b). PostCompact carries the whole compaction summary
+    // inline as compact_summary, so this never reads the transcript — no tail-read, no
+    // polling for a record a separate write path produces, no race (see
+    // docs/session-capture-design.md, "The PostCompact trigger"). Each kept item is written
+    // as a session fact tagged with CompactionDigest.HarvesterAgent, satisfying Jim's
+    // provenance decision without a schema change: SessionFacts.Append already dedupes a
+    // repeat statement within one session, which is what makes harvesting idempotent for
+    // free if this hook ever fires twice for the same compaction. Telemetry is recorded
+    // only when something was actually written, matching user-prompt's rule that the event
+    // means a fact landed, not that the hook merely ran.
+    private static int RunPostCompact(EngramHome home, HookStdinInput? payload)
+    {
+        if (payload?.CompactSummary is not { Length: > 0 } summary)
+        {
+            return 0;
+        }
+
+        var parsed = CompactionDigestParser.Parse(summary);
+        if (parsed.Items.Count == 0)
+        {
+            return 0;
+        }
+
+        var sessionId = ResolveSessionId(payload);
+
+        try
+        {
+            using var connection = EngramDatabase.OpenInitialized(home);
+            var now = DateTimeOffset.UtcNow;
+
+            foreach (var item in parsed.Items)
+            {
+                SessionFacts.Append(
+                    connection,
+                    sessionId,
+                    item,
+                    subject: null,
+                    evidence: null,
+                    agent: CompactionDigest.HarvesterAgent,
+                    now);
+            }
+
+            Telemetry.Append(home, new TelemetryRecord(
+                Timestamp: now.UtcDateTime.ToString("o"),
+                SessionId: sessionId,
+                Kind: TelemetryEventKind.PostCompact));
+        }
+        catch
+        {
+        }
 
         return 0;
     }

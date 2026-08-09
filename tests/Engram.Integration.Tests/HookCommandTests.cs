@@ -104,7 +104,7 @@ public class HookCommandTests
     {
         using var sandbox = new SandboxHome(initialize: false);
 
-        foreach (var eventName in new[] { "session-start", "file-touched", "pre-compact" })
+        foreach (var eventName in new[] { "session-start", "file-touched", "pre-compact", "post-compact" })
         {
             var stdout = new StringWriter();
             var stderr = new StringWriter();

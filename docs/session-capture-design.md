@@ -4,17 +4,14 @@ Working document for the change that replaces "the model remembers to call `engr
 with something that does not depend on the model remembering. Read
 `docs/engram-implementation-plan.md` first; this only covers what is not settled there.
 
-**Status: designed; todo 1 built and reinstalled. Stages A, B, and C are all green.** Two real
-manual compactions, one contaminated and one clean, both produced correct output — a well-formed
-block, no self-reference corruption. Only auto-compaction (as opposed to manual) remains
-unconfirmed. **Scope and privacy is answered** (capture everything, every project — the store is
-local): todo 2b is no longer gated on a decision, only on an undesigned trigger (no `PostCompact`
-hook exists yet). **2a (the parser) is built and green** —
-`src/Engram.Core/CompactionDigestParser.cs`, 23 tests in
-`tests/Engram.Core.Tests/CompactionDigestParserTests.cs` covering all four block rules, all three
-item filters, the two-part round-trip against `CompactionDigest.Instruction`, the `v="EXAMPLE"`
-guard, the scan-the-whole-record case, and the cap. 2b is ready to hand to an Implementor once the
-trigger is designed. Resume at *What's next*.
+**Status: built end to end, pending reinstall verification. Stages A, B, and C are all green**, and
+auto-compaction is now confirmed too — see *The PostCompact trigger*. **2a (the parser)** —
+`src/Engram.Core/CompactionDigestParser.cs`, 23 tests — **and 2b (the trigger and writer)** —
+`HookCommand.RunPostCompact`, `HookPostCompactTests.cs` — are both built. Scope, privacy, and
+provenance are all decided and implemented; provenance needed no schema change (see 2b). Remaining:
+confirm the reinstalled binary's `PostCompact` hook fires correctly on this machine's *next* real
+compaction (built tonight, not yet observed live), and todo 3 (fold `digest` into a slash command)
+is untouched. Resume at *What's next*.
 
 ---
 
@@ -719,88 +716,86 @@ Recorded in Engram: `f5595` (channel behaviour), `f5596` (why PreCompact cannot 
    waits on a genuinely clean auto-compaction. Implement the
    scan-the-whole-record rule; do not anchor to end-of-string.
 
-   **2b. The writer: both original gates are now cleared, one new gap found in clearing them.** It
-   reads `isCompactSummary` records and appends session facts. Gate one, the channel evidence, is
-   Stage C, green above. Gate two, **scope and privacy** — decided by Jim, 2026-08-09: capture
-   everything, every project, no per-project scoping. The whole store is local, so the cross-project
-   surfacing risk that motivated the question does not apply the way it would to a shared or synced
-   store. This closes the *Open questions* entry below as answered, not just narrowed.
+   **2b. The writer — built.** `HookCommand.RunPostCompact` (`src/Engram.Cli/HookCommand.cs`) reads
+   `CompactionDigestParser.Parse` off the hook's own stdin payload and appends each kept item as a
+   session fact via `SessionFacts.Append`, tagged `CompactionDigest.HarvesterAgent` (`"compaction-
+   digest"`). Both original gates were already clear — channel evidence (Stage C, above) and **scope
+   and privacy**, decided by Jim, 2026-08-09: capture everything, every project, no per-project
+   scoping, since the whole store is local and the cross-project surfacing risk that motivated the
+   question does not apply the way it would to a shared or synced store. The trigger gap found while
+   confirming that — nothing registered `PostCompact` at all — is now also closed; see below.
 
-   **The new gap, found while confirming the gate was actually clear: nothing triggers 2b at all.**
-   Engram's plugin registers `SessionStart`, `SubagentStart`, `UserPromptSubmit`, and `PreCompact` —
-   no `PostCompact`. There is no mechanism today that notices a compaction finished and hands its
-   `isCompactSummary` record to a harvester. **Designed below, pending evidence — see *The
-   PostCompact trigger*.** Not yet a D-numbered decision.
+   Provenance (Jim's explicit requirement, 2026-08-09: harvested facts marked, not blended at the
+   same trust level as something the user stated) needed **no schema change**. The `fact` table has
+   no author/source column, but `SessionFacts.Append` already threads an `agent` parameter into the
+   fact's path, readable back out as `SessionFact.Agent` — the same mechanism a subagent's own notes
+   use. `CompactionDigest.HarvesterAgent` is the one shared name, so a reader can recognise a
+   harvested fact without inferring it from content. Telemetry follows D56's rule exactly:
+   `TelemetryEventKind.PostCompact` is its own kind, recorded only when something was actually
+   written (never when the hook merely ran), so it cannot inflate the `remember`-based adoption
+   numbers D18 and D43 read.
 
-   It also owns two things the decision section deliberately left here: **how harvested facts are
-   marked as summarizer-authored, not blended at the same trust level as user-stated ones — decided
-   by Jim, 2026-08-09, as an explicit requirement, not just a D18/D43-inflation safeguard** (D56
-   makes that mistake explicit for `user-prompt`); and confirming that `SessionFacts.Append`'s
-   `sessionExternalId` is the hook's `session_id`. **A third, from this round of review: the
-   placeholder-drop count from 2a's result type must reach telemetry under its own field, never
-   summed into a generic "dropped" number.** This is D43 exactly — a nearby number in a field that
-   means something else is what that decision traced a wrong conclusion back to — and here the two
-   readings a summed count would erase are *"the summarizer pasted a code block"* and *"the echo
-   path fired,"* which need completely different responses.
+   ### The PostCompact trigger — built, 2026-08-09
 
-   ### The PostCompact trigger — designed, pending evidence, not a D-number yet
+   Per-session `PostCompact`, one hook, one pass, over a global scan — as designed: **per-session
+   scoping is what makes the harvester idempotent for free.** `SessionFacts.PathFor` fingerprints the
+   statement inside the session's path, and per D57 `Append` returns an existing id for a live match,
+   so re-running on the same summary writes nothing new — proven by
+   `RepeatingTheSameCompactionWritesEachStatementOnce` in `HookPostCompactTests.cs`, which runs the
+   same payload through two real process invocations and asserts one fact, not two.
 
-   Per-session `PostCompact`, one hook, one pass, over a global scan — agreed, and the argument that
-   settles it is stronger than tidiness: **per-session scoping is what makes the harvester
-   idempotent for free.** `SessionFacts.PathFor` fingerprints the statement inside the session's
-   path, and per D57 `Append` returns an existing id for a live match, so re-running on the same
-   summary writes nothing new. A global scan has no session context at the point of read and would
-   need its own *already-harvested* bookkeeping — state that can disagree with the store. Free
-   idempotence beats bookkeeping.
+   **All four probes answered at once, by evidence rather than by a new experiment — the standing
+   rule (probe the channel, never read a reference) held again: a second plugin,
+   `compaction-capture` (distinct from `compaction-guard`, which shares the marketplace but only
+   injects a policy reminder), already solves this exact problem in production and logs its raw
+   `PostCompact` payload for its own diagnostics. That log held a real invocation from *this session's
+   own auto-compaction* — the one this document was continued from:**
 
-   **The risk this creates: the auto-compaction unknown is now compound, and both halves must
-   hold.** It was one question — does `PreCompact` deliver on auto? It is now two, multiplied: does
-   `PreCompact` **deliver** on auto, *and* does `PostCompact` **fire** on auto? If either fails, only
-   manual compactions are ever harvested, and most of the user's sessions are auto. That promotes
-   auto-compaction from *largest remaining unknown* to **the thing 2b's value depends on**, and it
-   should be settled before 2b is built, not after. One datum already in hand, free: `PostCompact`
-   **does** fire on manual — visible tonight in this session's own `/compact` output, where both
-   compaction-guard `PostCompact` hooks reported completion. Auto is untested on both halves, and one
-   run answers both.
+   ```json
+   {
+     "session_id": "342589b9-3e65-4ba8-8ef4-3191fb478f47",
+     "transcript_path": "/Users/jimcline/.claude/projects/-Users-jimcline-git-repos-engram/342589b9-3e65-4ba8-8ef4-3191fb478f47.jsonl",
+     "cwd": "/Users/jimcline/git/repos/engram",
+     "prompt_id": "951f99da-9eb9-438e-8d2b-caafc3a0a1ef",
+     "hook_event_name": "PostCompact",
+     "trigger": "auto",
+     "compact_summary": "<analysis>\n... [49209 chars]"
+   }
+   ```
 
-   **Four probes. The standing rule applies with force: this doc's own history is that the reference
-   was wrong about `PreCompact` in both directions, so probe the channel, never read it.**
+   1. **Does `PostCompact` fire on auto-compaction?** Yes — `trigger: "auto"`, captured live, this
+      session. Manual was already confirmed (this doc's prior note, and `compaction-capture`'s own
+      test suite exercises both triggers through one code path).
+   2. **Is the compaction summary available when `PostCompact` fires?** Yes, and the question was
+      wrong in a way worth recording: it does not require reading the transcript at all.
+      `compact_summary` carries the *whole* summary text inline, in the hook's own stdin, synchronously.
+      `compaction-capture`'s own source (`scripts/lib/capture.js`) explicitly documents polling the
+      transcript's `isCompactSummary` record because *that* record is written by a separate code path
+      and can race the hook — but that race is specific to the transcript file, not the payload. The
+      payload field carries no such race.
+   3. **What does the stdin payload carry?** `session_id`, `transcript_path`, `cwd`, `prompt_id`,
+      `hook_event_name`, `trigger`, `compact_summary` — confirmed by the same captured example. Only
+      `session_id` and `compact_summary` are used; the others are unneeded once the transcript read is
+      gone.
+   4. **Does `PostCompact` stdout go anywhere?** Not probed further — irrelevant once the harvester
+      only reads stdin and writes to the store, and this hook writes nothing to stdout at all.
 
-   1. Does `PostCompact` fire on **auto**-compaction? Pair it with *did `PreCompact` deliver on
-      auto* — one run, both answers.
-   2. **Is the `isCompactSummary` record on disk when `PostCompact` fires?** Decides whether this
-      approach works at all. Only suggestive evidence exists today: compaction-guard runs
-      `capture.js` on `PostCompact`, and the name implies it reads something — suggestive is not
-      measured.
-   3. What does `PostCompact`'s stdin payload carry — `session_id`, `cwd`, transcript path? If no
-      transcript path, derive it from slug + session_id, which *The transcript* section above
-      establishes is possible.
-   4. Does `PostCompact` stdout go anywhere? Irrelevant to a harvester that only writes to the
-      store, but worth recording once while probing so nobody re-probes it later for no reason.
+   **This eliminates a whole layer of the design that answering the probes empirically, rather than
+   assuming the shape in advance, showed was unnecessary.** No transcript read, so no tail-read-not-
+   head-first bound (D53's concern does not arise — there is no scan). No polling, so no race with the
+   transcript's separate write path. No "last record only, no harvested-marker state" tradeoff to
+   accept, because there is no set of records to choose from — one hook invocation, one summary
+   string. What survives from the original constraints: **the `file-touched` 10 ms budget rule still
+   does not apply** (D4 justifies it by per-edit frequency; a compaction is rare, like session start),
+   and **provenance is still set in this hook**, both true regardless of how the summary arrives.
 
-   **Constraints that hold regardless of what the probes find:**
-
-   - **Read the transcript from the tail, not head-first.** The record is last or near-last, since
-     the hook fires immediately after it is written. A head-first scan of a 40+ MB transcript per
-     compaction is D53's unbounded-scan mistake again — and worse here, because it would be a *slow*
-     hook rather than a wrong one, and slow does not announce itself. Bound it.
-   - **Take the last `isCompactSummary` record and keep no harvested-marker state.** Idempotence
-     (above) makes tracking unnecessary, and state that can disagree with the store is a liability.
-     Name the consequence rather than fixing it now: a missed `PostCompact` loses that compaction's
-     facts permanently. If that ever matters, the fix is harvesting unharvested records, not only
-     the last one — not a preemptive design here.
-   - **The `file-touched` 10 ms budget rule does not apply, and someone will apply it by reflex.** D4
-     justifies that rule entirely by per-edit *frequency*. A compaction is rare, like session start,
-     which opens the store and costs 16–54 ms. This hook opening the store and writing facts is
-     correct, not a violation — say so in the spec, or a reviewer will flag it against the wrong
-     rule.
-   - **Provenance is set here.** Jim's decided requirement (harvested facts marked, not blended at
-     user-stated trust level) lands in this hook, and D56's rule comes with it: the telemetry kind
-     must be its own, never folded into `remember`, or it inflates the exact number D18/D43 turn on.
-
-   **Not decided.** Probes 1 and 2 come first — if the summary is not on disk when `PostCompact`
-   fires, the shape changes entirely and anything written here in anticipation would be wrong.
-   Designed-pending-evidence, same standing as Stage C was before it ran.
+   `HookPostCompactTests.cs` (tier 3, `Engram.EndToEnd.Tests`) drives the published binary directly,
+   the same reasoning as every other stdin-dependent hook test in this codebase:
+   `Console.IsInputRedirected` only reads true against a real spawned process, so an in-process
+   `StringReader` swap cannot exercise this path at all. It covers: a populated block writing each
+   item as a session fact; no block present writing nothing; the empty-pair block writing nothing;
+   idempotence across two real invocations; telemetry recorded only when a fact was written; and an
+   uninitialised home doing nothing.
 
 3. **`digest` MCP tool → slash command.** D17 puts the tool surface at 2,575 characters ≈ 640
    tokens paid every session; `digest` is 509 of them, and it has never fired.
