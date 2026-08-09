@@ -67,6 +67,16 @@ public static class RecallRanker
     // rare enough that an unbounded cache is fine.
     private static readonly ConcurrentDictionary<string, string> StatementCache = new(StringComparer.Ordinal);
 
+    /// <param name="minCandidates">
+    /// Materialize at least this many candidates, for a caller that renders more rows than the
+    /// budget can pack. Recall must leave this at 0: <c>budgetTokens + 1</c> is provably enough to
+    /// pack a <c>budgetTokens</c> budget, and reading further would put O(matches) materialization
+    /// back on the recall path — the cost D58 priced and deferred. <c>explain</c> is the caller
+    /// that needs it, because its <c>--limit</c> can exceed the budget bound and D30 makes it a
+    /// promise about the ranker rather than a view of the first 501 rows. Raising it cannot move
+    /// <c>Coverage</c> or <c>TokensUsed</c>: coverage reads the window columns over the unbounded
+    /// set, and <see cref="RecallEngine.ApplyBudget"/> stops at the first line that does not fit.
+    /// </param>
     public static RankOutcome Rank(
         SqliteConnection connection,
         string query,
@@ -74,7 +84,8 @@ public static class RecallRanker
         int seedK,
         long? currentSessionId,
         DateTimeOffset now,
-        VectorLaneQuery vectorQuery)
+        VectorLaneQuery vectorQuery,
+        int minCandidates = 0)
     {
         ArgumentNullException.ThrowIfNull(connection);
         ArgumentNullException.ThrowIfNull(query);
@@ -111,7 +122,7 @@ public static class RecallRanker
         command.Parameters.AddWithValue("$seedK", seedK);
         command.Parameters.AddWithValue("$currentSessionId", (object?)currentSessionId ?? DBNull.Value);
         command.Parameters.AddWithValue("$now", now.ToUnixTimeSeconds());
-        command.Parameters.AddWithValue("$limit", budgetTokens + 1);
+        command.Parameters.AddWithValue("$limit", Math.Max(budgetTokens + 1, minCandidates));
         if (vectorAvailable)
         {
             command.Parameters.AddWithValue("$embedding", ToBlob(vectorQuery.Embedding!));

@@ -111,7 +111,8 @@ public static class RetrievalExplainer
         var (vector, vectorSpace) = ReadVector(connection, vectorQuery, settings.SeedK, lanes);
 
         var outcome = RecallRanker.Rank(
-            connection, query, budgetTokens, settings.SeedK, currentSessionId, now, vectorQuery);
+            connection, query, budgetTokens, settings.SeedK, currentSessionId, now, vectorQuery,
+            minCandidates: displayLimit);
 
         lanes.Insert(0, OverlapLaneReport(outcome));
 

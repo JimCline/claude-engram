@@ -197,6 +197,46 @@ public class RetrievalExplainerTests
         Assert.All(explanation.Candidates.Skip(DisplayLimit), c => Assert.Null(c.Tier));
     }
 
+    /// <summary>
+    /// The ranking statement's <c>LIMIT</c> is <c>budgetTokens + 1</c>, which is provably enough for
+    /// recall to pack a budget but is not what <c>explain</c> renders — <c>--limit</c> is
+    /// independent of the budget, so asking to see 20 candidates against a 5-token budget used to
+    /// return 6. D30 makes explain a promise about the ranker that runs, not a view of its first few
+    /// rows, so it raises the materialization floor to what it will actually print.
+    /// </summary>
+    /// <remarks>
+    /// The budget sits far below the display limit on purpose: that gap is the entire defect, and a
+    /// test using the default 500-token budget could not reach it without ranking 502 candidates.
+    /// Packing must stay unaffected — <c>ApplyBudget</c> stops at the first line that does not fit,
+    /// so materializing more rows may never spend more budget.
+    /// </remarks>
+    [Fact]
+    public void Explain_MaterializesAsManyCandidatesAsItWillPrint_NotOnlyWhatTheBudgetCanPack()
+    {
+        using var sandbox = new SandboxHome(initialize: false);
+        using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
+        for (var i = 1; i <= 12; i++)
+        {
+            Write(connection, "kestrel-" + i, $"Kestrel binds loopback for listener {i}.");
+        }
+
+        const int Budget = 5;
+        const int DisplayLimit = 20;
+
+        var explanation = RetrievalExplainer.Explain(
+            connection, sandbox.Home, "kestrel loopback binds", Budget, DisplayLimit, null, T0, _ => null);
+
+        Assert.True(
+            explanation.Candidates.Count > Budget + 1,
+            $"explain materialized {explanation.Candidates.Count} candidates against a display limit "
+                + $"of {DisplayLimit} — the statement is still bounded by budget + 1 ({Budget + 1})");
+
+        Assert.True(
+            explanation.PackedCount <= Budget,
+            $"packing spent more than the {Budget}-token budget ({explanation.PackedCount} lines "
+                + "packed, and every line costs at least one token)");
+    }
+
     [Fact]
     public void Explain_WithEmbeddingsOff_ReportsTheVectorLaneOffRatherThanBroken()
     {
