@@ -4418,6 +4418,40 @@ The telemetry-collision measurement that reorder forced — zero lost and zero t
 session starts, because every caller but `file-touched` passes `DurableAppend` a 500 ms retry
 budget (D56) — stands on its own and still applies.
 
+**A tier that skips is not a tier that passed.** The two changes above were both found late, and
+they were found late for one reason: `Engram.EndToEnd.Tests` skips every test when
+`ENGRAM_TEST_BINARY` is unset, and the summary line counts passes. This suite was reported green
+three times in a single session while **128 of its 161 tests were skipping**, which is also how
+`ExplainCandidateScalingTests` sat red on `main` across several commits without anyone seeing it.
+By D9 tier 3 exists because a green JIT build says nothing about what ships — so the run that drops
+it is the run whose result means least, and it was the one that looked cleanest.
+`TierThreeCoverageTests` inverts which side needs a flag, on D49's reasoning that a default needing
+a flag is not a default: publish and point `ENGRAM_TEST_BINARY` at the binary, or set
+`ENGRAM_SKIP_TIER3` to acknowledge. An unacknowledged skip fails and names both commands. It also
+asserts the path exists, though not for the reason first written down: a variable pointing at
+nothing was assumed to skip like an unset one, and measuring the four states showed it does not — it
+fails 128 tests with `Win32Exception` from wherever each happened to start a process. The assertion
+earns its place by reducing that to one line naming the variable, which is a different job from the
+skip guard beside it. All four states were exercised: binary set (157 pass, 5 skip, exit 0), nothing
+set (exactly one failure, and it is this one), skip acknowledged (exit 0, 128 skipped), path missing
+(fails).
+
+**`ExplainCandidateScalingTests` is deleted, and the deletion is the interesting part.** It seeded
+20,000 facts sharing a token and asserted the hot arm stayed within 3x of a no-match arm, which is
+what held D58's pair of bounds in `RetrievalExplainer.ReadTiers`. D60 then capped the candidate set
+at `seed_k` per lane — that cap *is* the speed-up — so the hot arm became 32 candidates, both arms
+collapsed onto the shared floor, and the 500-id chunking could have been deleted with the test
+still green. It did not rot silently: it carried an explicit `of 20,000 candidates returned`
+assertion added for precisely this, and that is the line that failed, which is a guard doing the
+last useful thing a guard can do. Retuning the ratio was rejected — the arms can no longer be
+separated by any margin — and so was rewriting it to reach SQLite's 32,766-variable ceiling, which
+after D60 needs `seed_k` set above 32,766 in config and a 40,000-fact corpus to demonstrate: a slow
+test defending a configuration nothing validates and nobody has set. The display bound keeps its own
+deterministic, clock-free guard in
+`RetrievalExplainerTests.Explain_ReadsTheProvenanceTierOnlyAsFarAsTheCallerWillPrint`. **The
+chunking is now knowingly unguarded**, recorded here so that raising `seed_k` — or bounding it,
+which nothing currently does — is understood to require restoring one.
+
 *Open items deliberately left for later: entity-resolution fuzziness thresholds (start
 exact + alias + case-insensitive, per spec §12); whether `UserPromptSubmit` recall
 earns default-on (decide from M0/M1 coverage data); archive FTS for history search

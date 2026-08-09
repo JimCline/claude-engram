@@ -624,9 +624,19 @@ it reads only as far as the caller renders, via a **required** `displayLimit` �
 regardless, because `--limit` is a number a user types and a bound a caller can raise is not a bound.
 Measured at 20,000 candidates: unbounded and unchunked 12.9x the no-match arm, unbounded but chunked
 1.89x, both together 1.3x — so chunking, specified as the correctness half, carries most of the
-latency too, and the tier-3 guard holds the pair rather than either half. That guard asserts a
-**ratio** and exit 0 on every sample, since the defect is also reachable as a throw past SQLite's
-variable ceiling and a crashed arm would otherwise time as the fastest one. Recall's own change is a
+latency too. **The tier-3 guard that held that pair has been deleted, and the reason matters more
+than the test did.** `ExplainCandidateScalingTests` seeded 20,000 facts sharing a token and asserted
+the hot arm within 3x of a no-match arm; D60 then capped the candidate set at `seed_k` per lane, so
+the hot arm became 32 candidates and both arms collapsed onto the shared floor. The chunking could
+have been deleted with that test still green. It did not rot silently — it carried an explicit
+`of 20,000 candidates returned` assertion for exactly this, and that is the line that failed — but
+once its premise is gone the honest move is to remove it rather than retune a ratio that can no
+longer separate anything. What still holds the display bound is
+`RetrievalExplainerTests.Explain_ReadsTheProvenanceTierOnlyAsFarAsTheCallerWillPrint`, deterministically
+and without a clock. **The 500-id chunking is now unguarded**, and knowingly: past D60 it is
+reachable only by setting `seed_k` above 32,766 in config, which nothing validates and nobody has
+done, and the test that would prove it needs a 40,000-fact corpus to defend a configuration that
+does not exist. Restore a guard before raising `seed_k`, or bound it. Recall's own change is a
 move and not a redesign: `BuildCandidates` formats a line **after** the lane check rather than for
 every live fact, carrying the source record — a reference copy, where a `Func<string>` per entry
 would swap one allocation for another on the same O(corpus) path. Bounded materialization of the
@@ -795,6 +805,18 @@ published binary, because CI passing on the JIT build proves nothing about what 
 
 A lint or guard test that cannot fail is worthless. When adding one, prove it fails by
 breaking the thing it guards, then restore.
+
+**Tier 3 skipping is a failure, not a default.** Every test in `Engram.EndToEnd.Tests` opens with
+`Assert.SkipUnless(EndToEndBinary.Path is not null, …)`, so without `ENGRAM_TEST_BINARY` the whole
+tier evaporates into the skip column while the summary still reads `Passed!`. That is how this
+suite was reported green three times in one session with **128 of 161 tests skipped** — and by D9
+it is the run whose result means least that looked cleanest. `TierThreeCoverageTests` inverts which
+side needs the flag, on D49's reasoning: publish and set `ENGRAM_TEST_BINARY`, or set
+`ENGRAM_SKIP_TIER3` to say the skip is deliberate. An unacknowledged skip fails and prints both
+commands. It also asserts the path *exists* — not as a second skip guard: measured, a variable
+pointing at nothing does not skip, it fails 128 tests with `Win32Exception` from wherever each one
+started a process, and this reduces that to one line naming the variable. Read the skip count, not
+just the pass count.
 
 ## Commits
 
