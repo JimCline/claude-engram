@@ -4120,6 +4120,116 @@ defer it was rejected on exactly that ground, and it would additionally have bla
 1,200 ms hot-term figure measured `explain`, never recall — and, as above, measured it failing
 rather than answering.
 
+## D59 — The overlap index lands, and the boundary that decides what crosses into C#
+
+**What this is.** D58 chose the inverted literal-token index and scheduled it as the next item. This
+is the producer half, landed alone: `fact_token(token, fact_id)` is built, maintained and verified,
+and **nothing reads it yet**. Splitting producer from consumer is deliberate — the index has been
+maintained against every real write site, and compared against a from-scratch recomputation, before
+any ranking depends on its answers. The cutover is its own change and must be equivalence-tested
+against the lane running today, per D58.
+
+**Maintained from C# chokepoints, never from SQL triggers.** `fact_fts` is trigger-maintained, so
+the obvious symmetry is a trigger. It is not available: a trigger cannot call the tokenizer, so that
+design needs tokenization expressed a second time in SQL, and the two agree exactly until one is
+tuned. The failure after that is silent rather than loud — a term the index spells one way and the
+query another scores zero, so the lane returns *less*, which reads as a corpus with nothing to say
+rather than as a bug. The cost of the choice is that correctness now rests on call sites instead of
+on the database, so the guard is the recomputation diff, not a unit test: drive every write site,
+then compare the incrementally maintained table against `Rebuild`'s independent read of `fact`. A
+forgotten `Add` or `Remove` is a set difference. Proven able to fail by commenting out
+`FactJournal.Insert`'s `Add` — 2 red, restored, 7 green.
+
+**Readiness is a stamped version, not a probe, and there is no scanning fallback.** An index built by
+an older tokenizer is not corrupt; it disagrees. `fact_token_version` in `schema_meta` says which
+tokenizer wrote the table, and anything other than a match means unbuilt. Because this is derived
+state under D8, a rebuild can destroy nothing authored and needs no snapshot — unlike a migration
+under D31 — and a version-behind table costs the overlap lane and nothing else rather than failing
+recall.
+
+**`--tokens` reads the stamp and nothing else, and that is a latency ruling.** A full rebuild costs
+**297 ms at 5,097 live facts and 4,161 ms at 50,097** (50,561 and 701,358 token rows; +1.6 MB and
++20.5 MB vacuumed, so 305 and 410 bytes per fact). `MaintenanceLauncher` runs `repair --apply
+--tokens` from the session-start child on **every session**, so row-level desync detection there
+would put a scan of the whole token table on the session-start path unconditionally — the exact cost
+the scoped mode exists to avoid, and the same rule D4 applies to `file-touched`. `CountMissing` and
+`CountExtra` therefore live in the full `repair` verb, beside the FTS detector and for the same
+reason: someone runs `repair` when they suspect a problem. The guard asserts **both halves**, because
+the half that can rot is the one proving detection was *moved* rather than deleted — `--tokens`
+leaves a planted row-level desync alone, and a full `repair` dry run still sees it.
+
+**`NOT IN` beats `EXCEPT` here, and the tidy-up that would have equalized them costs 20 ms.**
+`CountMissing` uses `NOT IN` where `CountExtra` uses `EXCEPT`, which reads as an oversight and was
+reported as one during review. Measured at 50,097 live facts against 701,358 token rows, five
+alternating runs each: **22 ms for `NOT IN`, 42 ms for the `EXCEPT` rewrite**. SQLite plans `NOT IN`
+as a bloom filter probed while scanning `fact`; `EXCEPT` materializes a temp b-tree for the set
+difference. The two detectors compute different set differences in opposite directions, so syntactic
+consistency between them was never worth that. Recorded because the reversal is the point: the
+finding was raised with confidence and measurement is what withdrew it.
+
+**The zero-token exclusion is load-bearing in one direction only.** A live fact whose subject and
+body are all stopwords or all sub-three-character tokens has no row in `fact_token` and is *supposed*
+to have none. Counting it as a missed `Add` would leave `TokenIndexNeedsRebuild` permanently true, so
+every `repair` would rebuild and none would ever stop the next one. The assertion that matters is
+therefore the one *after* the apply, not the one before it. Zero such facts exist in this instance's
+5,097 today, but nothing prevents one: there is no length validation on a body, and `EnsureEntity`'s
+default name can be a single character.
+
+**D58's parameter-ceiling defect recurred immediately, in new code.** `ReadManyForIndexing` bound one
+parameter per candidate, and its candidate set is every live fact absent from the table — so an
+unbuilt index on a large store was not a slow query but a throw past SQLite's 32,766 ceiling. Both
+statements that size themselves from an unbounded collection now chunk at 500: the rebuild's token
+stream and the candidate read. That this reappeared in the first new code written after D58 fixed it
+in `RetrievalExplainer.ReadTiers` is the argument for the rule being stated as a rule — *a bound the
+caller can raise is not a bound* — rather than as a fix to one function.
+
+### The boundary: nothing O(corpus) crosses between SQL and C#, in either direction
+
+The ranker design changed under review on a question that had no measurement behind it, only a
+de-risking preference. The first cut kept the three lanes as separate statements and fused their
+results in C# — 32 lexical pairs and up to 32 vector pairs per recall, which is small. It is still
+wrong, for two reasons that are not about volume.
+
+**Three statements are three snapshots.** A fact closed between the lexical read and the fusion
+yields a rank pointing at a row the final read cannot see. One statement over one snapshot cannot
+have that class of bug at all.
+
+**And a lane that round-trips is a lane that can be tuned apart from the others.** D30 makes
+`explain` a promise that it describes the ranker which actually runs; the more of the ranker lives in
+C# glue between statements, the more surface there is for the two to diverge. So all three lanes,
+the origin discriminator and the prior-session ordinal are inlined into a single statement with seven
+bound parameters, and only the query terms and the embedding blob cross the boundary. SQL ranks and
+bounds; C# formats and packs. The line is deliberately *not* built in SQL — that would duplicate
+three C# format strings and their conditionals, which is the same drift argument that kept the
+tokenizer out of triggers, pointed the other way.
+
+Two details of that statement are worth stating because both fail silently. Coverage is computed with
+`COUNT(*) OVER ()` and `SUM(is_corroborated) OVER ()`, which are exact over the unbounded set
+*before* `LIMIT` — D44's inputs are preserved rather than approximated from the packed rows. And the
+origin discriminator compares the session with `IS`, not `=`: with `=`, a null current session makes
+every comparison null and every session fact falls to `ELSE`, which is the *correct* answer in that
+case — so the bug would survive every test that had a session and every test that did not.
+
+### Two documented SQLite practices, measured and rejected
+
+Both are recommended by SQLite's own FTS5 documentation or by common practice, and neither helps
+here. Recorded so they are not re-attempted.
+
+**`ORDER BY rank` is slower than `ORDER BY bm25(fact_fts)`** at every query tried and at both store
+sizes — including in the documentation's own documented shape, with no join and no filter, where
+`bm25()` runs **8.96 ms against `rank`'s 13.25 ms**. The trap inside this one is worth more than the
+result: `USE TEMP B-TREE FOR ORDER BY` *does* disappear from the plan under `rank`, and the query is
+still slower. **The absence of a temp sort is not evidence of speed**, and a plan read without a
+clock attached would have concluded the opposite.
+
+**`ANALYZE` changes nothing.** `EXPLAIN QUERY PLAN` output is byte-identical before and after, and
+across nine timed comparisons four arms were faster and five slower — noise, not a signal.
+
+**One correction to the record.** `FactStore.SearchRanked` is roughly **11.5 ms** at 50k, not the
+40–45 ms previously carried, and it is **not** D58's floor: the same statement costs 0.011 ms on a
+no-match query against 11.5 ms hot. The floor is what costs the same either way, which is the catalog
+read and the per-fact tokenization — not this.
+
 *Open items deliberately left for later: entity-resolution fuzziness thresholds (start
 exact + alias + case-insensitive, per spec §12); whether `UserPromptSubmit` recall
 earns default-on (decide from M0/M1 coverage data); archive FTS for history search

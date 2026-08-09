@@ -43,6 +43,25 @@ table, closed beliefs included, while the index deliberately holds live facts on
 rebuild through `EngramDatabase.RebuildFactFts`, which is the one implementation of what
 belongs in the index.
 
+**`fact_token` is maintained from C# call sites, and `--tokens` reads the stamp only.** The overlap
+index cannot be trigger-maintained the way `fact_fts` is, because a trigger cannot call `Tokenizer`
+and a second tokenizer written in SQL agrees with the first until one of them is tuned — after which
+a term spelled two ways scores zero and the lane returns less, which reads as an empty corpus rather
+than a bug. So every write goes through `FactTokenIndex.Add`/`Remove` at the same chokepoints
+`fact_fts` uses, and the guard is a from-scratch recomputation diffed against the incrementally
+maintained table, not a unit test. Readiness is a stamped tokenizer version, never a probe: an index
+one version behind is not corrupt, it disagrees, and by D8 it costs the overlap lane and nothing
+else. `repair --apply --tokens` runs from the session-start child on **every** session, so it checks
+that stamp and nothing else — `CountMissing` and `CountExtra` scan the whole token table and belong
+to the full `repair` verb, beside the FTS detector. Measured, and each number decides something: a
+rebuild is 297 ms at 5,097 live facts and **4,161 ms at 50,097** (701,358 token rows), which is why
+that scan may not ride session start; and `CountMissing`'s `NOT IN` beats the `EXCEPT` that would
+make it match `CountExtra` by **22 ms against 42 ms** at that size, because SQLite plans the first as
+a bloom filter probed during the scan and the second as a temp b-tree. The zero-token exclusion in
+`CountMissing` is load-bearing in one direction only — counting an all-stopword fact as a missed
+`Add` leaves `TokenIndexNeedsRebuild` permanently true, so every repair rebuilds and none stops the
+next — which is why the assertion that matters sits *after* the apply (D59).
+
 **Every connection sets its own pragmas.** `foreign_keys`, `busy_timeout`, and
 `synchronous` are connection-scoped. Setting them in a schema file configures the
 connection that applied the file and nothing else. Open through the one shared routine,
