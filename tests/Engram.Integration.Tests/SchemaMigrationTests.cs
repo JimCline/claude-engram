@@ -329,11 +329,19 @@ public class SchemaMigrationTests
     /// covers for <c>fact_token</c>.
     /// </summary>
     /// <remarks>
-    /// Asserted as a concrete shape rather than only fresh-equals-migrated, because two stores that
-    /// both lack the index compare equal — the assertion that would pass with the whole change
+    /// <para>Asserted as a concrete shape rather than only fresh-equals-migrated, because two stores
+    /// that both lack the index compare equal — the assertion that would pass with the whole change
     /// reverted. <c>partial=0</c> is the load-bearing field: <c>ux_fact_live</c> already indexes
     /// these two columns and is useless here precisely because it is partial on
-    /// <c>valid_to IS NULL</c>, while a thread length counts closed facts too (D57).
+    /// <c>valid_to IS NULL</c>, while a thread length counts closed facts too (D57).</para>
+    ///
+    /// <para>The <c>DROP INDEX</c> is what makes this a migration test at all, and it is not
+    /// bookkeeping. <see cref="WriteVersion1Store"/> builds its "old" store by opening a
+    /// <i>current</i>-schema one and rolling <c>schema_version</c> back, so <c>ix_fact_thread</c> is
+    /// already present and version 5's <c>CREATE INDEX IF NOT EXISTS</c> no-ops. Measured by
+    /// flipping the migration to create a partial index with this line absent: 18 of 18 green. The
+    /// version 4 step is immune to the same trap only because it is a <c>DROP</c> and
+    /// <c>CREATE</c> pair that runs unconditionally.</para>
     /// </remarks>
     [Fact]
     public void AMigratedStore_HasTheSameThreadIndexAsAFreshOne()
@@ -341,6 +349,10 @@ public class SchemaMigrationTests
         using var migratedHome = new SandboxHome(initialize: false);
         using var freshHome = new SandboxHome(initialize: false);
         WriteVersion1Store(migratedHome, "/knowledge/testing/kestrel", "It binds loopback only.");
+        using (var pre = EngramDatabase.Open(migratedHome.Home))
+        {
+            Execute(pre, "DROP INDEX ix_fact_thread;");
+        }
 
         using var migrated = EngramDatabase.OpenInitialized(migratedHome.Home);
         using var fresh = EngramDatabase.OpenInitialized(freshHome.Home);
