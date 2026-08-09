@@ -202,6 +202,42 @@ public sealed class DiagnosticsTests : IDisposable
         Assert.Equal(0, report.Broken);
     }
 
+    [Fact]
+    public void TokenIndex_Ready_ReportsOk()
+    {
+        using var sandbox = new SandboxHome();
+
+        var report = Run(sandbox);
+
+        Assert.Equal(DiagnosisState.Ok, Check(report, "token index").State);
+        Assert.True(report.Healthy);
+    }
+
+    /// <summary>
+    /// Never <see cref="DiagnosisState.Broken"/> (D37, spec ruling 3): an unbuilt or stale token
+    /// index costs the overlap lane and nothing else — recall still answers from the other lanes.
+    /// </summary>
+    [Fact]
+    public void TokenIndexStale_WarnsWithoutFailingTheInstance()
+    {
+        using var sandbox = new SandboxHome();
+
+        using (var connection = EngramDatabase.OpenInitialized(sandbox.Home))
+        {
+            using var stale = connection.CreateCommand();
+            stale.CommandText = "UPDATE schema_meta SET value = '0' WHERE key = 'fact_token_version';";
+            stale.ExecuteNonQuery();
+        }
+
+        var report = Run(sandbox);
+
+        var tokenIndex = Check(report, "token index");
+        Assert.Equal(DiagnosisState.Warn, tokenIndex.State);
+        Assert.NotNull(tokenIndex.Fix);
+        Assert.Equal(0, report.Broken);
+        Assert.True(report.Healthy);
+    }
+
     /// <summary>
     /// The load-bearing one. <c>OpenInitialized</c> migrates on open and D31 makes that migration
     /// snapshot first, so reaching for it here would mean the question "is my store behind?" could

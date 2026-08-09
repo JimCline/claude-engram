@@ -289,6 +289,39 @@ public class SchemaMigrationTests
         Assert.Equal(LexicalDdl(fresh), LexicalDdl(migrated));
     }
 
+    /// <summary>
+    /// Version 4 added <c>fact_token</c>. A store built at version 1 predates it entirely, so
+    /// migrating one is the one path that actually exercises the CREATE — every other test in
+    /// this file builds its "old" fixture by taking a current-schema store and rolling
+    /// schema_version back, which already has the table.
+    /// </summary>
+    [Fact]
+    public void Migrating_RebuildsTheTokenIndexOverEveryLiveFact()
+    {
+        using var sandbox = new SandboxHome(initialize: false);
+        var id = WriteVersion1Store(sandbox, "/knowledge/testing/kestrel", "It binds loopback only.");
+
+        using var reopened = EngramDatabase.OpenInitialized(sandbox.Home);
+
+        Assert.True(FactTokenIndex.IsReady(reopened));
+        Assert.Equal(
+            new HashSet<string> { "kestrel", "binds", "loopback", "only" },
+            TokensFor(reopened, id));
+    }
+
+    [Fact]
+    public void AMigratedStore_HasTheSameTokenIndexDdlAsAFreshOne()
+    {
+        using var migratedHome = new SandboxHome(initialize: false);
+        using var freshHome = new SandboxHome(initialize: false);
+        WriteVersion1Store(migratedHome, "/knowledge/testing/kestrel", "It binds loopback only.");
+
+        using var migrated = EngramDatabase.OpenInitialized(migratedHome.Home);
+        using var fresh = EngramDatabase.OpenInitialized(freshHome.Home);
+
+        Assert.Equal(TokenIndexDdl(fresh), TokenIndexDdl(migrated));
+    }
+
     private static List<string> LexicalDdl(SqliteConnection connection)
     {
         using var command = connection.CreateCommand();
@@ -303,6 +336,38 @@ public class SchemaMigrationTests
         }
 
         return statements;
+    }
+
+    private static List<string> TokenIndexDdl(SqliteConnection connection)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText =
+            "SELECT sql FROM sqlite_master WHERE name LIKE 'fact_token%' AND sql IS NOT NULL ORDER BY name;";
+
+        var statements = new List<string>();
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            statements.Add(reader.GetString(0));
+        }
+
+        return statements;
+    }
+
+    private static HashSet<string> TokensFor(SqliteConnection connection, long factId)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT token FROM fact_token WHERE fact_id = $id;";
+        command.Parameters.AddWithValue("$id", factId);
+
+        var tokens = new HashSet<string>(StringComparer.Ordinal);
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            tokens.Add(reader.GetString(0));
+        }
+
+        return tokens;
     }
 
     private static void Execute(SqliteConnection connection, string sql)

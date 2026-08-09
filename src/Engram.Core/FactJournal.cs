@@ -473,7 +473,18 @@ public static class FactJournal
         command.Parameters.AddWithValue("$validTo", (object?)fact.ValidTo ?? DBNull.Value);
         command.Parameters.AddWithValue("$createdAt", fact.CreatedAt);
 
-        return (long)command.ExecuteScalar()!;
+        var factId = (long)command.ExecuteScalar()!;
+
+        // The index holds live facts only (mirroring fact_fts). A replayed fact can arrive
+        // already closed — the journal carries closed facts deliberately — so indexing it
+        // unconditionally would put a dead fact's tokens in a table that is supposed to answer
+        // for what is currently believed.
+        if (fact.ValidTo is null)
+        {
+            FactTokenIndex.Add(connection, transaction, factId);
+        }
+
+        return factId;
     }
 
     private static void Link(
@@ -489,6 +500,12 @@ public static class FactJournal
         update.Parameters.AddWithValue("$target", supersededBy);
         update.Parameters.AddWithValue("$id", factId);
         update.ExecuteNonQuery();
+
+        // Defensive rather than load-bearing today: a fact only reaches Link when its journal
+        // record already carried superseded_by, which in the source store means valid_to was
+        // already set — so Insert never indexed it. Calling the closing counterpart anyway is
+        // what keeps this site correct if that pairing ever changes, per spec 1.3.
+        FactTokenIndex.Remove(connection, transaction, factId);
 
         using var record = connection.CreateCommand();
         record.Transaction = transaction;

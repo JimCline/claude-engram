@@ -38,6 +38,12 @@ public static class EngramInitializer
             transaction.Commit();
         }
 
+        // Belt and suspenders: a fresh store already carries the readiness row schema.sql
+        // seeds, and every seeded fact above went through FactStore.Remember, which indexes
+        // it as it writes. This only does real work for a store that reached here without
+        // either of those — an older store schema.sql didn't seed the key into, say.
+        FactTokenIndex.EnsureBuilt(connection);
+
         return new InitializedPath(home.DatabasePath, Created: !existed);
     }
 

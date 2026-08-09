@@ -200,6 +200,287 @@ public class StoreRepairerTests
     }
 
     [Fact]
+    public void TokenIndexStale_IsDetected_AndApplyRebuildsIt()
+    {
+        using var sandbox = new SandboxHome();
+        long factId;
+
+        using (var connection = EngramDatabase.OpenInitialized(sandbox.Home))
+        {
+            factId = FactStore.Remember(
+                connection,
+                new FactWrite(
+                    "/projects/acme/notes", "note", "states",
+                    "the zanzibar workflow ships releases", "project", "stated"),
+                T0).FactId;
+
+            using var stale = connection.CreateCommand();
+            stale.CommandText = "UPDATE schema_meta SET value = '0' WHERE key = 'fact_token_version';";
+            stale.ExecuteNonQuery();
+        }
+
+        using (var connection = EngramDatabase.OpenInitialized(sandbox.Home))
+        {
+            var dry = StoreRepairer.Repair(connection, sandbox.Home, apply: false, T0);
+            Assert.False(dry.Applied);
+            Assert.True(dry.TokenIndexNeedsRebuild);
+            Assert.False(FactTokenIndex.IsReady(connection));
+
+            var applied = StoreRepairer.Repair(connection, sandbox.Home, apply: true, T0);
+            Assert.True(applied.TokenIndexRebuilt);
+            Assert.True(FactTokenIndex.IsReady(connection));
+            Assert.False(StoreRepairer.Repair(connection, sandbox.Home, apply: false, T0).TokenIndexNeedsRebuild);
+        }
+    }
+
+    [Fact]
+    public void TokenMissing_IsDetected_AndApplyRepairsIt()
+    {
+        using var sandbox = new SandboxHome();
+        using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
+
+        var factId = FactStore.Remember(
+            connection,
+            new FactWrite(
+                "/projects/acme/notes", "note", "states",
+                "the zanzibar workflow ships releases", "project", "stated"),
+            T0).FactId;
+
+        Assert.Equal(0, FactTokenIndex.CountMissing(connection));
+
+        using (var drop = connection.CreateCommand())
+        {
+            drop.CommandText = "DELETE FROM fact_token WHERE fact_id = $id;";
+            drop.Parameters.AddWithValue("$id", factId);
+            drop.ExecuteNonQuery();
+        }
+
+        Assert.Equal(1, FactTokenIndex.CountMissing(connection));
+
+        var dry = StoreRepairer.Repair(connection, sandbox.Home, apply: false, T0);
+        Assert.Equal(1, dry.TokenMissing);
+        Assert.True(dry.TokenIndexNeedsRebuild);
+
+        var applied = StoreRepairer.Repair(connection, sandbox.Home, apply: true, T0.AddMinutes(1));
+        Assert.True(applied.TokenIndexRebuilt);
+        Assert.Equal(0, FactTokenIndex.CountMissing(connection));
+        Assert.Equal(0, StoreRepairer.Repair(connection, sandbox.Home, apply: false, T0).TokenMissing);
+    }
+
+    [Fact]
+    public void TokenExtra_IsDetected_AndApplyRepairsIt()
+    {
+        using var sandbox = new SandboxHome();
+        using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
+
+        var factId = FactStore.Remember(
+            connection,
+            new FactWrite(
+                "/projects/acme/notes", "note", "states",
+                "the trunk workflow ships releases", "project", "stated"),
+            T0).FactId;
+        FactStore.Forget(connection, factId, "no longer needed", T0.AddMinutes(1));
+
+        // Forget already removed this fact's own rows through FactStore's chokepoint — plant
+        // the extra row back by hand, the shape a foreign write or a missed Remove call leaves.
+        using (var plant = connection.CreateCommand())
+        {
+            plant.CommandText = "INSERT INTO fact_token(token, fact_id) VALUES ('ghost', $id);";
+            plant.Parameters.AddWithValue("$id", factId);
+            plant.ExecuteNonQuery();
+        }
+
+        Assert.Equal(1, FactTokenIndex.CountExtra(connection));
+
+        var dry = StoreRepairer.Repair(connection, sandbox.Home, apply: false, T0.AddMinutes(2));
+        Assert.Equal(1, dry.TokenExtra);
+        Assert.True(dry.TokenIndexNeedsRebuild);
+
+        var applied = StoreRepairer.Repair(connection, sandbox.Home, apply: true, T0.AddMinutes(2));
+        Assert.True(applied.TokenIndexRebuilt);
+        Assert.Equal(0, FactTokenIndex.CountExtra(connection));
+        Assert.Equal(0, StoreRepairer.Repair(connection, sandbox.Home, apply: false, T0).TokenExtra);
+    }
+
+    /// <summary>
+    /// A live fact whose subject and body tokenize to nothing indexable has no row in
+    /// <c>fact_token</c> and is supposed to have none, so it must not read as a missed
+    /// <see cref="FactTokenIndex.Add"/>. The exclusion is load-bearing in one direction only:
+    /// counting such a fact would leave <see cref="RepairReport.TokenIndexNeedsRebuild"/>
+    /// permanently true, and a rebuild that cannot make its own trigger go away is one that
+    /// runs forever. So the assertion that matters is the one after the apply.
+    /// </summary>
+    [Fact]
+    public void AFactThatTokenizesToNothing_IsNotCountedMissing()
+    {
+        using var sandbox = new SandboxHome();
+        using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
+
+        // Every token here is either under three characters or a stopword, so IsIndexable
+        // rejects all of them and Add correctly writes no rows at all.
+        var factId = FactStore.Remember(
+            connection,
+            new FactWrite("/projects/acme/it", "it", "states", "as it is", "project", "stated"),
+            T0).FactId;
+
+        Assert.Equal(0, CountTokenRows(connection, factId));
+        Assert.Equal(0, FactTokenIndex.CountMissing(connection));
+        Assert.False(StoreRepairer.Repair(connection, sandbox.Home, apply: false, T0).TokenIndexNeedsRebuild);
+
+        // A rebuild does not invent rows for it either, so the detector stays quiet afterwards
+        // rather than re-arming on the next run.
+        StoreRepairer.Repair(connection, sandbox.Home, apply: true, T0.AddMinutes(1));
+
+        Assert.Equal(0, CountTokenRows(connection, factId));
+        Assert.Equal(0, FactTokenIndex.CountMissing(connection));
+        Assert.False(
+            StoreRepairer.Repair(connection, sandbox.Home, apply: false, T0.AddMinutes(2)).TokenIndexNeedsRebuild);
+    }
+
+    private static int CountTokenRows(SqliteConnection connection, long factId)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT count(*) FROM fact_token WHERE fact_id = $id;";
+        command.Parameters.AddWithValue("$id", factId);
+        return (int)(long)command.ExecuteScalar()!;
+    }
+
+    [Fact]
+    public void RepairApply_WithTokens_IsANoOpWhenTheIndexIsAlreadyCurrent()
+    {
+        using var sandbox = new SandboxHome();
+
+        var stdout = new StringWriter();
+        var stderr = new StringWriter();
+        var exitCode = CliApp.Run(
+            ["--home", sandbox.Home.Root, "repair", "--apply", "--tokens"], stdout, stderr);
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains("tokens: in sync", stdout.ToString());
+        Assert.Empty(BackupStore.List(sandbox.Home));
+    }
+
+    /// <summary>
+    /// Plants token staleness alongside an independent FTS desync and proves <c>--tokens</c>
+    /// fixes only the former: no snapshot (nothing in the full apply pipeline ran at all), and
+    /// the FTS desync — which a full <c>--apply</c> would have caught — is still there afterward.
+    /// </summary>
+    [Fact]
+    public void RepairApply_WithTokens_RebuildsOnlyTheTokenIndex()
+    {
+        using var sandbox = new SandboxHome();
+        long factId;
+
+        using (var connection = EngramDatabase.OpenInitialized(sandbox.Home))
+        {
+            factId = FactStore.Remember(
+                connection,
+                new FactWrite(
+                    "/projects/acme/notes", "note", "states",
+                    "the zanzibar workflow ships releases", "project", "stated"),
+                T0).FactId;
+
+            using var stale = connection.CreateCommand();
+            stale.CommandText = "UPDATE schema_meta SET value = '0' WHERE key = 'fact_token_version';";
+            stale.ExecuteNonQuery();
+
+            var live = FactStore.ReadById(connection, factId)!;
+            using var desync = connection.CreateCommand();
+            desync.CommandText =
+                "INSERT INTO fact_fts(fact_fts, rowid, body, predicate, path) "
+                + "VALUES('delete', $id, $body, $predicate, $path);";
+            desync.Parameters.AddWithValue("$id", factId);
+            desync.Parameters.AddWithValue("$body", live.Body);
+            desync.Parameters.AddWithValue("$predicate", live.Predicate);
+            desync.Parameters.AddWithValue("$path", live.SubjectPath);
+            desync.ExecuteNonQuery();
+        }
+
+        var stdout = new StringWriter();
+        var stderr = new StringWriter();
+        var exitCode = CliApp.Run(
+            ["--home", sandbox.Home.Root, "repair", "--apply", "--tokens"], stdout, stderr);
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains("tokens: unbuilt or stale", stdout.ToString());
+        Assert.Empty(BackupStore.List(sandbox.Home));
+
+        using var reopened = EngramDatabase.OpenInitialized(sandbox.Home);
+        Assert.True(FactTokenIndex.IsReady(reopened));
+
+        var stillDesynced = StoreRepairer.Repair(reopened, sandbox.Home, apply: false, T0.AddMinutes(1));
+        Assert.Equal(1, stillDesynced.FtsMissing);
+    }
+
+    /// <summary>
+    /// <c>--tokens</c> reads the readiness stamp and nothing else, so a row-level desync — the
+    /// shape a missed <c>Add</c> leaves — goes unnoticed here on purpose. This runs from the
+    /// session-start maintenance child on every session, and <c>CountMissing</c>/<c>CountExtra</c>
+    /// scan the whole token table; putting that on this path is the cost this mode exists to
+    /// avoid. The second half is the half that makes this a guard rather than a test of an
+    /// omission: the full <c>repair</c> verb still sees the same desync, so detection was moved
+    /// rather than deleted.
+    /// </summary>
+    [Fact]
+    public void RepairApply_WithTokens_ReadsTheStampOnly_AndLeavesRowLevelDesyncToFullRepair()
+    {
+        using var sandbox = new SandboxHome();
+        long factId;
+
+        using (var connection = EngramDatabase.OpenInitialized(sandbox.Home))
+        {
+            factId = FactStore.Remember(
+                connection,
+                new FactWrite(
+                    "/projects/acme/notes", "note", "states",
+                    "the zanzibar workflow ships releases", "project", "stated"),
+                T0).FactId;
+
+            // The stamp stays current; only the rows go, which is what a forgotten call site
+            // leaves behind.
+            using var drop = connection.CreateCommand();
+            drop.CommandText = "DELETE FROM fact_token WHERE fact_id = $id;";
+            drop.Parameters.AddWithValue("$id", factId);
+            drop.ExecuteNonQuery();
+        }
+
+        var stdout = new StringWriter();
+        var stderr = new StringWriter();
+        var exitCode = CliApp.Run(
+            ["--home", sandbox.Home.Root, "repair", "--apply", "--tokens"], stdout, stderr);
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains("tokens: in sync", stdout.ToString());
+
+        using var reopened = EngramDatabase.OpenInitialized(sandbox.Home);
+        Assert.Equal(1, FactTokenIndex.CountMissing(reopened));
+        Assert.True(StoreRepairer.Repair(reopened, sandbox.Home, apply: false, T0.AddMinutes(1)).TokenIndexNeedsRebuild);
+    }
+
+    [Fact]
+    public void RepairTokens_WithoutApply_ReportsWithoutBuilding()
+    {
+        using var sandbox = new SandboxHome();
+
+        using (var connection = EngramDatabase.OpenInitialized(sandbox.Home))
+        {
+            using var stale = connection.CreateCommand();
+            stale.CommandText = "UPDATE schema_meta SET value = '0' WHERE key = 'fact_token_version';";
+            stale.ExecuteNonQuery();
+        }
+
+        var stdout = new StringWriter();
+        var stderr = new StringWriter();
+        var exitCode = CliApp.Run(["--home", sandbox.Home.Root, "repair", "--tokens"], stdout, stderr);
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains("Dry run only", stdout.ToString());
+
+        using var reopened = EngramDatabase.OpenInitialized(sandbox.Home);
+        Assert.False(FactTokenIndex.IsReady(reopened));
+    }
+
+    [Fact]
     public void Command_WithoutAStore_IsARealError_ThatNamesInit()
     {
         using var sandbox = new SandboxHome(initialize: false);

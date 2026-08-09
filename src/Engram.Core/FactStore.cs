@@ -91,6 +91,8 @@ public static class FactStore
                 "UPDATE fact SET valid_to = $now WHERE id = $id;",
                 ("$now", timestamp),
                 ("$id", oldId));
+
+            FactTokenIndex.Remove(connection, transaction, oldId);
         }
 
         var factId = InsertFact(connection, transaction, write, subjectId, timestamp);
@@ -165,6 +167,8 @@ public static class FactStore
         {
             return false;
         }
+
+        FactTokenIndex.Remove(connection, transaction, factId);
 
         // new_fact_id stays NULL: closed and not replaced is exactly what forgetting means,
         // and the column is nullable so the state needs no sentinel.
@@ -627,8 +631,9 @@ public static class FactStore
         SqliteTransaction transaction,
         FactWrite write,
         long subjectId,
-        long timestamp) =>
-        ScalarLong(
+        long timestamp)
+    {
+        var factId = ScalarLong(
             connection,
             transaction,
             """
@@ -650,6 +655,11 @@ public static class FactStore
             ("$evidence", (object?)write.Evidence ?? DBNull.Value),
             ("$session", (object?)write.SessionId ?? DBNull.Value),
             ("$now", timestamp))!.Value;
+
+        FactTokenIndex.Add(connection, transaction, factId);
+
+        return factId;
+    }
 
     private static long? FindLiveFactId(
         SqliteConnection connection,

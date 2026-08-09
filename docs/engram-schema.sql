@@ -324,8 +324,37 @@ CREATE TABLE repo_registry (
 CREATE UNIQUE INDEX ux_repo_identity ON repo_registry(identity);
 
 
+-- ---------------------------------------------------------------------------
+-- Literal-token overlap lane: fact_token(token, fact_id) over LIVE facts only.
+-- ---------------------------------------------------------------------------
+-- Maintained from C# (FactTokenIndex), not by trigger: the tokenizer it must share with the
+-- ranker (RecallEngine) is a C# implementation, and a trigger cannot call it. Expressing
+-- tokenization a second time in SQL would be a second implementation that drifts from the first.
+--
+-- WITHOUT ROWID with a composite primary key: (token, fact_id) is a non-integer composite key
+-- and rows are far under 1/20th of a page, which sqlite.org/withoutrowid.html names as the case
+-- this saves real storage — one B-tree instead of a table plus a separate index. The leftmost
+-- prefix serves `WHERE token = ?`, the only read shape the ranker uses.
+
+CREATE TABLE fact_token (
+  token   TEXT    NOT NULL,
+  fact_id INTEGER NOT NULL REFERENCES fact(id) ON DELETE CASCADE,
+  PRIMARY KEY (token, fact_id)
+) WITHOUT ROWID;
+
+-- Deletion and re-indexing address a fact by id, and the primary key cannot serve
+-- `WHERE fact_id = ?` with token leading.
+CREATE INDEX ix_fact_token_fact ON fact_token(fact_id);
+
+
 CREATE TABLE schema_meta (key TEXT PRIMARY KEY, value TEXT);
-INSERT INTO schema_meta(key, value) VALUES ('schema_version', '3');
+INSERT INTO schema_meta(key, value) VALUES ('schema_version', '4');
+
+-- Built by a fresh CREATE, and pre-stamped ready: an empty table matches whatever
+-- FactTokenIndex.Rebuild would produce over zero facts, so a new store needs no rebuild pass.
+-- The version must track FactTokenIndex.CurrentVersion by hand — this file cannot reference a
+-- C# constant, the same duplication schema_version above already accepts.
+INSERT INTO schema_meta(key, value) VALUES ('fact_token_version', '1');
 
 
 -- ---------------------------------------------------------------------------

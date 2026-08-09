@@ -135,6 +135,13 @@ public static class SessionFacts
         if (!string.IsNullOrWhiteSpace(subject))
         {
             SetEntityName(connection, transaction, path, subject);
+
+            // TextFor reads the subject's current name, and Remember already indexed this fact
+            // under the fingerprint default a few lines up — before the rename above gave it
+            // one. Re-index now so fact_token reflects the name the model actually gave it,
+            // rather than the address it happened to land at.
+            FactTokenIndex.Remove(connection, transaction, result.FactId);
+            FactTokenIndex.Add(connection, transaction, result.FactId);
         }
 
         transaction.Commit();

@@ -41,7 +41,8 @@ public static class MaintenanceLauncher
 
         var command = new StringBuilder("{ ")
             .Append(engram).Append(" backup take --if-due").Append(home).Append("; ")
-            .Append(engram).Append(" queue compact --apply --if-large").Append(home).Append("; ");
+            .Append(engram).Append(" queue compact --apply --if-large").Append(home).Append("; ")
+            .Append(engram).Append(" repair --apply --tokens").Append(home).Append("; ");
 
         // After the compaction on purpose: folding the queue first makes the drain read
         // fewer entries and lose nothing. --auto carries the whole policy — config gate,

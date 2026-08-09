@@ -122,6 +122,7 @@ public static class Diagnostics
         Try(checks, "memory", list => list.Add(CheckMemory(config)));
         Try(checks, "embedding", list => CheckEmbedding(home, embedding, environment, reachOut, client, list));
         Try(checks, "vector index", list => list.Add(CheckIndex(home, connection, embedding)));
+        Try(checks, "token index", list => list.Add(CheckTokenIndex(connection)));
         Try(checks, "metal", list => CheckMetal(home, embedding, list));
         Try(checks, "backups", list => list.Add(CheckBackups(home, connection, config)));
         Try(checks, "edit queue", list => list.Add(CheckQueue(home)));
@@ -703,6 +704,34 @@ public static class Diagnostics
         return pending == 0
             ? new Diagnosis("vector index", DiagnosisState.Ok, detail)
             : new Diagnosis("vector index", DiagnosisState.Ok, $"{detail}, {pending} facts waiting to be embedded");
+    }
+
+    /// <summary>
+    /// Never <see cref="DiagnosisState.Broken"/> (D37): an unbuilt or stale index costs the
+    /// overlap lane and nothing else — recall still answers from the lexical and vector lanes,
+    /// per spec ruling 3 (no scanning fallback).
+    /// </summary>
+    private static Diagnosis CheckTokenIndex(SqliteConnection? connection)
+    {
+        if (connection is null)
+        {
+            return new Diagnosis("token index", DiagnosisState.Warn, "no store to hold one yet");
+        }
+
+        return FactTokenIndex.ReadState(connection) switch
+        {
+            FactTokenIndexState.Ready => new Diagnosis("token index", DiagnosisState.Ok, "built and current"),
+            FactTokenIndexState.VersionMismatch => new Diagnosis(
+                "token index",
+                DiagnosisState.Warn,
+                "stamped with an older tokenizer version — the overlap lane is unavailable until it rebuilds",
+                "engram repair --apply rebuilds it"),
+            _ => new Diagnosis(
+                "token index",
+                DiagnosisState.Warn,
+                "not built yet — the overlap lane is unavailable until it does",
+                "engram repair --apply builds it"),
+        };
     }
 
     /// <summary>The first Apple silicon generation with tensor cores to lose (D28).</summary>

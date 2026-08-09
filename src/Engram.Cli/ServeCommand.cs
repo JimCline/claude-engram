@@ -38,6 +38,16 @@ internal static class ServeCommand
 
         var resolvedPort = ServerPort.Resolve(port);
         var home = EngramHome.ResolveFromProcess(homePath);
+
+        // Built once, before the server starts accepting requests, so a store that predates
+        // fact_token — or one whose tokenizer version fell behind this build — is never served
+        // against a stale or missing index. Cheap in the ordinary case: EnsureBuilt reads one
+        // schema_meta row and returns when the store is already current.
+        using (var connection = EngramDatabase.OpenInitialized(home))
+        {
+            FactTokenIndex.EnsureBuilt(connection);
+        }
+
         var identity = new ServerIdentity(
             Environment.ProcessId,
             resolvedPort,

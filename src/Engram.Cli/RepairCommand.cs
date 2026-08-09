@@ -12,6 +12,7 @@ internal static class RepairCommand
     public static int Run(string? homePath, string[] rest, TextWriter stdout, TextWriter stderr)
     {
         var apply = false;
+        var tokens = false;
 
         foreach (var argument in rest)
         {
@@ -19,6 +20,9 @@ internal static class RepairCommand
             {
                 case "--apply":
                     apply = true;
+                    break;
+                case "--tokens":
+                    tokens = true;
                     break;
                 default:
                     stderr.WriteLine($"error: unexpected argument '{argument}'");
@@ -42,6 +46,12 @@ internal static class RepairCommand
                 ? EngramDatabase.OpenInitialized(home)
                 : EngramDatabase.Open(home);
 
+            if (tokens)
+            {
+                RunTokensOnly(connection, home, apply, stdout);
+                return 0;
+            }
+
             var report = StoreRepairer.Repair(connection, home, apply, DateTimeOffset.UtcNow);
 
             Print(report, home, stdout);
@@ -55,6 +65,55 @@ internal static class RepairCommand
         }
     }
 
+    /// <summary>
+    /// <c>--tokens</c> rebuilds only <c>fact_token</c> — no snapshot, no WAL checkpoint, no
+    /// VACUUM, no FTS rebuild, no path re-derivation, no salience deletion. It exists so the
+    /// session-start maintenance child (<see cref="MaintenanceLauncher"/>) can keep the overlap
+    /// lane current for a tokenizer bump without paying for a whole-store repair on every
+    /// session — the ordinary <c>--apply</c> path below still does that in full.
+    /// </summary>
+    /// <remarks>
+    /// It reads the readiness stamp and nothing else. Row-level desync detection —
+    /// <c>CountMissing</c> and <c>CountExtra</c>, which scan the whole token table — belongs to
+    /// the full <c>repair</c> verb, which someone runs when they suspect a problem. Running it
+    /// here instead would put an unbounded scan on the session-start path, which is the exact
+    /// cost this mode exists to avoid, and it is where the FTS detector already sits.
+    /// </remarks>
+    private static void RunTokensOnly(SqliteConnection connection, EngramHome home, bool apply, TextWriter stdout)
+    {
+        var liveFacts = Scalar(connection, "SELECT count(*) FROM fact WHERE valid_to IS NULL;");
+        var needsRebuild = !FactTokenIndex.IsReady(connection);
+
+        var rebuilt = false;
+        if (apply && needsRebuild)
+        {
+            using var transaction = EngramDatabase.BeginWrite(connection);
+            FactTokenIndex.Rebuild(connection, transaction);
+            transaction.Commit();
+            rebuilt = true;
+        }
+
+        stdout.WriteLine(home.DatabasePath);
+        stdout.WriteLine(needsRebuild
+            ? $"  tokens: unbuilt or stale — {(rebuilt ? string.Empty : "would be ")}rebuilt from the {Count(liveFacts, "live fact")}"
+            : $"  tokens: in sync — {Count(liveFacts, "live fact")} indexed");
+
+        if (!apply)
+        {
+            stdout.WriteLine();
+            stdout.WriteLine(needsRebuild
+                ? "Dry run only — nothing was written. Re-run with --apply --tokens to build it."
+                : "Dry run only — nothing needs rebuilding.");
+        }
+    }
+
+    private static int Scalar(SqliteConnection connection, string sql)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        return (int)(long)command.ExecuteScalar()!;
+    }
+
     private static void Print(RepairReport report, EngramHome home, TextWriter stdout)
     {
         stdout.WriteLine(home.DatabasePath);
@@ -64,6 +123,10 @@ internal static class RepairCommand
         stdout.WriteLine(report.FtsNeedsRebuild
             ? $"  fts: {Describe(report)} — {verb}rebuilt from the {Count(report.LiveFacts, "live fact")}"
             : $"  fts: in sync — {Count(report.LiveFacts, "live fact")} indexed");
+
+        stdout.WriteLine(report.TokenIndexNeedsRebuild
+            ? $"  tokens: unbuilt or stale — {verb}rebuilt from the {Count(report.LiveFacts, "live fact")}"
+            : $"  tokens: in sync — {Count(report.LiveFacts, "live fact")} indexed");
 
         stdout.WriteLine(report.PathsDrifted > 0
             ? $"  paths: {Count(report.PathsDrifted, "fact")} disagree{(report.PathsDrifted == 1 ? "s" : string.Empty)} "

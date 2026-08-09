@@ -20,7 +20,7 @@ namespace Engram.Core;
 /// </remarks>
 public static class EngramDatabase
 {
-    public const int SchemaVersion = 3;
+    public const int SchemaVersion = 4;
 
     public const int BusyTimeoutMilliseconds = 5000;
 
@@ -257,6 +257,33 @@ public static class EngramDatabase
             // from either starting point.
             RebuildFactFts(connection);
             WriteMeta(connection, null, "schema_version", "3");
+        }
+
+        if (from < 4)
+        {
+            // Version 4 adds fact_token, the literal-token overlap lane. DROP IF EXISTS first: the
+            // table is derived state under D8 — it holds no authored belief, only a recomputation
+            // of fact and entity, so dropping and rebuilding it destroys nothing. That is also why
+            // this is safe to do unconditionally rather than reason about which starting shape the
+            // store had: a downgrade fixture that already has the table from a fresher schema
+            // converges to the current one either way.
+            Execute(
+                connection,
+                null,
+                """
+                DROP TABLE IF EXISTS fact_token;
+
+                CREATE TABLE fact_token (
+                  token   TEXT    NOT NULL,
+                  fact_id INTEGER NOT NULL REFERENCES fact(id) ON DELETE CASCADE,
+                  PRIMARY KEY (token, fact_id)
+                ) WITHOUT ROWID;
+
+                CREATE INDEX ix_fact_token_fact ON fact_token(fact_id);
+                """);
+
+            FactTokenIndex.Rebuild(connection);
+            WriteMeta(connection, null, "schema_version", "4");
         }
     }
 

@@ -13,11 +13,23 @@ public sealed record RepairReport(
     int OrphanSalience,
     long WalBytes,
     bool Vacuumed,
-    string? SnapshotName)
+    string? SnapshotName,
+    int TokenMissing,
+    int TokenExtra,
+    bool TokenStale,
+    bool TokenIndexRebuilt)
 {
     public bool FtsNeedsRebuild => FtsMissing > 0 || FtsExtra > 0 || FtsCorrupt;
 
-    public bool AnythingToFix => FtsNeedsRebuild || PathsDrifted > 0 || OrphanSalience > 0;
+    /// <summary>
+    /// <see cref="TokenStale"/> catches an unbuilt or version-behind table; <see
+    /// cref="TokenMissing"/> and <see cref="TokenExtra"/> catch the two ways call-site
+    /// maintenance can desync it even while the stamp still reads current — a missed <see
+    /// cref="FactTokenIndex.Add"/> or <see cref="FactTokenIndex.Remove"/>.
+    /// </summary>
+    public bool TokenIndexNeedsRebuild => TokenMissing > 0 || TokenExtra > 0 || TokenStale;
+
+    public bool AnythingToFix => FtsNeedsRebuild || PathsDrifted > 0 || OrphanSalience > 0 || TokenIndexNeedsRebuild;
 }
 
 /// <summary>
@@ -99,6 +111,10 @@ public static class StoreRepairer
         var walPath = home.DatabasePath + "-wal";
         var walBytes = File.Exists(walPath) ? new FileInfo(walPath).Length : 0;
 
+        var tokenMissing = FactTokenIndex.CountMissing(connection);
+        var tokenExtra = FactTokenIndex.CountExtra(connection);
+        var tokenStale = !FactTokenIndex.IsReady(connection);
+
         var report = new RepairReport(
             Applied: false,
             liveFacts,
@@ -110,7 +126,11 @@ public static class StoreRepairer
             orphanSalience,
             walBytes,
             Vacuumed: false,
-            SnapshotName: null);
+            SnapshotName: null,
+            tokenMissing,
+            tokenExtra,
+            tokenStale,
+            TokenIndexRebuilt: false);
 
         if (!apply)
         {
@@ -147,6 +167,11 @@ public static class StoreRepairer
                 EngramDatabase.RebuildFactFts(connection, transaction);
             }
 
+            if (report.TokenIndexNeedsRebuild)
+            {
+                FactTokenIndex.Rebuild(connection, transaction);
+            }
+
             transaction.Commit();
         }
 
@@ -159,6 +184,7 @@ public static class StoreRepairer
             FtsRebuilt = report.FtsNeedsRebuild,
             Vacuumed = true,
             SnapshotName = Path.GetFileName(snapshot.Path),
+            TokenIndexRebuilt = report.TokenIndexNeedsRebuild,
         };
     }
 
