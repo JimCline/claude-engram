@@ -92,7 +92,17 @@ database costs **1.0–1.5 ms**, measured by A/B-ing `probe` against homes with 
 `engram.db` — it skips the store when the file is absent, so the difference is the open. The
 2.1–2.4 ms that `session-start` and `user-prompt` add over the same floor is that open *plus
 each hook's own work*; charging all of it to the open, as this file previously did, overstates
-it. So the rule does not rest on the arithmetic — an opening `file-touched` would still fit at
+it. **`user-prompt` still holds that; `session-start` does not, and by a wide margin.** Measured
+on the published binary against a `probe` floor of ~11.6 ms: `user-prompt` and `file-touched` sit
+*at* the floor, while `session-start` costs **61 ms at 5,308 live facts and 93 ms at 50,097** —
+and 72 / 149 ms before the fork placement below was fixed. The corpus-proportional part is the
+primer's `FactCatalog.ReadLongTerm`, which reads every live fact to print a count, a five-topic
+breakdown and two example bodies: `subagent-start` isolates it at **+11 ms at 5,308 and +76 ms at
+50,097**, since it builds the same primer and spawns nothing. That is D58's floor, still being
+paid, on every session start and every subagent start — the one place recall's O(corpus) read
+survived D60 — and replacing it with SQL aggregates is open work, not done. Nothing here breaches
+`file-touched`'s 10 ms rule, which is about that hook alone. So the rule does not rest on the
+arithmetic — an opening `file-touched` would still fit at
 p50. It rests on the word *unconditionally*. Under an indexer-shaped writer committing
 back-to-back chunks this hook holds p50 9.29 ms and grows no tail, because a hook that never
 opens the database cannot wait on a lock; one that opens can, and `busy_timeout` is 5000 ms
@@ -273,8 +283,21 @@ database copied with `cp` was measured here to yield not a stale file but an unu
 `fact` table at all because everything was still in the log. Migrations snapshot unconditionally,
 because a migration is the only thing Engram's own code does that rewrites structure rather than
 appending to it, and it runs unattended on open (D31). Session start spawns `backup take --if-due`
-detached: +2.0 ms mean, and the snapshot is skipped entirely unless the fingerprint of authored
-truth actually moved, so an idle day costs nothing.
+detached, and the snapshot is skipped entirely unless the fingerprint of authored truth actually
+moved, so an idle day costs nothing.
+
+**What that fork costs depends on when it happens, so it happens before the catalog read.** The
+`+2.0 ms mean` once recorded for that spawn is not what it costs today: `fork(2)` copies the
+parent's page tables, and `MaintenanceLauncher.Spawn` used to run *after* the primer had read every
+live fact into the parent. Measured as a controlled pair of published binaries built either side of
+moving one statement, arms alternated, one arm run against itself to calibrate: `session-start`
+goes **148.9 → 92.5 ms at 50,097 live facts** (noise 3.2) and **71.7 → 61.1 ms at 5,308** (noise
+0.5), and the saving grows with the corpus because the thing being copied does. The consequence to
+know before reordering it back: the primer's telemetry record is now appended *after* the fork, so
+it can collide with the child's own records — measured at **zero lost and zero torn across 160
+session starts**, because every caller but `file-touched` passes a 500 ms retry budget and retries
+rather than drops (D56). This is a placement fix, not the fix: the parent is still large because
+the primer still reads the whole catalog.
 
 **A snapshot restores; the journal survives.** `backups/facts.jsonl` is every fact in plain text,
 rewritten whole and atomically alongside each snapshot. A `.db` snapshot only restores into the

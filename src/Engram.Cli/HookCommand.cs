@@ -234,27 +234,32 @@ internal static class HookCommand
     private static int RunSessionStart(EngramHome home, TextWriter stdout, HookStdinInput? payload)
     {
         var sessionId = ResolveSessionId(payload);
-        var facts = LongTermFacts(home);
-        var primer = PrimerBuilder.Build(facts, Precedence(home));
-
-        try
-        {
-            Telemetry.Append(home, PrimerRecord(sessionId, TelemetryEventKind.SessionStart, facts, primer));
-        }
-        catch
-        {
-        }
 
         // Fire and forget, and swallowing everything is deliberate: a session must start even if
         // no housekeeping can run. The child decides for itself whether each job is due, so this
         // costs a fork whether or not it ends up doing any work — cheaper than reading config
         // and fingerprinting the store here to find out, which is the work itself.
+        //
+        // Before the catalog read, not after, and that ordering is measured rather than tidy:
+        // fork(2) copies the parent's page tables, so what the fork costs depends on how much
+        // the parent is holding when it happens, and the read below holds every live fact.
         try
         {
             if (Environment.ProcessPath is { Length: > 0 } executable)
             {
                 MaintenanceLauncher.Spawn(executable, home.Root, Directory.GetCurrentDirectory());
             }
+        }
+        catch
+        {
+        }
+
+        var facts = LongTermFacts(home);
+        var primer = PrimerBuilder.Build(facts, Precedence(home));
+
+        try
+        {
+            Telemetry.Append(home, PrimerRecord(sessionId, TelemetryEventKind.SessionStart, facts, primer));
         }
         catch
         {
