@@ -230,17 +230,23 @@ public static class RecallEngine
     /// <c>lexicalRanks</c>; a caller that has a connection and does not pass them is silently
     /// running the ranker that D30 measured blind to plurals.
     /// </remarks>
-    public static RecallPackResult Pack(string query, IReadOnlyList<CannedFact> facts, int budgetTokens) =>
+    /// <remarks>
+    /// Demoted from the production ranker to internal test-support (spec ruling 13/§3.4): SQLite
+    /// now ranks and bounds (<see cref="RecallRanker"/>), and this in-memory path survives only as
+    /// the equivalence harness's oracle. <c>InternalsVisibleTo</c> keeps it reachable from the test
+    /// assemblies.
+    /// </remarks>
+    internal static RecallPackResult Pack(string query, IReadOnlyList<CannedFact> facts, int budgetTokens) =>
         Pack(query, facts, [], [], budgetTokens);
 
-    public static RecallPackResult Pack(
+    internal static RecallPackResult Pack(
         string query,
         IReadOnlyList<CannedFact> facts,
         IReadOnlyList<SessionFact> currentSessionFacts,
         int budgetTokens) =>
         Pack(query, facts, currentSessionFacts, [], budgetTokens);
 
-    public static RecallPackResult Pack(
+    internal static RecallPackResult Pack(
         string query,
         IReadOnlyList<CannedFact> facts,
         IReadOnlyList<SessionFact> currentSessionFacts,
@@ -248,7 +254,7 @@ public static class RecallEngine
         int budgetTokens) =>
         Pack(query, facts, currentSessionFacts, priorSessionFacts, EmptyRanks, budgetTokens);
 
-    public static RecallPackResult Pack(
+    internal static RecallPackResult Pack(
         string query,
         IReadOnlyList<CannedFact> facts,
         IReadOnlyList<SessionFact> currentSessionFacts,
@@ -257,7 +263,7 @@ public static class RecallEngine
         int budgetTokens) =>
         Pack(query, facts, currentSessionFacts, priorSessionFacts, lexicalRanks, EmptyRanks, budgetTokens);
 
-    public static RecallPackResult Pack(
+    internal static RecallPackResult Pack(
         string query,
         IReadOnlyList<CannedFact> facts,
         IReadOnlyList<SessionFact> currentSessionFacts,
@@ -323,7 +329,7 @@ public static class RecallEngine
     /// The point of D21, in one method: the ordering and the budget below are the ones recall
     /// runs, not a reconstruction of them, so a candidate reported as fourth is fourth.
     /// </remarks>
-    public static RecallExplanation Explain(
+    internal static RecallExplanation Explain(
         string query,
         IReadOnlyList<CannedFact> facts,
         IReadOnlyList<SessionFact> currentSessionFacts,
@@ -332,7 +338,7 @@ public static class RecallEngine
         Explain(query, facts, currentSessionFacts, priorSessionFacts, EmptyRanks, budgetTokens);
 
     /// <inheritdoc cref="Explain(string, IReadOnlyList{CannedFact}, IReadOnlyList{SessionFact}, IReadOnlyList{SessionFact}, int)"/>
-    public static RecallExplanation Explain(
+    internal static RecallExplanation Explain(
         string query,
         IReadOnlyList<CannedFact> facts,
         IReadOnlyList<SessionFact> currentSessionFacts,
@@ -341,7 +347,7 @@ public static class RecallEngine
         int budgetTokens) =>
         Explain(query, facts, currentSessionFacts, priorSessionFacts, lexicalRanks, EmptyRanks, budgetTokens);
 
-    public static RecallExplanation Explain(
+    internal static RecallExplanation Explain(
         string query,
         IReadOnlyList<CannedFact> facts,
         IReadOnlyList<SessionFact> currentSessionFacts,
@@ -498,7 +504,7 @@ public static class RecallEngine
     /// further down. Packing tightly would reorder the digest by length, and a model reading a
     /// ranked list is entitled to assume the order means something.
     /// </remarks>
-    private static int ApplyBudget(List<RecallCandidate> candidates, int budgetTokens)
+    internal static int ApplyBudget(List<RecallCandidate> candidates, int budgetTokens)
     {
         var tokensUsed = 0;
         for (var i = 0; i < candidates.Count; i++)
@@ -549,7 +555,7 @@ public static class RecallEngine
     /// Takes the fields rather than the entry holding them because <c>Entry</c> is file-local and
     /// C# forbids such a type in the signature of a member of a non-file-local one (CS9051).
     /// </remarks>
-    private static string FormatLine(
+    internal static string FormatLine(
         FactOrigin origin,
         CannedFact? longTerm,
         SessionFact? session,
@@ -567,7 +573,7 @@ public static class RecallEngine
     /// the same line, and picking the wrong handle to expand reports "1 version" — which reads
     /// exactly like "never changed". Marking the thread head turns that from luck into a lookup.
     /// </summary>
-    private static string FormatFactLine(CannedFact fact) =>
+    internal static string FormatFactLine(CannedFact fact) =>
         fact.Versions > 1
             ? $"[{fact.Id}] {fact.Body} ({fact.Scope} · {fact.AgeDays}d · v{fact.Versions})"
             : $"[{fact.Id}] {fact.Body} ({fact.Scope} · {fact.AgeDays}d)";
@@ -585,7 +591,7 @@ public static class RecallEngine
     /// line above it already says. Both halves are pinned by tests, because the cheap reading of
     /// this — "session notes are never superseded" — is false and would justify the wrong fix.
     /// </remarks>
-    private static string FormatSessionFactLine(SessionFact fact)
+    internal static string FormatSessionFactLine(SessionFact fact)
     {
         var scope = string.IsNullOrWhiteSpace(fact.Agent) ? "session" : $"session · {fact.Agent}";
         return $"[{FactCatalog.HandleFor(fact.FactId)}] {fact.Statement} ({scope})";
@@ -594,7 +600,7 @@ public static class RecallEngine
     // The session discriminator sits in the annotation rather than inside the handle, where
     // it used to read "[s001@p1]". A handle is what a tool takes back; overloading it with
     // grouping meant the string the model saw was not the string engram_forget accepts.
-    private static string FormatPriorSessionFactLine(SessionFact fact, string discriminator)
+    internal static string FormatPriorSessionFactLine(SessionFact fact, string discriminator)
     {
         var scope = string.IsNullOrWhiteSpace(fact.Agent)
             ? $"session · {discriminator} · {fact.AgeDays}d"
@@ -602,13 +608,13 @@ public static class RecallEngine
         return $"[{FactCatalog.HandleFor(fact.FactId)}] {fact.Statement} ({scope})";
     }
 
-    private static string GapsMessage(string query, RecallCoverage coverage) => coverage switch
+    internal static string GapsMessage(string query, RecallCoverage coverage) => coverage switch
     {
         RecallCoverage.None => $"no facts matched \"{query}\" — discover and engram_remember what you find",
         _ => $"only partial matches for \"{query}\" — verify before relying on this",
     };
 
-    private static HashSet<string> TokenizeQuery(string query)
+    internal static HashSet<string> TokenizeQuery(string query)
     {
         var terms = Tokenizer.Tokenize(query);
 

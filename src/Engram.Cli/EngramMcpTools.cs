@@ -31,37 +31,23 @@ public sealed class EngramMcpTools
         var settings = RetrievalSettings.Read(config);
         var budget = budget_tokens is > 0 ? budget_tokens.Value : settings.BudgetTokens;
 
-        // One connection, one temporal model. Recall used to assemble its idea of memory at
-        // this call site from three stores — a JSON directory, a JSONL file per session, and
-        // the database — which is three chances for them to disagree about what is still
-        // believed. Every tier below is now a partition of one live-fact read.
+        // One connection, one temporal model, one statement: SQLite ranks and bounds every tier —
+        // long-term, current session, prior session — from a single atomic read (D59). Nothing
+        // O(corpus) crosses into C# in either direction.
         var now = DateTimeOffset.UtcNow;
         using var connection = EngramDatabase.OpenInitialized(home);
 
-        var longTermFacts = FactCatalog.ReadLongTerm(connection, now);
-        var (currentSessionFacts, priorSessionFacts) = SessionFacts.Read(connection, session.Value, now);
-
-        // The lexical lane, drawn to seed_k and fused with term overlap. Without it recall cannot
-        // match a plural against a singular, because the overlap lane compares literal tokens
-        // while fact_fts stems (D30).
-        var lexicalRanks = FactStore.SearchRanked(connection, query, settings.SeedK)
-            .ToDictionary(hit => hit.FactId, hit => hit.Rank);
+        var currentSessionId = SessionStore.FindSession(connection, session.Value);
 
         // The same lane `explain` reports, so what it describes is what ran here. It costs nothing
         // when embeddings are off — the factory refuses before any request — and it can never fail
-        // this call: every way it can stop comes back as a reason and an empty ranking, leaving
-        // recall exactly as lexical as it was before.
-        var vectorRanks = VectorLane.Run(
-            connection,
-            home,
-            EmbeddingSettings.Read(config),
-            query,
-            Environment.GetEnvironmentVariable,
-            settings.SeedK,
-            local).Ranks;
+        // this call: every way it can stop comes back as a reason and no embedding, leaving recall
+        // exactly as lexical as it was before. The search itself now happens inside the ranking
+        // statement (RecallRanker), so only the embedding — not a result set — crosses back into C#.
+        var vectorQuery = VectorLane.PrepareQuery(
+            connection, home, EmbeddingSettings.Read(config), query, Environment.GetEnvironmentVariable, local);
 
-        var result = RecallEngine.Pack(
-            query, longTermFacts, currentSessionFacts, priorSessionFacts, lexicalRanks, vectorRanks, budget);
+        var result = RecallRanker.Pack(connection, query, budget, settings.SeedK, currentSessionId, now, vectorQuery);
 
         if (homeState.Initialized)
         {

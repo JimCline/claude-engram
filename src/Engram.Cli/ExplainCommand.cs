@@ -192,18 +192,13 @@ internal static class ExplainCommand
 
     private static void WriteMissed(RetrievalExplanation explanation, TextWriter stdout)
     {
-        if (explanation.Missed.Count == 0)
+        if (explanation.MissedCount == 0)
         {
             return;
         }
 
         stdout.WriteLine();
-        stdout.WriteLine("found by a lane the ranker does not read");
-        foreach (var missed in explanation.Missed)
-        {
-            var score = missed.Score.ToString("0.00", CultureInfo.InvariantCulture);
-            stdout.WriteLine($"  {missed.Handle.PadRight(8)}  {missed.Lane} #{missed.Rank} ({score})  {Trim(missed.Body)}");
-        }
+        stdout.WriteLine($"{explanation.MissedCount.ToString(CultureInfo.InvariantCulture)} more candidate(s) matched, below the display limit");
     }
 
     private static string Position(int? rank) =>

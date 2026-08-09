@@ -31,15 +31,6 @@ public sealed record LaneReport(string Name, LaneState State, string Detail);
 /// <summary>A vector hit, with its position.</summary>
 public sealed record VectorHit(long FactId, double Distance, int Rank);
 
-/// <summary>
-/// A fact a lane found that the ranker never considered.
-/// </summary>
-/// <remarks>
-/// The most useful row in the report. "Why didn't it find that?" has an answer here that no
-/// other output can give: it <i>was</i> found, by a lane whose results nothing reads.
-/// </remarks>
-public sealed record MissedFact(long FactId, string Handle, string Body, string Lane, int Rank, double Score);
-
 /// <summary>One candidate, with every lane's opinion of it attached.</summary>
 public sealed record ExplainedCandidate(
     RecallCandidate Candidate,
@@ -51,7 +42,7 @@ public sealed record ExplainedCandidate(
 public sealed record RetrievalExplanation(
     RecallExplanation Recall,
     IReadOnlyList<ExplainedCandidate> Candidates,
-    IReadOnlyList<MissedFact> Missed,
+    int MissedCount,
     IReadOnlyList<LaneReport> Lanes)
 {
     public int PackedCount => Candidates.Count(c => c.Candidate.Packed);
@@ -98,34 +89,34 @@ public static class RetrievalExplainer
         ArgumentNullException.ThrowIfNull(environment);
 
         var settings = RetrievalSettings.Read(ConfigFile.Load(home.ConfigPath));
-        var longTerm = FactCatalog.ReadLongTerm(connection, now);
-        var (currentSession, priorSession) = SessionFacts.Read(connection, sessionExternalId, now);
+        var currentSessionId = sessionExternalId is { Length: > 0 }
+            ? SessionStore.FindSession(connection, sessionExternalId)
+            : null;
 
         var lanes = new List<LaneReport>();
+
+        // Prepared once: RecallRanker's own KNN search runs inside the ranking statement (D59), so
+        // the embedding computed here is bound straight into it. ReadVector's own VectorIndex.Search
+        // below is display-only and reuses this embedding rather than asking the provider for a
+        // second one, which would double an explain call's most expensive step.
+        var embedding = EmbeddingSettings.Read(ConfigFile.Load(home.ConfigPath));
+        var vectorQuery = VectorLane.PrepareQuery(connection, home, embedding, query, environment, local);
+
         var lexical = ReadLexical(connection, query, settings.SeedK, lanes);
 
         // Ahead of the fusion, not after it: these ranks are an input to the ranking this method
         // exists to describe. Reporting a lane that ran too late to affect the result would be
         // exactly the drift D30 forbids. The lane order printed below is unchanged — the overlap
         // report is still inserted at the front once its count is known.
-        var (vector, vectorSpace) = ReadVector(connection, home, query, environment, settings.SeedK, lanes, local);
+        var (vector, vectorSpace) = ReadVector(connection, vectorQuery, settings.SeedK, lanes);
 
-        var recall = RecallEngine.Explain(
-            query,
-            longTerm,
-            currentSession,
-            priorSession,
-            lexical.ToDictionary(pair => pair.Key, pair => pair.Value.Rank),
-            vector.ToDictionary(pair => pair.Key, pair => pair.Value.Rank),
-            budgetTokens);
+        var outcome = RecallRanker.Rank(
+            connection, query, budgetTokens, settings.SeedK, currentSessionId, now, vectorQuery);
 
-        lanes.Insert(0, new LaneReport(
-            "term overlap",
-            LaneState.Contributing,
-            $"{Count(recall.Candidates.Count(c => c.OverlapRank is not null))} over subject and body, matched literally"));
+        lanes.Insert(0, OverlapLaneReport(outcome));
 
         var salience = ReadSalience(connection, lanes);
-        var tiers = ReadTiers(connection, recall.Candidates, displayLimit);
+        var tiers = ReadTiers(connection, outcome.Candidates, displayLimit);
 
         lanes.Add(new LaneReport(
             "RRF fusion",
@@ -133,7 +124,7 @@ public static class RetrievalExplainer
             $"k={RecallEngine.RrfK}, seed_k={settings.SeedK} — this is the order engram_recall returns"
                 + (vectorSpace is null ? ", over the two lexical lanes" : $", over three lanes including {vectorSpace}")));
 
-        var explained = recall.Candidates
+        var explained = outcome.Candidates
             .Select(candidate => new ExplainedCandidate(
                 candidate,
                 candidate.FactId is { } id && tiers.TryGetValue(id, out var tier) ? tier : null,
@@ -142,15 +133,36 @@ public static class RetrievalExplainer
                 candidate.FactId is { } sid && salience.TryGetValue(sid, out var score) ? score : null))
             .ToList();
 
-        var considered = recall.Candidates
-            .Where(c => c.FactId is not null)
-            .Select(c => c.FactId!.Value)
-            .ToHashSet();
+        var missedCount = MissedCount(outcome, displayLimit);
 
-        var missed = ReadMissed(connection, lexical, vector, considered);
+        var recall = new RecallExplanation(
+            query,
+            outcome.QueryTerms,
+            outcome.DroppedTerms,
+            outcome.Candidates,
+            outcome.BudgetTokens,
+            outcome.TokensUsed,
+            outcome.Coverage);
 
-        return new RetrievalExplanation(recall, explained, missed, lanes);
+        return new RetrievalExplanation(recall, explained, missedCount, lanes);
     }
+
+    /// <summary>
+    /// The "term overlap" lane row — <see cref="LaneState.Contributing"/> when the token index is
+    /// ready, otherwise the same wording <see cref="RecallRanker"/> puts in the RECALL digest's
+    /// availability note (spec §2.0.1), so the two surfaces describe one state with one message.
+    /// </summary>
+    private static LaneReport OverlapLaneReport(RankOutcome outcome) => outcome.OverlapState switch
+    {
+        FactTokenIndexState.Ready => new LaneReport(
+            "term overlap",
+            LaneState.Contributing,
+            $"{Count(outcome.Candidates.Count(c => c.OverlapRank is not null))} over subject and body, matched literally"),
+        FactTokenIndexState.Unbuilt => new LaneReport(
+            "term overlap", LaneState.Unbuilt, RecallRanker.OverlapUnavailableDetail(outcome.OverlapState)!),
+        _ => new LaneReport(
+            "term overlap", LaneState.Unavailable, RecallRanker.OverlapUnavailableDetail(outcome.OverlapState)!),
+    };
 
     private static string Count(int hits) =>
         hits == 1 ? "1 hit" : hits.ToString(CultureInfo.InvariantCulture) + " hits";
@@ -173,47 +185,54 @@ public static class RetrievalExplainer
     }
 
     /// <summary>
-    /// Reports the vector lane, which <see cref="VectorLane"/> runs.
+    /// Reports the vector lane, from a query already embedded by <see cref="VectorLane.PrepareQuery"/>.
     /// </summary>
     /// <remarks>
-    /// The query itself lives there rather than here because recall runs it too, and D30 makes
-    /// this method's whole purpose describing the ranker that actually runs. A private copy would
-    /// have gone stale the first time one side was tuned and the other was not.
+    /// The search itself is display-only here: <see cref="RecallRanker"/> runs the authoritative KNN
+    /// search inside the ranking statement (D59), and D30 makes this method's whole purpose
+    /// describing the ranker that actually runs. Re-embedding the query for this call would be a
+    /// second implementation of nothing — the ranks it would produce are the ranker's own — while
+    /// still paying the provider's cost a second time, so the embedding is shared and only the
+    /// search (a plain in-process SQL query) is repeated.
     /// </remarks>
     private static (Dictionary<long, VectorHit> Hits, EmbeddingSpace? Space) ReadVector(
         SqliteConnection connection,
-        EngramHome home,
-        string query,
-        Func<string, string?> environment,
+        VectorLaneQuery prepared,
         int seedK,
-        List<LaneReport> lanes,
-        LocalRuntime? local)
+        List<LaneReport> lanes)
     {
         const string Name = "vector (sqlite-vec)";
-        var embedding = EmbeddingSettings.Read(ConfigFile.Load(home.ConfigPath));
-        var result = VectorLane.Run(connection, home, embedding, query, environment, seedK, local);
 
-        if (result.State is not VectorLaneState.Queried)
+        if (prepared.State is not VectorLaneState.Queried)
         {
             lanes.Add(new LaneReport(
                 Name,
-                result.State == VectorLaneState.Off ? LaneState.Off : LaneState.Unavailable,
-                result.Reason));
+                prepared.State == VectorLaneState.Off ? LaneState.Off : LaneState.Unavailable,
+                prepared.Reason));
             return (new Dictionary<long, VectorHit>(), null);
+        }
+
+        IReadOnlyList<VectorMatch> matches;
+        try
+        {
+            matches = VectorIndex.Search(connection, prepared.Embedding!, seedK);
+        }
+        catch (SqliteException exception)
+        {
+            lanes.Add(new LaneReport(Name, LaneState.Unavailable, $"the index would not answer: {exception.Message}"));
+            return (new Dictionary<long, VectorHit>(), prepared.Space);
         }
 
         lanes.Add(new LaneReport(
             Name,
-            result.Matches.Count > 0 ? LaneState.Contributing : LaneState.Unavailable,
-            result.Matches.Count > 0
-                ? $"{result.Matches.Count} hits in {result.Space}, nearest {result.Matches[0].Distance.ToString("0.000", CultureInfo.InvariantCulture)}, fused into the ranking"
-                : $"{result.Space} is queryable and empty for this query"));
+            matches.Count > 0 ? LaneState.Contributing : LaneState.Unavailable,
+            matches.Count > 0
+                ? $"{matches.Count} hits in {prepared.Space}, nearest {matches[0].Distance.ToString("0.000", CultureInfo.InvariantCulture)}, fused into the ranking"
+                : $"{prepared.Space} is queryable and empty for this query"));
 
         return (
-            result.Matches
-                .Select((m, i) => new VectorHit(m.FactId, m.Distance, i + 1))
-                .ToDictionary(h => h.FactId),
-            result.Space);
+            matches.Select((m, i) => new VectorHit(m.FactId, m.Distance, i + 1)).ToDictionary(h => h.FactId),
+            prepared.Space);
     }
 
     private static Dictionary<long, double> ReadSalience(SqliteConnection connection, List<LaneReport> lanes)
@@ -288,66 +307,24 @@ public static class RetrievalExplainer
     }
 
     /// <summary>
-    /// Facts a lane ranked that the ranker never scored.
+    /// How many candidates the ranker matched but that fall below the display bound (spec §2.0.2
+    /// ruling 2).
     /// </summary>
     /// <remarks>
-    /// Bodies are read here rather than carried down from the lane queries because a lane returns
-    /// ids: the join has to happen somewhere, and doing it once at the end reads only the handful
-    /// of rows that turned out to be interesting.
+    /// This replaces a per-fact list that compared the wrong sets after D59: every lane hit — overlap
+    /// unbounded, lexical and vector to <c>seed_k</c> — becomes a row in the ranking statement's own
+    /// <c>candidates</c> CTE before the token-budget <c>LIMIT</c> ever applies, so nothing a lane
+    /// finds can be structurally invisible to the ranker the way a malformed <c>/sessions/</c> path
+    /// once could under the object ranker; a list built by diffing display-only lexical/vector hits
+    /// against the ranker's own bounded output would have misreported ordinary truncation as "a lane
+    /// the ranker does not read". But reporting nothing at all is a different defect: D30 makes
+    /// <c>explain</c> a promise about what actually happened, and a silently-empty section reads as
+    /// "nothing was missed" when the truth is "this is no longer computed that way". The statement
+    /// already computes <see cref="RankOutcome.MatchedTotal"/> as <c>COUNT(*) OVER ()</c> over every
+    /// scored candidate, for D44 — reusing it here to report the honest count costs nothing further.
     /// </remarks>
-    private static List<MissedFact> ReadMissed(
-        SqliteConnection connection,
-        Dictionary<long, LexicalHit> lexical,
-        Dictionary<long, VectorHit> vector,
-        HashSet<long> considered)
-    {
-        var missed = new List<MissedFact>();
-
-        foreach (var (id, hit) in lexical)
-        {
-            if (!considered.Contains(id))
-            {
-                missed.Add(new MissedFact(id, FactCatalog.HandleFor(id), "", "fts5", hit.Rank, hit.Bm25));
-            }
-        }
-
-        foreach (var (id, hit) in vector)
-        {
-            if (!considered.Contains(id) && !lexical.ContainsKey(id))
-            {
-                missed.Add(new MissedFact(id, FactCatalog.HandleFor(id), "", "vector", hit.Rank, hit.Distance));
-            }
-        }
-
-        if (missed.Count == 0)
-        {
-            return missed;
-        }
-
-        var bodies = ReadBodies(connection, missed.Select(m => m.FactId).ToList());
-
-        return missed
-            .Select(m => m with { Body = bodies.TryGetValue(m.FactId, out var body) ? body : "(unreadable)" })
-            .OrderBy(m => m.Lane, StringComparer.Ordinal)
-            .ThenBy(m => m.Rank)
-            .ToList();
-    }
-
-    private static Dictionary<long, string> ReadBodies(SqliteConnection connection, List<long> ids)
-    {
-        var bodies = new Dictionary<long, string>();
-
-        using var command = connection.CreateCommand();
-        command.CommandText = $"SELECT id, body FROM fact WHERE id IN ({Placeholders(command, ids)});";
-
-        using var reader = command.ExecuteReader();
-        while (reader.Read())
-        {
-            bodies[reader.GetInt64(0)] = reader.GetString(1);
-        }
-
-        return bodies;
-    }
+    private static int MissedCount(RankOutcome outcome, int displayLimit) =>
+        Math.Max(0, outcome.MatchedTotal - displayLimit);
 
     /// <summary>Binds each id and returns the <c>$p0, $p1, …</c> list to splice into the SQL.</summary>
     private static string Placeholders(SqliteCommand command, List<long> ids)

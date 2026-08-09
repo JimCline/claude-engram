@@ -32,6 +32,21 @@ public sealed record VectorLaneResult(
 }
 
 /// <summary>
+/// Everything <see cref="VectorLane.Run"/> does before it searches: resolve the embedder, load the
+/// extension, check the index space, embed the query.
+/// </summary>
+/// <remarks>
+/// Exists because <see cref="RecallRanker"/> runs the KNN search itself, inside the ranking
+/// statement (D59's boundary: the search is SQL, not a round trip). Calling <see cref="VectorLane.Run"/>
+/// for that path would perform a second search whose result is thrown away — the query still has to
+/// be embedded in C#, but the nearest-neighbour lookup must not happen twice.
+/// </remarks>
+public sealed record VectorLaneQuery(VectorLaneState State, string Reason, float[]? Embedding, EmbeddingSpace? Space)
+{
+    public static VectorLaneQuery Stopped(VectorLaneState state, string reason) => new(state, reason, null, null);
+}
+
+/// <summary>
 /// The vector lane, as one implementation that both recall and <c>explain</c> call.
 /// </summary>
 /// <remarks>
@@ -74,6 +89,40 @@ public static class VectorLane
         LocalRuntime? local = null,
         HttpClient? client = null)
     {
+        var prepared = PrepareQuery(connection, home, settings, query, environment, local, client);
+        if (prepared.State is not VectorLaneState.Queried)
+        {
+            return VectorLaneResult.Stopped(prepared.State, prepared.Reason);
+        }
+
+        try
+        {
+            var matches = VectorIndex.Search(connection, prepared.Embedding!, seedK);
+            return new VectorLaneResult(VectorLaneState.Queried, "queried", matches, prepared.Space);
+        }
+        catch (SqliteException exception)
+        {
+            // A loaded extension that then refuses a query is rare and worth naming rather than
+            // letting it escape: recall is expected to work without this lane, never to fail with it.
+            return VectorLaneResult.Stopped(
+                VectorLaneState.Unavailable, $"the index would not answer: {exception.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Everything <see cref="Run"/> does short of the KNN search itself: resolve the embedder, load
+    /// the extension, check the index space, embed the query. <see cref="RecallRanker"/> calls this
+    /// so it can bind the embedding into the ranking statement, which does the search in SQL.
+    /// </summary>
+    public static VectorLaneQuery PrepareQuery(
+        SqliteConnection connection,
+        EngramHome home,
+        EmbeddingSettings settings,
+        string query,
+        Func<string, string?> environment,
+        LocalRuntime? local = null,
+        HttpClient? client = null)
+    {
         ArgumentNullException.ThrowIfNull(connection);
         ArgumentNullException.ThrowIfNull(home);
         ArgumentNullException.ThrowIfNull(settings);
@@ -83,14 +132,14 @@ public static class VectorLane
         var resolution = EmbedderFactory.Create(settings, environment, client, local);
         if (!resolution.Resolved)
         {
-            return VectorLaneResult.Stopped(
+            return VectorLaneQuery.Stopped(
                 settings.Provider == EmbeddingProvider.None ? VectorLaneState.Off : VectorLaneState.Unavailable,
                 resolution.Reason);
         }
 
         if (VectorExtension.Load(connection, home.LibDir) is not VectorExtensionState.Loaded and var state)
         {
-            return VectorLaneResult.Stopped(
+            return VectorLaneQuery.Stopped(
                 VectorLaneState.Unavailable,
                 state == VectorExtensionState.NotInstalled
                     ? $"sqlite-vec is not in {home.LibDir}, so the index cannot be queried"
@@ -99,13 +148,13 @@ public static class VectorLane
 
         if (!VectorIndex.Exists(connection) || VectorIndex.ReadSpace(connection) is not { } indexed)
         {
-            return VectorLaneResult.Stopped(VectorLaneState.Unavailable, "no vector index in this store yet");
+            return VectorLaneQuery.Stopped(VectorLaneState.Unavailable, "no vector index in this store yet");
         }
 
         if (indexed != resolution.Embedder!.Space)
         {
             // D18's quiet failure: distances between spaces are real numbers and mean nothing.
-            return VectorLaneResult.Stopped(
+            return VectorLaneQuery.Stopped(
                 VectorLaneState.Unavailable,
                 $"the index holds {indexed} but the configured provider produces {resolution.Embedder.Space} — "
                 + "vectors from different spaces are not comparable, so this lane is not queried");
@@ -122,27 +171,16 @@ public static class VectorLane
         }
         catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or InvalidOperationException)
         {
-            return VectorLaneResult.Stopped(
+            return VectorLaneQuery.Stopped(
                 VectorLaneState.Unavailable, $"the provider did not answer: {exception.Message}");
         }
 
         if (embedded is null)
         {
-            return VectorLaneResult.Stopped(
+            return VectorLaneQuery.Stopped(
                 VectorLaneState.Unavailable, "the provider returned no vector for this query");
         }
 
-        try
-        {
-            var matches = VectorIndex.Search(connection, embedded, seedK);
-            return new VectorLaneResult(VectorLaneState.Queried, "queried", matches, indexed);
-        }
-        catch (SqliteException exception)
-        {
-            // A loaded extension that then refuses a query is rare and worth naming rather than
-            // letting it escape: recall is expected to work without this lane, never to fail with it.
-            return VectorLaneResult.Stopped(
-                VectorLaneState.Unavailable, $"the index would not answer: {exception.Message}");
-        }
+        return new VectorLaneQuery(VectorLaneState.Queried, "queried", embedded, indexed);
     }
 }

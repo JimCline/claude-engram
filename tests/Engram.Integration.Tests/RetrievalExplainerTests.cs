@@ -146,8 +146,8 @@ public class RetrievalExplainerTests
         using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
         Write(connection, "pragma", "Every connection sets its own pragma.");
 
-        Assert.Empty(Explain(sandbox, connection, "pragmas").Missed);
-        Assert.Empty(Explain(sandbox, connection, "pragma").Missed);
+        Assert.Equal(0, Explain(sandbox, connection, "pragmas").MissedCount);
+        Assert.Equal(0, Explain(sandbox, connection, "pragma").MissedCount);
     }
 
     [Fact]
