@@ -2,22 +2,45 @@ namespace Engram.EndToEnd.Tests;
 
 internal static class EndToEndBinary
 {
-    public const string SkipReason = "ENGRAM_TEST_BINARY is not set; skipping end-to-end test that drives the published binary.";
+    public const string SkipReason = "no published binary; skipping end-to-end test. Publish to ./out (or set ENGRAM_TEST_BINARY) to run tier 3.";
 
     /// <summary>
-    /// Set to acknowledge that this run is not exercising the published binary.
+    /// The published binary to drive, from <c>ENGRAM_TEST_BINARY</c> or from the repository's
+    /// conventional <c>./out</c>.
     /// </summary>
     /// <remarks>
-    /// Skipping tier 3 used to be free and running it needed a flag, which is backwards for the
-    /// same reason D49 gives: a default that needs a flag is not a default. The whole point of
-    /// this tier is that a green JIT build says nothing about what ships, so a run that quietly
-    /// drops it must not be reportable as a pass. <see cref="TierThreeCoverageTests"/> is what
-    /// enforces that; this variable is the way to say "I know, I am iterating".
+    /// Falling back to <c>./out/engram</c> is what keeps this tier from needing ceremony: a tree
+    /// that has been published once runs tier 3 on a plain <c>dotnet test</c>, and a tree that has
+    /// not says so and skips. Requiring the variable and failing without it was tried and reverted
+    /// — it turned every inner-loop run into a failure, which is a worse habit to build than the
+    /// one it was guarding against.
     /// </remarks>
-    public const string OptOutVariable = "ENGRAM_SKIP_TIER3";
+    public static string? Path { get; } = Resolve();
 
-    public static string? Path { get; } = Environment.GetEnvironmentVariable("ENGRAM_TEST_BINARY");
+    private static string? Resolve()
+    {
+        if (Environment.GetEnvironmentVariable("ENGRAM_TEST_BINARY") is { Length: > 0 } configured)
+        {
+            return configured;
+        }
 
-    public static bool SkipAcknowledged { get; } =
-        !string.IsNullOrEmpty(Environment.GetEnvironmentVariable(OptOutVariable));
+        // Up from bin/<config>/<tfm>/ to the repository root, which is the directory holding .git.
+        for (var directory = new DirectoryInfo(AppContext.BaseDirectory);
+             directory is not null;
+             directory = directory.Parent)
+        {
+            var candidate = System.IO.Path.Combine(directory.FullName, "out", "engram");
+            if (File.Exists(candidate))
+            {
+                return candidate;
+            }
+
+            if (Directory.Exists(System.IO.Path.Combine(directory.FullName, ".git")))
+            {
+                return null;
+            }
+        }
+
+        return null;
+    }
 }

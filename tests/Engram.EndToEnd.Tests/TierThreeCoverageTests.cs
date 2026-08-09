@@ -1,63 +1,42 @@
 namespace Engram.EndToEnd.Tests;
 
 /// <summary>
-/// A tier-3 run that drove nothing must not be reportable as a pass.
+/// Says, in the test output, whether this run drove a published binary.
 /// </summary>
 /// <remarks>
 /// <para>Every other test here opens with <c>Assert.SkipUnless(EndToEndBinary.Path is not null,
-/// …)</c>, so with the variable unset the whole tier evaporates into the skip count and the
-/// summary line still reads <c>Passed!</c>. That is not hypothetical: a session reported this
-/// suite green three times while 128 of its 161 tests were being skipped, because the summary
-/// counts passes and the skips sit in a column nobody reads. D9 puts this tier here precisely
-/// because CI passing on the JIT build proves nothing about what ships — so the run that skips it
-/// is the run whose result means least, and it was the one that looked cleanest.</para>
+/// …)</c>, so without one the whole tier evaporates into the skip count while the summary line
+/// still reads <c>Passed!</c>. That is not hypothetical: this suite was reported green three times
+/// in one session while 128 of its 161 tests were skipping, which is also how a red test survived
+/// several commits. By D9 this is the tier that says what ships, so the run that drops it is the
+/// run whose result means least — and it was the one that looked cleanest.</para>
 ///
-/// <para>The fix is to invert which side needs a flag, on D49's reasoning: skipping is now the
-/// thing you have to ask for. Unset both variables and this fails with the two commands that
-/// resolve it; set <c>ENGRAM_SKIP_TIER3</c> and it skips like everything else, which is an
-/// acknowledgement rather than an accident.</para>
-///
-/// <para>It deliberately does not check that the binary <i>works</i> — every other test in this
-/// assembly does that, and a second opinion here would just be the first test to fail for
-/// unrelated reasons while claiming to be about coverage.</para>
+/// <para>Failing on an unpublished tree was tried and reverted: it made every inner-loop
+/// <c>dotnet test</c> red, and a check people learn to route around is worth less than no check
+/// (D37, applied to a test rather than to <c>doctor</c>). <see cref="EndToEndBinary"/> falls back
+/// to <c>./out/engram</c> instead, so a published tree needs no ceremony, and what remains here is
+/// a named skip rather than a silent one — the thing to read is the skip count.</para>
 /// </remarks>
 public class TierThreeCoverageTests
 {
     [Fact]
-    public void TheseTestsRanAgainstAPublishedBinary_OrTheSkipWasDeliberate()
+    public void TheseTestsDroveAPublishedBinary()
     {
-        if (EndToEndBinary.Path is not null)
-        {
-            // Not a skip guard — measured, a path that is set but missing does not skip anything,
-            // it fails 128 tests with Win32Exception "No such file or directory" from wherever
-            // each one happened to start a process. This turns that into one line naming the
-            // variable, which is the difference between a typo and a debugging session.
-            Assert.True(
-                File.Exists(EndToEndBinary.Path),
-                $"ENGRAM_TEST_BINARY points at '{EndToEndBinary.Path}', which does not exist. "
-                    + "Publish first; every other failure in this run is downstream of this one.");
-            return;
-        }
+        Assert.SkipUnless(EndToEndBinary.Path is not null, SkipMessage());
 
-        Assert.Skip(EndToEndBinary.SkipReason);
+        // Measured: a path that is set but missing does not skip anything, it fails 128 tests with
+        // Win32Exception "No such file or directory" from wherever each one started a process.
+        // This reduces that to one line naming the cause.
+        Assert.True(
+            File.Exists(EndToEndBinary.Path),
+            $"ENGRAM_TEST_BINARY points at '{EndToEndBinary.Path}', which does not exist. "
+                + "Publish first; every other failure in this run is downstream of this one.");
     }
 
-    /// <summary>
-    /// Split from the assertion above so the failure names the situation rather than a boolean.
-    /// </summary>
-    [Fact]
-    public void AnUnacknowledgedSkipIsAFailure()
-    {
-        if (EndToEndBinary.Path is not null || EndToEndBinary.SkipAcknowledged)
-        {
-            return;
-        }
-
-        Assert.Fail(
-            "Tier 3 did not run: ENGRAM_TEST_BINARY is unset, so every end-to-end test skipped "
-                + "and this run says nothing about the binary that ships. Publish and point at it:\n"
-                + "  dotnet publish src/Engram.Cli/Engram.Cli.csproj -c Release -r <rid> -o out\n"
-                + "  ENGRAM_TEST_BINARY=$PWD/out/engram dotnet test\n"
-                + $"To skip on purpose while iterating, set {EndToEndBinary.OptOutVariable}=1.");
-    }
+    private static string SkipMessage() =>
+        "TIER 3 DID NOT RUN — every end-to-end test in this assembly skipped, so this run says "
+            + "nothing about the published binary. Do not read the summary as a pass for what "
+            + "ships. To run it:\n"
+            + "  dotnet publish src/Engram.Cli/Engram.Cli.csproj -c Release -r <rid> -o out\n"
+            + "and re-run; ./out/engram is picked up automatically.";
 }

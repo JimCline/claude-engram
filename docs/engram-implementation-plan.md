@@ -4425,16 +4425,22 @@ three times in a single session while **128 of its 161 tests were skipping**, wh
 `ExplainCandidateScalingTests` sat red on `main` across several commits without anyone seeing it.
 By D9 tier 3 exists because a green JIT build says nothing about what ships — so the run that drops
 it is the run whose result means least, and it was the one that looked cleanest.
-`TierThreeCoverageTests` inverts which side needs a flag, on D49's reasoning that a default needing
-a flag is not a default: publish and point `ENGRAM_TEST_BINARY` at the binary, or set
-`ENGRAM_SKIP_TIER3` to acknowledge. An unacknowledged skip fails and names both commands. It also
-asserts the path exists, though not for the reason first written down: a variable pointing at
-nothing was assumed to skip like an unset one, and measuring the four states showed it does not — it
-fails 128 tests with `Win32Exception` from wherever each happened to start a process. The assertion
-earns its place by reducing that to one line naming the variable, which is a different job from the
-skip guard beside it. All four states were exercised: binary set (157 pass, 5 skip, exit 0), nothing
-set (exactly one failure, and it is this one), skip acknowledged (exit 0, 128 skipped), path missing
-(fails).
+The first fix inverted which side needed a flag, on D49's reasoning that a default needing a flag is
+not a default: an unacknowledged skip failed and named the commands that resolve it. **That was
+reverted within the hour, and the revert is the more useful record.** Requiring a publish turned
+every inner-loop `dotnet test` into a failure, which is D37's rule arriving in a new place — a check
+people learn to route around is worth less than no check, and a test that cries wolf on the ordinary
+case trains exactly that. `EndToEndBinary` now falls back to `./out/engram`, the location this repo
+already publishes to, so a tree that has been published once runs tier 3 with no ceremony at all
+(measured on this checkout: 128 skipped and one failure before, 156 passed and 5 skipped after,
+without setting anything), and `TierThreeCoverageTests` reduces to naming the skip loudly when there
+is genuinely nothing to drive. Automatic detection beats both flags: the failure mode was never that
+someone declined to acknowledge a skip, it was that nobody noticed one.
+
+The path-exists assertion survives the revert, for a reason measuring the four states turned up: a
+variable pointing at nothing was assumed to skip like an unset one, and it does not — it fails 128
+tests with `Win32Exception` from wherever each happened to start a process. Reducing that to one
+line naming the cause is a different job from the skip guard beside it.
 
 **`ExplainCandidateScalingTests` is deleted, and the deletion is the interesting part.** It seeded
 20,000 facts sharing a token and asserted the hot arm stayed within 3x of a no-match arm, which is

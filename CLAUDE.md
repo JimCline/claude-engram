@@ -806,16 +806,19 @@ published binary, because CI passing on the JIT build proves nothing about what 
 A lint or guard test that cannot fail is worthless. When adding one, prove it fails by
 breaking the thing it guards, then restore.
 
-**Tier 3 skipping is a failure, not a default.** Every test in `Engram.EndToEnd.Tests` opens with
-`Assert.SkipUnless(EndToEndBinary.Path is not null, …)`, so without `ENGRAM_TEST_BINARY` the whole
-tier evaporates into the skip column while the summary still reads `Passed!`. That is how this
-suite was reported green three times in one session with **128 of 161 tests skipped** — and by D9
-it is the run whose result means least that looked cleanest. `TierThreeCoverageTests` inverts which
-side needs the flag, on D49's reasoning: publish and set `ENGRAM_TEST_BINARY`, or set
-`ENGRAM_SKIP_TIER3` to say the skip is deliberate. An unacknowledged skip fails and prints both
-commands. It also asserts the path *exists* — not as a second skip guard: measured, a variable
+**A skipped tier 3 is not a pass, and the summary line will not tell you.** Every test in
+`Engram.EndToEnd.Tests` opens with `Assert.SkipUnless(EndToEndBinary.Path is not null, …)`, so
+without a binary the whole tier evaporates into the skip column while the summary still reads
+`Passed!`. That is how this suite was reported green three times in one session with **128 of 161
+tests skipped**, and how a red test survived several commits — by D9 the run whose result means
+least is the one that looked cleanest. `EndToEndBinary` therefore falls back to `./out/engram`
+when `ENGRAM_TEST_BINARY` is unset, so a published tree runs tier 3 on a plain `dotnet test` with
+no ceremony, and `TierThreeCoverageTests` names the skip when there is nothing to drive.
+**Failing on an unpublished tree was tried and reverted**: it made every inner-loop run red, and a
+check people learn to route around is worth less than no check — D37's rule about `doctor`,
+applied to a test. It does assert the path *exists*, which is a different job: measured, a variable
 pointing at nothing does not skip, it fails 128 tests with `Win32Exception` from wherever each one
-started a process, and this reduces that to one line naming the variable. Read the skip count, not
+started a process, and this reduces that to one line naming the cause. Read the skip count, not
 just the pass count.
 
 ## Commits
