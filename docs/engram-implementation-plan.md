@@ -4309,6 +4309,38 @@ same break reds exactly one test. The shape is asserted concretely (`subject_id,
 partial=0`) rather than only fresh-equals-migrated, because two stores that both lack the index
 compare equal.
 
+**D58's floor is gone, and the spec target is met at 50,097 facts.** Measured on the published
+binary — the only measurement that counts, since D58's own reconciliation problem was a Debug/JIT
+test host — with `probe` on the same home as the floor (process start plus store open, 11.6 and
+11.9 ms), arms alternated, and one arm run against itself for calibration. Harness noise came out at
+0.0–1.5 ms against effects of 6 to 1,600 ms.
+
+| store · query | ranking, floor subtracted | without `ix_fact_thread` |
+| --- | --- | --- |
+| 5,308 · ordinary | 2.3 ms | 8.6 ms |
+| 5,308 · hot | 3.2 ms | 33.0 ms |
+| 50,097 · ordinary | **2.5 ms** | 91.8 ms |
+| 50,097 · hot (45,132 matched) | 125.9 ms | 1,727.9 ms |
+
+D58 recorded 127 ms at 50,097 and attributed the miss to the **floor** — "a query matching nothing
+costs what one matching everything does" — because the object ranker read the whole catalog and
+tokenized every fact per recall, whatever was asked. That is no longer the shape: an ordinary query
+at 50,097 is **2.5 ms**, 50x better than the number D58 measured and below the 5,097 figure it
+recorded as *meeting* the target. What remains is proportional to the match set, so the one case
+still above 50 ms is a term appearing in 90% of the corpus, and that residue is D44's coverage
+counts — window functions over the whole scored set — which is precisely what bounded
+materialization was designed for. So D58's deferred item survives, retargeted from a floor that no
+longer exists to a ceiling that does, and its tripwire (15,000 live facts, or p50 above 40 ms) is
+void rather than unmet.
+
+Two cautions on reading this. It is measured through `explain --limit 5`, which is not `Pack` —
+`Pack` is reachable only through MCP, so no CLI path exercises it; the bound is identical, since
+`minCandidates` of 5 loses to `budgetTokens + 1`, and what is added is explain's own rendering,
+which the 2.3–2.5 ms ordinary-query figures bound tightly. And the index's effect is far larger here
+than the test-host attribution suggested (37x on the 50k ordinary query, against roughly 75x
+predicted from statement timings alone), which is the usual reminder that a component measured in
+isolation and the same component measured through the shipping binary are two different numbers.
+
 **Falsify against a committed tree.** The harness restored each arm with `git checkout --`, which
 restores to HEAD — and the change under test was uncommitted, so every arm reverted the work instead
 of the arm's patch and the "expect red" arms went red for the wrong reason. Separately, an earlier

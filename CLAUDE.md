@@ -551,12 +551,17 @@ is what forced the text to be identical — so the marker would announce history
 already does. Both halves are pinned by tests in `SessionFactsTests`, because the property lives in the
 addressing and is invisible at the formatter (D57).
 
-**Recall pays for the corpus, not for the answer — and `explain` must pay for neither.** The spec's
-p50-under-50 ms lexical target had never been measured until D58: it is met at 5,097 live facts
-(16–21 ms once the published binary's ~8 ms process start is subtracted, ~24–29 ms on the wall
-clock) and missed at 50,097 (127 ms, ~135 ms wall), and missed by the **floor**, since a query
-matching nothing
-costs what one matching everything does. So indexes are not the bottleneck and index tuning is not
+**Recall pays for the match set, not for the corpus — and `explain` must pay for neither. The first
+clause was the exact opposite until D60, and the rest of this paragraph is the reasoning that got
+there, so read it as history with live rules embedded rather than as current measurements.** The
+spec's p50-under-50 ms lexical target had never been measured until D58: against the object ranker
+it was met at 5,097 live facts (16–21 ms once the published binary's ~8 ms process start is
+subtracted, ~24–29 ms on the wall clock) and missed at 50,097 (127 ms, ~135 ms wall), and missed by
+the **floor**, since a query matching nothing
+cost what one matching everything did. Re-measured on the published binary after D59's index and
+D60's cutover, floor subtracted: **2.5 ms at 50,097 for an ordinary query** (14.4 ms wall) against
+125.9 ms for a term matching 45,132 of them. The floor is gone, the target is met at 50k, and what
+is left is proportional to matches. So indexes are not the bottleneck and index tuning is not
 the fix — warm SQL is ~3 ms of an ~18 ms pipeline, every plan is sane, and `ReadLive`'s full scan is
 inherent because recall wants every live fact and `ORDER BY f.id` is then free. The trap that cost
 the most time: FTS match count does not predict cost (`index` matches 45,119 rows and is fast,
@@ -579,15 +584,20 @@ variable ceiling and a crashed arm would otherwise time as the fastest one. Reca
 move and not a redesign: `BuildCandidates` formats a line **after** the lane check rather than for
 every live fact, carrying the source record — a reference copy, where a `Func<string>` per entry
 would swap one allocation for another on the same O(corpus) path. Bounded materialization of the
-candidate set is designed and **deferred** — it buys 18 ms at 10x against a floor that breaches the
-target first at every store size. **The floor work itself is not deferred; it is the next scheduled
-item**, and the tripwire that would have gated it (15,000 live facts, or a measured p50 above 40 ms,
-against today's 5,097) now prices the work rather than authorizing it: fact growth here is a step
-function, since one `engram index --apply` can consume the whole 5,097-to-17,000 headroom in a
-single command, while the fix carries schema-migration lead time — and a tripwire crossable faster
-than its fix can ship is not a bound. The design is chosen: an **inverted literal-token index**
-(token → fact) over subject name plus body, merged into the same integer overlap score, picked
-because it is equivalence-testable — identical scores and ranks, diffable against a real store.
+candidate set is designed and **deferred**, and is now the only remaining item — retargeted, because
+the floor it was priced against no longer exists: what it addresses is the one case still above the
+spec target, 125.9 ms for a term matching 45,132 of 50,097 facts, which is D44's coverage counts
+computed over the whole scored set. An ordinary query at that size is 2.5 ms and needs nothing.
+**The floor work itself is done.** The design named next in this paragraph — an **inverted
+literal-token index** (token → fact) over subject name plus body, merged into the same integer
+overlap score, picked because it is equivalence-testable — is `fact_token` (D59), and the cutover
+that reads it is D60; equivalence is how it was accepted, at 764 queries and 5.8M candidate
+comparisons with zero divergences outside §2.5. The tripwire that would have gated it (15,000 live
+facts, or a measured p50 above 40 ms, against then's 5,097) is therefore **void rather than unmet**,
+and its reasoning stands for the next such bound: fact growth here is a step function, since one
+`engram index --apply` can consume the whole 5,097-to-17,000 headroom in a single command, while the
+fix carries schema-migration lead time — and a tripwire crossable faster than its fix can ship is
+not a bound.
 Precomputed token *sets* were rejected as still O(corpus) (loading and intersecting 50k sets per
 recall), and restricting the overlap lane to what the indexed lanes already found was rejected
 because it corrupts D44: a lane that only scores what FTS returned cannot independently corroborate
