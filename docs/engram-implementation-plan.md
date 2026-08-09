@@ -4341,6 +4341,33 @@ than the test-host attribution suggested (37x on the 50k ordinary query, against
 predicted from statement timings alone), which is the usual reminder that a component measured in
 isolation and the same component measured through the shipping binary are two different numbers.
 
+**Recall shed the catalog read; the primer did not, and that is now the most expensive thing a
+session start does.** `FactCatalog.ReadLongTerm` is what made the object ranker O(corpus) whatever
+was asked, and `session-start`/`subagent-start` still call it — to print a count line, a five-topic
+breakdown and two example bodies. Measured on the published binary against a `probe` floor on the
+same home: `session-start` costs **61 ms at 5,308 live facts and 93 ms at 50,097**, against the
++2.1–2.4 ms over the floor this repo's rules had recorded for it. `subagent-start` isolates the
+cause — same primer, no fork — at **+11 ms and +76 ms**. `user-prompt` and `file-touched` are
+unaffected and still sit at the floor, so the rule as stated was not wrong about hooks generally,
+only about the one that grew.
+
+Half of the gap was placement rather than work. `MaintenanceLauncher.Spawn` ran *after* the catalog
+read, and `fork(2)` copies the parent's page tables, so the hook paid for the catalog twice — once
+to read it, once to duplicate the mapping. Moving that one statement above the read takes
+session-start **148.9 → 92.5 ms at 50,097** and **71.7 → 61.1 ms at 5,308**, measured as a
+controlled pair of published binaries built either side of the change, arms alternated, one arm run
+against itself for calibration (noise 3.2 and 0.5 ms). The saving grows with the corpus because the
+thing being copied does, which is the evidence that this is the mechanism and not a coincidence: a
+fork's cost is not a constant, and where it sits is what sets it. The reorder puts the primer's
+telemetry append after the fork, where it can collide with the child's records — and D46 makes that
+record load-bearing — so it was measured too: zero lost and zero torn across 160 session starts, on
+both binaries and both corpus sizes, because every caller except `file-touched` hands
+`DurableAppend` a 500 ms retry budget and retries rather than drops (D56).
+
+The other half is open. Replacing the read with SQL aggregates would fix the residual fork cost as
+well, since the parent would stay small — but it decides what a primer is *able* to say, which is
+D51 and D46 territory, so it is a design change and not a tidy-up. Recorded here rather than done.
+
 **Falsify against a committed tree.** The harness restored each arm with `git checkout --`, which
 restores to HEAD — and the change under test was uncommitted, so every arm reverted the work instead
 of the arm's patch and the "expect red" arms went red for the wrong reason. Separately, an earlier
