@@ -156,6 +156,18 @@ CREATE TABLE fact (
 -- constraint the database enforces rather than a rule the code remembers.
 CREATE UNIQUE INDEX ux_fact_live ON fact(subject_id, predicate) WHERE valid_to IS NULL;
 
+-- Same columns as ux_fact_live, deliberately, and NOT redundant with it: that one is
+-- partial on `valid_to IS NULL`, and the query this serves counts a thread's whole
+-- history, closed rows included (D57). A partial index cannot answer a query that
+-- reaches outside its predicate, so SQLite fell back to a full scan of fact once per
+-- returned row. Measured on the 50,097-fact store: that correlated subquery was 93-99%
+-- of the entire ranking statement at every corpus size and every match count, and this
+-- index removes it — 1,545 ms to 105 ms for a term matching 45,132 facts, 31.8 ms to
+-- 1.1 ms at 5,308. It changes which rows are FOUND, never which are counted, which is
+-- what makes it preferable to substituting the denormalized fact.path column: that
+-- would trade a rename staleness window (D8) for the same speedup.
+CREATE INDEX ix_fact_thread  ON fact(subject_id, predicate);
+
 CREATE INDEX ix_fact_path    ON fact(path);
 CREATE INDEX ix_fact_session ON fact(session_id);
 CREATE INDEX ix_fact_scope   ON fact(scope) WHERE valid_to IS NULL;
@@ -348,7 +360,7 @@ CREATE INDEX ix_fact_token_fact ON fact_token(fact_id);
 
 
 CREATE TABLE schema_meta (key TEXT PRIMARY KEY, value TEXT);
-INSERT INTO schema_meta(key, value) VALUES ('schema_version', '4');
+INSERT INTO schema_meta(key, value) VALUES ('schema_version', '5');
 
 -- Built by a fresh CREATE, and pre-stamped ready: an empty table matches whatever
 -- FactTokenIndex.Rebuild would produce over zero facts, so a new store needs no rebuild pass.

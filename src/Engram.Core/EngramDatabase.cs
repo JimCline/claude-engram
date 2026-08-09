@@ -20,7 +20,7 @@ namespace Engram.Core;
 /// </remarks>
 public static class EngramDatabase
 {
-    public const int SchemaVersion = 4;
+    public const int SchemaVersion = 5;
 
     public const int BusyTimeoutMilliseconds = 5000;
 
@@ -284,6 +284,15 @@ public static class EngramDatabase
 
             FactTokenIndex.Rebuild(connection);
             WriteMeta(connection, null, "schema_version", "4");
+        }
+
+        if (from < 5)
+        {
+            // Version 5 adds ix_fact_thread, which is pure query planning: it creates no state, so
+            // unlike version 4 there is nothing to reconcile with a store that already has it, and
+            // IF NOT EXISTS covers a downgrade fixture that does.
+            Execute(connection, null, "CREATE INDEX IF NOT EXISTS ix_fact_thread ON fact(subject_id, predicate);");
+            WriteMeta(connection, null, "schema_version", "5");
         }
     }
 

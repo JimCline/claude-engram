@@ -23,17 +23,22 @@ namespace Engram.Integration.Tests;
 /// the path predicate's selectivity, not failing to use an index — there does not appear to be a
 /// query-text-only fix, and ruling 6 requires ranging over the *entire* prior-session set, which is
 /// what this scan is doing. Reported as a spec-level finding, not fixed here.</item>
-/// <item>The <c>versions</c> correlated subquery scans <c>fact</c> (as <c>SCAN f2</c>) when it
-/// joins <c>entity e2</c> for <c>e2.path</c>, exactly as spec §2.3 writes it — confirmed at 50,000
-/// facts. Substituting the already-live, already-indexed denormalized <c>fact.path</c> column
-/// (<c>docs/engram-schema.sql:126,159</c>) for <c>entity.path</c> turns this into
-/// <c>SEARCH f2 USING INDEX ix_fact_path (path=?)</c>, confirmed via the identical EQP capture —
-/// no scan at all. Not applied here: <c>fact.path</c> is denormalized, derived state (D8), while
-/// <c>entity.path</c> is the authoritative live value, so this trade (a correlated per-candidate
-/// scan of the whole live-fact count, versus a possible staleness window between a rename and the
-/// repair/compact cycle that resyncs the denormalized copy) is a correctness/performance call for
-/// the spec's author, not this test.</item>
 /// </list>
+///
+/// <para>A second exception, <c>SCAN f2</c> from the <c>versions</c> correlated subquery, was on
+/// this list and has been removed because it was fixed rather than accepted. It was raised here as
+/// a call for the spec's author, and the measurement that answered it found the scan was not a
+/// tolerable cost but <b>93–99% of the entire ranking statement</b>, at every corpus size and every
+/// match count: on the 50,097-fact store a term matching 45,132 facts cost 1,545 ms, of which 105 ms
+/// remained with the subquery removed, and 5,308 facts cost 31.8 ms against 1.0 ms. The escalation
+/// offered one fix — substitute the denormalized <c>fact.path</c> for <c>entity.path</c> — and
+/// correctly declined to make that trade, since <c>fact.path</c> is derived state with a rename
+/// staleness window (D8). <c>ix_fact_thread</c> is a third option that costs nothing on either side:
+/// it changes which rows are <i>found</i>, never which are counted, so <c>entity.path</c> stays the
+/// authority and the plan becomes an indexed search. The index is not redundant with
+/// <c>ux_fact_live</c> despite naming the same two columns — that one is partial on
+/// <c>valid_to IS NULL</c>, and a thread length counts closed rows too, which is the whole reason
+/// the planner could not use it.</para>
 /// <para>Asserting the literal §3.2 text here would either fail permanently for a property this
 /// implementation did not regress (it followed §2.3's literal SQL), or silently paper over two real
 /// findings by weakening the assertion without saying so. Both are worse than naming the two
@@ -43,11 +48,10 @@ public class RecallRankerPlanTests
 {
     private static readonly DateTimeOffset T0 = new(2026, 8, 5, 12, 0, 0, TimeSpan.Zero);
 
-    /// <summary>The two known, investigated exceptions to "no SCAN of fact" — see the class remarks.</summary>
+    /// <summary>The one known, investigated exception to "no SCAN of fact" — see the class remarks.</summary>
     private static readonly string[] KnownFactScanLines =
     [
         "SCAN f USING INDEX ix_fact_session",
-        "SCAN f2",
     ];
 
     /// <summary>

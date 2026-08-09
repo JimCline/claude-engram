@@ -322,6 +322,47 @@ public class SchemaMigrationTests
         Assert.Equal(TokenIndexDdl(fresh), TokenIndexDdl(migrated));
     }
 
+    /// <summary>
+    /// Version 5 added <c>ix_fact_thread</c>, which the fresh path creates from
+    /// <c>docs/engram-schema.sql</c> and the migration path from a C# string — two spellings of one
+    /// index, the same drift hazard <see cref="AMigratedStore_HasTheSameTokenIndexDdlAsAFreshOne"/>
+    /// covers for <c>fact_token</c>.
+    /// </summary>
+    /// <remarks>
+    /// Asserted as a concrete shape rather than only fresh-equals-migrated, because two stores that
+    /// both lack the index compare equal — the assertion that would pass with the whole change
+    /// reverted. <c>partial=0</c> is the load-bearing field: <c>ux_fact_live</c> already indexes
+    /// these two columns and is useless here precisely because it is partial on
+    /// <c>valid_to IS NULL</c>, while a thread length counts closed facts too (D57).
+    /// </remarks>
+    [Fact]
+    public void AMigratedStore_HasTheSameThreadIndexAsAFreshOne()
+    {
+        using var migratedHome = new SandboxHome(initialize: false);
+        using var freshHome = new SandboxHome(initialize: false);
+        WriteVersion1Store(migratedHome, "/knowledge/testing/kestrel", "It binds loopback only.");
+
+        using var migrated = EngramDatabase.OpenInitialized(migratedHome.Home);
+        using var fresh = EngramDatabase.OpenInitialized(freshHome.Home);
+
+        Assert.Equal("subject_id,predicate partial=0", ThreadIndexShape(fresh));
+        Assert.Equal(ThreadIndexShape(fresh), ThreadIndexShape(migrated));
+    }
+
+    private static string ThreadIndexShape(SqliteConnection connection)
+    {
+        using var list = connection.CreateCommand();
+        list.CommandText = "SELECT partial FROM pragma_index_list('fact') WHERE name = 'ix_fact_thread';";
+        if (list.ExecuteScalar() is not long partial)
+        {
+            return "(absent)";
+        }
+
+        using var info = connection.CreateCommand();
+        info.CommandText = "SELECT group_concat(name) FROM (SELECT name FROM pragma_index_info('ix_fact_thread'));";
+        return $"{info.ExecuteScalar()} partial={partial}";
+    }
+
     private static List<string> LexicalDdl(SqliteConnection connection)
     {
         using var command = connection.CreateCommand();
