@@ -4341,32 +4341,10 @@ than the test-host attribution suggested (37x on the 50k ordinary query, against
 predicted from statement timings alone), which is the usual reminder that a component measured in
 isolation and the same component measured through the shipping binary are two different numbers.
 
-**Recall shed the catalog read; the primer did not, and that is now the most expensive thing a
-session start does.** `FactCatalog.ReadLongTerm` is what made the object ranker O(corpus) whatever
-was asked, and `session-start`/`subagent-start` still call it — to print a count line, a five-topic
-breakdown and two example bodies. Measured on the published binary against a `probe` floor on the
-same home: `session-start` costs **61 ms at 5,308 live facts and 93 ms at 50,097**, against the
-+2.1–2.4 ms over the floor this repo's rules had recorded for it. `subagent-start` isolates the
-cause — same primer, no fork — at **+11 ms and +76 ms**. `user-prompt` and `file-touched` are
-unaffected and still sit at the floor, so the rule as stated was not wrong about hooks generally,
-only about the one that grew.
-
-Half of the gap was placement rather than work. `MaintenanceLauncher.Spawn` ran *after* the catalog
-read, and `fork(2)` copies the parent's page tables, so the hook paid for the catalog twice — once
-to read it, once to duplicate the mapping. Moving that one statement above the read takes
-session-start **148.9 → 92.5 ms at 50,097** and **71.7 → 61.1 ms at 5,308**, measured as a
-controlled pair of published binaries built either side of the change, arms alternated, one arm run
-against itself for calibration (noise 3.2 and 0.5 ms). The saving grows with the corpus because the
-thing being copied does, which is the evidence that this is the mechanism and not a coincidence: a
-fork's cost is not a constant, and where it sits is what sets it. The reorder puts the primer's
-telemetry append after the fork, where it can collide with the child's records — and D46 makes that
-record load-bearing — so it was measured too: zero lost and zero torn across 160 session starts, on
-both binaries and both corpus sizes, because every caller except `file-touched` hands
-`DurableAppend` a 500 ms retry budget and retries rather than drops (D56).
-
-The other half is open. Replacing the read with SQL aggregates would fix the residual fork cost as
-well, since the parent would stay small — but it decides what a primer is *able* to say, which is
-D51 and D46 territory, so it is a design change and not a tidy-up. Recorded here rather than done.
+**Recall shed the catalog read; the primer did not.** `FactCatalog.ReadLongTerm` is what made the
+object ranker O(corpus) whatever was asked, and `session-start`/`subagent-start` still call it — to
+print a count line, a five-topic breakdown and two example bodies. That is the one place the
+pre-cutover read survived, and D61 is where it was removed.
 
 **Falsify against a committed tree.** The harness restored each arm with `git checkout --`, which
 restores to HEAD — and the change under test was uncommitted, so every arm reverted the work instead
@@ -4375,6 +4353,70 @@ arm's pattern spelled `·` as a bare `.`, one regex character against two UTF-8 
 silently no-opped and the suite stayed green: a falsification reporting success while proving
 nothing. Both are the same failure in different clothes, and the defence is the same one line —
 assert the patch landed (`git diff --quiet`) before trusting an arm's result.
+
+## D61 — The primer stops reading the catalog, and the hook that was waiting on its own child
+
+Two changes that arrived together because measuring the first is what exposed the second.
+
+**The primer's input is three aggregates, and `PrimerBuilder` keeps every rule.** `PrimerSummary`
+carries a count, a topic histogram and a handful of example candidates; `From` builds it from a
+catalog in memory and `Read` builds it from SQL, and the guarantee is that both produce primers
+equal **byte for byte** — `PrimerSummaryEquivalenceTests` over ten corpora, plus the two precedence
+values, since the precedence line is prepended before the budget is spent and a coverage line that
+changed length could be dropped under one and kept under the other. The summary is deliberately
+*unordered and unselected*: count-descending-then-key-ordinal, `MaxClusters`, `+N more`, the
+preferred scope order and the fill-from-the-front all stay in `PrimerBuilder`, because a summary
+that arrived pre-sorted would give the two paths a rule each to disagree about. For the same
+reason the histogram groups by distinct subject **path** and lets `FactCatalog.TopicOf` resolve it
+in C#: its segment splitting and topic-node lookup are one implementation, and a SQL copy would
+diverge the first time either was tuned.
+
+The candidate query reads the lowest-id live non-session fact per scope, unioned with the front
+`$limit` of the catalog. That superset is provably everything `TopFacts` can reach *for any limit*,
+which is worth stating because the first draft of the comment justified it for two and would have
+misled whoever raised the constant. It also preserves the full *set* of scopes, so `OrderedScopes`
+sees exactly what it saw before. `VersionCounts` — a catalog-wide `GROUP BY` — turned out to be
+computed and never read by the primer at all; the candidates get a correlated count instead, keyed
+on `subject_id` because `entity.path` is UNIQUE and the two groupings are therefore identical, which
+does **not** reopen D57: that rule is about which thread a *number is advertised against*, not about
+arithmetic.
+
+Measured on the published binary, `subagent-start` — the clean isolate, since it builds the same
+primer and spawns nothing — goes **69.5 → 43.4 ms over floor at 50,097 live facts** and 7.8 → 3.7
+at 5,308, with the primers byte-identical on both binaries at both sizes. What remains at 50,097 is
+the histogram, which transfers one row per distinct subject but still scans every live fact.
+
+**A detached child was holding the hook's stdout, so every session start waited for the
+housekeeping.** `MaintenanceLauncher` cannot `exec` its jobs the way `ServerLauncher` execs its one,
+because it runs several; the adaptation wrote `{ … } >/dev/null 2>&1`, which replaces the *group's*
+descriptors and leaves `/bin/sh` holding what it inherited until the slowest job finishes. Every
+job's own output really was discarded, which is why it read as correct — and the class doc asserted
+the property it had lost. A pipe reaches EOF only when its last writer closes, and Claude Code reads
+this hook's stdout to receive the primer, so the wait was real and not an artifact of the harness:
+`backup take`, `queue compact`, `repair --tokens` and `index --drain`, on the path of every session
+start, which is the entire thing detaching exists to avoid. `exec` with no command, before anything
+else, replaces the shell's own descriptors.
+
+Measured as the difference between timing the hook through a pipe and through a file — which is
+exactly that wait — **+76.6 ms at 5,308 and +44.0 ms at 50,097**, against **+0.4 ms** for
+`subagent-start`, which forks nothing; −0.2 and −0.1 ms once fixed. The guard asserts the
+redirection precedes the first job rather than timing a spawn, because the delay depends entirely
+on how much housekeeping is due and an idle store is what a test starts with. Restoring the group
+form reddens exactly one test; the theory that merely checks all three descriptors appear stays
+green, which is the evidence that the placement assertion is the load-bearing half.
+
+**The correction this forces, and the general rule.** A pair measured earlier had shown
+`session-start` going 148.9 → 92.5 ms at 50,097 when the spawn moved above the primer's read, the
+saving growing with the corpus, and it was read as `fork(2)` copying the parent's page tables. It
+was the pipe: spawning earlier started the child earlier, so the timer stopped earlier, and the
+saving tracked the corpus because the parent's read is what had been delaying the spawn. **A timer
+that stops at EOF measures every process holding the pipe, not the one you launched** — so a hook
+latency measured through a pipe may not be cited against a hook that spawns. The spawn costs
+1.6–3.4 ms, which is what D28 recorded before any of this. The ordering was kept, since a fork is
+never dearer for happening while the parent is small, but it is no longer justified by a number.
+The telemetry-collision measurement that reorder forced — zero lost and zero torn across 160
+session starts, because every caller but `file-touched` passes `DurableAppend` a 500 ms retry
+budget (D56) — stands on its own and still applies.
 
 *Open items deliberately left for later: entity-resolution fuzziness thresholds (start
 exact + alias + case-insensitive, per spec §12); whether `UserPromptSubmit` recall

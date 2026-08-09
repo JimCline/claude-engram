@@ -170,15 +170,19 @@ internal static class HookCommand
     /// a user who forgot something that it is still remembered. Saying nothing is the
     /// honest degradation, and the caller already handles an empty primer.
     /// </remarks>
-    private static IReadOnlyList<CannedFact> LongTermFacts(EngramHome home)
+    private static PrimerSummary LongTermFacts(EngramHome home)
     {
         try
         {
-            return FactCatalog.ReadLongTerm(home, DateTimeOffset.UtcNow);
+            // A fresh connection per call, closed immediately. D4's watched failure mode is WAL
+            // checkpoint starvation caused by long-lived read snapshots in the MCP loop, so the
+            // connection must not outlive the read.
+            using var connection = EngramDatabase.OpenInitialized(home);
+            return PrimerSummary.Read(connection, DateTimeOffset.UtcNow);
         }
         catch
         {
-            return [];
+            return PrimerSummary.From([]);
         }
     }
 
@@ -205,12 +209,12 @@ internal static class HookCommand
     private static TelemetryRecord PrimerRecord(
         string sessionId,
         string kind,
-        IReadOnlyList<CannedFact> facts,
+        int longTermFactCount,
         string primer) =>
         new(Timestamp: DateTime.UtcNow.ToString("o"),
             SessionId: sessionId,
             Kind: kind,
-            LongTermFactCount: facts.Count,
+            LongTermFactCount: longTermFactCount,
             TokensReturned: TokenEstimator.Estimate(primer));
 
     /// <summary>What the primer should say about where this agent's durable memory lives.</summary>
@@ -240,9 +244,14 @@ internal static class HookCommand
         // costs a fork whether or not it ends up doing any work — cheaper than reading config
         // and fingerprinting the store here to find out, which is the work itself.
         //
-        // Before the catalog read, not after, and that ordering is measured rather than tidy:
-        // fork(2) copies the parent's page tables, so what the fork costs depends on how much
-        // the parent is holding when it happens, and the read below holds every live fact.
+        // Before the read rather than after it, but do not read that as a measured optimisation:
+        // the measurement that once justified it was wrong. It timed the hook through a pipe,
+        // and the detached child was holding that pipe, so moving the spawn earlier only moved
+        // when the child started and therefore when the timer stopped — which is also why the
+        // "saving" appeared to grow with the corpus. MaintenanceLauncher now redirects the
+        // shell's own descriptors and nothing waits on the child at all; measured either side,
+        // the spawn costs 1.6-3.4 ms and the ordering is worth no part of it. It stays here
+        // because a fork is never more expensive for happening while the parent is small.
         try
         {
             if (Environment.ProcessPath is { Length: > 0 } executable)
@@ -254,12 +263,14 @@ internal static class HookCommand
         {
         }
 
-        var facts = LongTermFacts(home);
-        var primer = PrimerBuilder.Build(facts, Precedence(home));
+        var summary = LongTermFacts(home);
+        var primer = PrimerBuilder.Build(summary, Precedence(home));
 
         try
         {
-            Telemetry.Append(home, PrimerRecord(sessionId, TelemetryEventKind.SessionStart, facts, primer));
+            Telemetry.Append(
+                home,
+                PrimerRecord(sessionId, TelemetryEventKind.SessionStart, summary.FactCount, primer));
         }
         catch
         {
@@ -289,8 +300,8 @@ internal static class HookCommand
     // primer simply never arrives, which is indistinguishable from a subagent ignoring it.
     private static int RunSubagentStart(EngramHome home, TextWriter stdout, HookStdinInput? payload)
     {
-        var facts = LongTermFacts(home);
-        var primer = PrimerBuilder.BuildForSubagent(facts, Precedence(home));
+        var summary = LongTermFacts(home);
+        var primer = PrimerBuilder.BuildForSubagent(summary, Precedence(home));
 
         try
         {
@@ -299,7 +310,7 @@ internal static class HookCommand
             // shared across the spawn with no further work; if not, D11's sharing needs a
             // parent id threaded through instead of being assumed.
             Telemetry.Append(home, PrimerRecord(
-                ResolveSessionId(payload), TelemetryEventKind.SubagentStart, facts, primer) with
+                ResolveSessionId(payload), TelemetryEventKind.SubagentStart, summary.FactCount, primer) with
             {
                 AgentId = payload?.AgentId,
                 AgentType = payload?.AgentType,

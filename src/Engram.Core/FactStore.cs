@@ -617,11 +617,22 @@ public static class FactStore
             ("$now", createdAt))!.Value;
     }
 
+    /// <summary>
+    /// The fact columns <see cref="ReadStoredFact"/> reads, in the order it reads them.
+    /// </summary>
+    /// <remarks>
+    /// Exposed apart from <see cref="SelectFactColumns"/> so a query that needs an extra
+    /// projected column can still spell the fact columns once. A caller that splices this in
+    /// must join <c>entity e</c>, and must let <see cref="ReadStoredFact"/> map the row.
+    /// </remarks>
+    internal const string FactColumns =
+        "f.id, f.subject_id, e.path, e.name, f.predicate, f.body, f.scope, "
+        + "f.learned_via, f.regenerable, f.evidence, f.valid_from, f.valid_to, "
+        + "f.superseded_by, f.created_at";
+
     private const string SelectFactColumns =
-        """
-        SELECT f.id, f.subject_id, e.path, e.name, f.predicate, f.body, f.scope,
-               f.learned_via, f.regenerable, f.evidence, f.valid_from, f.valid_to,
-               f.superseded_by, f.created_at
+        $"""
+        SELECT {FactColumns}
           FROM fact f
           JOIN entity e ON e.id = f.subject_id
         """;
@@ -680,25 +691,34 @@ public static class FactStore
 
         while (reader.Read())
         {
-            facts.Add(new StoredFact(
-                Id: reader.GetInt64(0),
-                SubjectId: reader.GetInt64(1),
-                SubjectPath: reader.GetString(2),
-                SubjectName: reader.GetString(3),
-                Predicate: reader.GetString(4),
-                Body: reader.GetString(5),
-                Scope: reader.GetString(6),
-                LearnedVia: reader.GetString(7),
-                Regenerable: reader.GetInt64(8) != 0,
-                Evidence: reader.IsDBNull(9) ? null : reader.GetString(9),
-                ValidFrom: reader.GetInt64(10),
-                ValidTo: reader.IsDBNull(11) ? null : reader.GetInt64(11),
-                SupersededBy: reader.IsDBNull(12) ? null : reader.GetInt64(12),
-                CreatedAt: reader.GetInt64(13)));
+            facts.Add(ReadStoredFact(reader));
         }
 
         return facts;
     }
+
+    /// <summary>
+    /// Maps one row of <see cref="FactColumns"/> to a <see cref="StoredFact"/>.
+    /// </summary>
+    /// <remarks>
+    /// The single mapping from column ordinal to field, so a query projecting the same columns
+    /// alongside extra ones does not carry a second copy of it.
+    /// </remarks>
+    internal static StoredFact ReadStoredFact(SqliteDataReader reader) => new(
+        Id: reader.GetInt64(0),
+        SubjectId: reader.GetInt64(1),
+        SubjectPath: reader.GetString(2),
+        SubjectName: reader.GetString(3),
+        Predicate: reader.GetString(4),
+        Body: reader.GetString(5),
+        Scope: reader.GetString(6),
+        LearnedVia: reader.GetString(7),
+        Regenerable: reader.GetInt64(8) != 0,
+        Evidence: reader.IsDBNull(9) ? null : reader.GetString(9),
+        ValidFrom: reader.GetInt64(10),
+        ValidTo: reader.IsDBNull(11) ? null : reader.GetInt64(11),
+        SupersededBy: reader.IsDBNull(12) ? null : reader.GetInt64(12),
+        CreatedAt: reader.GetInt64(13));
 
     private static int Execute(
         SqliteConnection connection,

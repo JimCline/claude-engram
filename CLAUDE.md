@@ -92,15 +92,21 @@ database costs **1.0–1.5 ms**, measured by A/B-ing `probe` against homes with 
 `engram.db` — it skips the store when the file is absent, so the difference is the open. The
 2.1–2.4 ms that `session-start` and `user-prompt` add over the same floor is that open *plus
 each hook's own work*; charging all of it to the open, as this file previously did, overstates
-it. **`user-prompt` still holds that; `session-start` does not, and by a wide margin.** Measured
-on the published binary against a `probe` floor of ~11.6 ms: `user-prompt` and `file-touched` sit
-*at* the floor, while `session-start` costs **61 ms at 5,308 live facts and 93 ms at 50,097** —
-and 72 / 149 ms before the fork placement below was fixed. The corpus-proportional part is the
-primer's `FactCatalog.ReadLongTerm`, which reads every live fact to print a count, a five-topic
-breakdown and two example bodies: `subagent-start` isolates it at **+11 ms at 5,308 and +76 ms at
-50,097**, since it builds the same primer and spawns nothing. That is D58's floor, still being
-paid, on every session start and every subagent start — the one place recall's O(corpus) read
-survived D60 — and replacing it with SQL aggregates is open work, not done. Nothing here breaches
+it. **`user-prompt` and `file-touched` still hold that; the primer hooks are corpus-proportional
+and always were.** Measured on the published binary against a `probe` floor of ~10 ms:
+`session-start` costs **16 ms at 5,308 live facts and 54 ms at 50,097**, `subagent-start` 14 and
+51. The gap between the two is the maintenance spawn, **1.6–3.4 ms**, which is what D28 recorded
+for it all along. What is corpus-proportional is the primer's own read, and beware the figures
+this file used to carry here — 61 ms and 93 ms, and 11 ms and 76 ms for the read alone. **Those
+were measured through a pipe that the detached maintenance child was holding open**, so they timed
+that child's whole run and not the hook; see `MaintenanceLauncher`, where the defect and the
+controlled measurement both live. Time a hook through a *file* to see what it costs, or fix the
+descriptor leak first. What survives the correction: `PrimerSummary.Read` replaced
+`FactCatalog.ReadLongTerm` on this path and `subagent-start` — the clean isolate, since it builds
+the same primer and spawns nothing — went **69.5 → 43.4 ms over floor at 50,097** and 7.8 → 3.7 at
+5,308, with the primers byte-identical on both binaries at both sizes. The ~40 ms that remains at
+50,097 is the topic histogram, which transfers one row per distinct subject but still scans every
+live fact; at the 5,000 this instance holds it is ~4 ms. Nothing here breaches
 `file-touched`'s 10 ms rule, which is about that hook alone. So the rule does not rest on the
 arithmetic — an opening `file-touched` would still fit at
 p50. It rests on the word *unconditionally*. Under an indexer-shaped writer committing
@@ -286,18 +292,35 @@ appending to it, and it runs unattended on open (D31). Session start spawns `bac
 detached, and the snapshot is skipped entirely unless the fingerprint of authored truth actually
 moved, so an idle day costs nothing.
 
-**What that fork costs depends on when it happens, so it happens before the catalog read.** The
-`+2.0 ms mean` once recorded for that spawn is not what it costs today: `fork(2)` copies the
-parent's page tables, and `MaintenanceLauncher.Spawn` used to run *after* the primer had read every
-live fact into the parent. Measured as a controlled pair of published binaries built either side of
-moving one statement, arms alternated, one arm run against itself to calibrate: `session-start`
-goes **148.9 → 92.5 ms at 50,097 live facts** (noise 3.2) and **71.7 → 61.1 ms at 5,308** (noise
-0.5), and the saving grows with the corpus because the thing being copied does. The consequence to
-know before reordering it back: the primer's telemetry record is now appended *after* the fork, so
-it can collide with the child's own records — measured at **zero lost and zero torn across 160
-session starts**, because every caller but `file-touched` passes a 500 ms retry budget and retries
-rather than drops (D56). This is a placement fix, not the fix: the parent is still large because
-the primer still reads the whole catalog.
+**A detached child must not inherit the hook's stdout, and the redirection has to be on the shell
+rather than on the group.** `MaintenanceLauncher` runs several jobs, so it cannot `exec` them the
+way `ServerLauncher` execs its one; the adaptation wrote `{ … } >/dev/null 2>&1`, which replaces
+the *group's* descriptors and leaves `/bin/sh` holding whatever it inherited for as long as the
+slowest job runs. Every job's output really was discarded, so it read as correct. But a pipe
+reaches EOF only when its last writer closes, and **Claude Code reads this hook's stdout to receive
+the primer** — so every session start waited on `backup take`, `queue compact`, `repair --tokens`
+and `index --drain`, which is the whole of what detaching exists to avoid. `exec` with no command,
+before anything else, replaces the shell's own descriptors. Measured on the published binary as the
+difference between timing the hook through a pipe and through a file: **+76.6 ms at 5,308 live
+facts and +44.0 ms at 50,097**, against **+0.4 ms** for `subagent-start`, which forks nothing —
+and −0.2 / −0.1 ms once fixed. `MaintenanceLauncherTests` asserts the redirection precedes the
+first job; restore the group form and exactly one test reddens, while the test that merely checks
+all three descriptors appear stays green, which is why the placement assertion is the load-bearing
+half.
+
+**That leak also invalidated a measurement, and the shape of the error is the lesson.** A
+before/after pair had shown `session-start` going 148.9 → 92.5 ms at 50,097 when
+`MaintenanceLauncher.Spawn` moved above the primer's read, with the saving growing with the corpus
+— read at the time as `fork(2)` copying the parent's page tables. It was the pipe: spawning earlier
+started the child earlier, so the timer stopped earlier, and the "saving" tracked the corpus
+because the parent's read is what delayed the spawn. **A timer that stops at EOF measures every
+process holding the pipe, not the one you launched.** So do not cite a hook latency measured
+through a pipe against a hook that spawns, and prefer alternating a *file*-timed arm when one is
+available. The spawn itself costs 1.6–3.4 ms, which is what D28 recorded for it before any of
+this. The ordering was kept anyway — a fork is never dearer for happening while the parent is
+small — but it is no longer justified by a number, and the telemetry-collision measurement it
+forced (zero lost, zero torn across 160 session starts, because every caller but `file-touched`
+passes a 500 ms retry budget) stands on its own and still applies.
 
 **A snapshot restores; the journal survives.** `backups/facts.jsonl` is every fact in plain text,
 rewritten whole and atomically alongside each snapshot. A `.db` snapshot only restores into the

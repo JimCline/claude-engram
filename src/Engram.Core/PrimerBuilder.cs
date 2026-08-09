@@ -16,7 +16,10 @@ public static class PrimerBuilder
 
     private const string ExamplesHeader = "Examples:";
     private const int MaxClusters = 5;
-    private const int MaxExampleFacts = 2;
+
+    // Internal because PrimerSummary sizes its candidate query against it: the superset it
+    // reads has to reach as far into the catalog as TopFacts can.
+    internal const int MaxExampleFacts = 2;
 
     private static readonly string[] PreferredScopeOrder = ["user", "project", "code", "session"];
 
@@ -37,18 +40,22 @@ public static class PrimerBuilder
     /// competing memory system wins by default, so it is the session that most needs telling.
     /// Returns an empty string only when there is nothing stored and precedence is off.
     /// </remarks>
-    public static string Build(IReadOnlyList<CannedFact> facts, MemoryPrecedence precedence)
+    public static string Build(PrimerSummary summary, MemoryPrecedence precedence)
     {
         var lines = new List<string>();
         var tokens = 0;
 
         TryAppendLine(lines, ref tokens, MemorySettings.PrimerLine(precedence));
-        TryAppendLine(lines, ref tokens, CoverageLine(facts));
+        TryAppendLine(lines, ref tokens, CoverageLine(summary.FactCount, summary.TopicCounts));
 
-        AppendExamples(lines, ref tokens, TopFacts(facts, MaxExampleFacts));
+        AppendExamples(lines, ref tokens, TopFacts(summary.ExampleCandidates, MaxExampleFacts));
 
         return string.Join('\n', lines);
     }
+
+    /// <inheritdoc cref="Build(PrimerSummary, MemoryPrecedence)"/>
+    public static string Build(IReadOnlyList<CannedFact> facts, MemoryPrecedence precedence) =>
+        Build(PrimerSummary.From(facts), precedence);
 
     /// <summary>
     /// The primer delivered at every subagent spawn. Carries no examples: a subagent's
@@ -60,16 +67,20 @@ public static class PrimerBuilder
     /// never fires for a subagent — whatever the parent was told about where memory lives reaches
     /// the child only if the child is told the same thing through this path.
     /// </remarks>
-    public static string BuildForSubagent(IReadOnlyList<CannedFact> facts, MemoryPrecedence precedence)
+    public static string BuildForSubagent(PrimerSummary summary, MemoryPrecedence precedence)
     {
         var lines = new List<string> { SubagentInstruction };
         var tokens = TokenEstimator.Estimate(SubagentInstruction);
 
         TryAppendLine(lines, ref tokens, MemorySettings.PrimerLine(precedence));
-        TryAppendLine(lines, ref tokens, CoverageLine(facts));
+        TryAppendLine(lines, ref tokens, CoverageLine(summary.FactCount, summary.TopicCounts));
 
         return string.Join('\n', lines);
     }
+
+    /// <inheritdoc cref="BuildForSubagent(PrimerSummary, MemoryPrecedence)"/>
+    public static string BuildForSubagent(IReadOnlyList<CannedFact> facts, MemoryPrecedence precedence) =>
+        BuildForSubagent(PrimerSummary.From(facts), precedence);
 
     private static void TryAppendLine(List<string> lines, ref int tokens, string? line)
     {
@@ -88,16 +99,15 @@ public static class PrimerBuilder
         tokens += lineTokens;
     }
 
-    private static string? CoverageLine(IReadOnlyList<CannedFact> facts)
+    private static string? CoverageLine(int factCount, IReadOnlyDictionary<string, int> topicCounts)
     {
-        if (facts.Count == 0)
+        if (factCount == 0)
         {
             return null;
         }
 
-        var topics = facts
-            .GroupBy(f => f.Topic, StringComparer.Ordinal)
-            .Select(g => (Key: g.Key, Count: g.Count()))
+        var topics = topicCounts
+            .Select(t => (Key: t.Key, Count: t.Value))
             .OrderByDescending(t => t.Count)
             .ThenBy(t => t.Key, StringComparer.Ordinal)
             .ToList();
@@ -108,8 +118,8 @@ public static class PrimerBuilder
             parts.Add($"+{topics.Count - MaxClusters} more");
         }
 
-        var noun = facts.Count == 1 ? "fact" : "facts";
-        return $"Memory holds {facts.Count} {noun}: {string.Join(", ", parts)}.";
+        var noun = factCount == 1 ? "fact" : "facts";
+        return $"Memory holds {factCount} {noun}: {string.Join(", ", parts)}.";
     }
 
     private static IReadOnlyList<CannedFact> TopFacts(IReadOnlyList<CannedFact> facts, int count)
