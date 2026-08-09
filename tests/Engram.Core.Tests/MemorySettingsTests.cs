@@ -75,6 +75,26 @@ public class MemorySettingsTests
         Assert.Contains("subagent", line, StringComparison.Ordinal);
     }
 
+    // The second trigger is a separate assertion because it guards a separate failure. The line
+    // above holds the competing instruction's trigger, which is what stops another memory system
+    // from winning the words "remember this"; this one holds the trigger for what the agent works
+    // out on its own, which nothing else claims and which the subagent primer has always stated.
+    // Without it the surface re-injected on every compaction says memory serves requests, while
+    // the surface a subagent gets says it serves discovery — and the main session is where most
+    // decisions happen. Asserting the pair also pins the shape of the fix: the second trigger was
+    // added beside the first, never in place of it.
+    [Theory]
+    [InlineData(MemoryPrecedence.EngramFirst)]
+    [InlineData(MemoryPrecedence.EngramOnly)]
+    public void PrimerLine_On_AlsoTriggersOnWhatTheAgentWorksOutItself(MemoryPrecedence precedence)
+    {
+        var line = MemorySettings.PrimerLine(precedence);
+
+        Assert.NotNull(line);
+        Assert.Contains("decision", line, StringComparison.Ordinal);
+        Assert.Contains("finding", line, StringComparison.Ordinal);
+    }
+
     [Theory]
     [InlineData(MemoryPrecedence.Off)]
     [InlineData(MemoryPrecedence.EngramFirst)]
