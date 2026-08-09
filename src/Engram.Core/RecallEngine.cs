@@ -1,5 +1,4 @@
 using System.Globalization;
-using System.Text;
 
 namespace Engram.Core;
 
@@ -118,14 +117,6 @@ public static class RecallEngine
     public const int RrfK = 60;
 
     private static readonly Dictionary<long, int> EmptyRanks = [];
-
-    private static readonly HashSet<string> Stopwords = new(StringComparer.Ordinal)
-    {
-        "and", "or", "the", "a", "an", "of", "to", "in", "for", "is", "are", "was", "were",
-        "be", "on", "with", "that", "this", "it", "as", "at", "by", "from", "but", "not",
-        "all", "any", "how", "what", "when", "where", "which", "who", "why", "do", "does",
-        "did", "can", "should", "would", "will",
-    };
 
     public static IReadOnlyList<RankedFact> Rank(string query, IReadOnlyList<CannedFact> facts)
     {
@@ -364,7 +355,7 @@ public static class RecallEngine
         var tokensUsed = ApplyBudget(candidates, budgetTokens);
 
         var used = TokenizeQuery(query);
-        var dropped = Tokenize(query).Where(t => !used.Contains(t)).Order(StringComparer.Ordinal).ToList();
+        var dropped = Tokenizer.Tokenize(query).Where(t => !used.Contains(t)).Order(StringComparer.Ordinal).ToList();
 
         return new RecallExplanation(
             query,
@@ -497,7 +488,7 @@ public static class RecallEngine
     private static double Reciprocal(int? rank) => rank is { } r ? 1d / (RrfK + r) : 0d;
 
     private static int OverlapScore(HashSet<string> queryTerms, string text) =>
-        queryTerms.Count == 0 ? 0 : queryTerms.Count(Tokenize(text).Contains);
+        queryTerms.Count == 0 ? 0 : queryTerms.Count(Tokenizer.Tokenize(text).Contains);
 
     /// <summary>
     /// Marks the prefix that fits, and returns what it spent.
@@ -619,45 +610,17 @@ public static class RecallEngine
 
     private static HashSet<string> TokenizeQuery(string query)
     {
-        var terms = Tokenize(query);
+        var terms = Tokenizer.Tokenize(query);
 
         var filtered = new HashSet<string>(StringComparer.Ordinal);
         foreach (var term in terms)
         {
-            if (term.Length >= 3 && !Stopwords.Contains(term))
+            if (Tokenizer.IsIndexable(term))
             {
                 filtered.Add(term);
             }
         }
 
         return filtered.Count > 0 ? filtered : terms;
-    }
-
-    private static HashSet<string> Tokenize(string text)
-    {
-        var terms = new HashSet<string>(StringComparer.Ordinal);
-        var current = new StringBuilder();
-
-        foreach (var ch in text)
-        {
-            if (char.IsAsciiLetterOrDigit(ch))
-            {
-                current.Append(char.ToLowerInvariant(ch));
-                continue;
-            }
-
-            if (current.Length > 0)
-            {
-                terms.Add(current.ToString());
-                current.Clear();
-            }
-        }
-
-        if (current.Length > 0)
-        {
-            terms.Add(current.ToString());
-        }
-
-        return terms;
     }
 }
