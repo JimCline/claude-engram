@@ -4230,6 +4230,93 @@ across nine timed comparisons four arms were faster and five slower — noise, n
 no-match query against 11.5 ms hot. The floor is what costs the same either way, which is the catalog
 read and the per-fact tokenization — not this.
 
+## D60 — The ranker becomes one SQL statement, and what the cutover found
+
+**What this is.** D59's consumer half. `RecallRanker` produces the one ranking statement SQLite
+executes; `RecallEngine.Explain` is demoted to test support. Four statement variants, chosen by
+which lanes are available and cached by that key. The boundary D59 drew holds: SQL ranks and bounds,
+C# formats and packs — the three format strings and `ApplyBudget` run unchanged over the bounded
+set, because building the line in SQL would be a second implementation of them that drifts the first
+time one is edited.
+
+**Equivalence was tested against the ranker being replaced, at scale.** 764 queries across two
+corpora, 5.8M candidate comparisons, element by element and field by field plus `TokensUsed` and
+`Coverage`. Zero divergences outside the one documented §2.5 stopword-fallback case, which is
+asserted by name rather than silently excluded. The lint that keeps it single is keyed on
+`is_corroborated`, a token unique to this statement — accessibility never enforced "one producer",
+since `EngramMcpTools` lives in another assembly and the class must be public.
+
+**Ask for the windowed tie count, not the total.** The equivalence run's real question was whether
+RRF ties order identically in SQL and in C#, and the first answer — a tie total — was useless. What
+matters is ties *inside the window the statement returns*: 1,076 tie groups landed there and the
+handle-ordinal tiebreak reproduced the oracle's order in every one. On the real store all 748 ties
+are inside the window; the synthetic corpus buries 834,896 past position 501, so a total is
+dominated by ties no caller can ever observe. A measurement that counts what is discarded reports
+mostly noise and hides whether the part that ships agrees.
+
+**The 501-row bound is exactly right for recall and was wrong for `explain`.** `budgetTokens + 1`
+rows provably suffice to pack a `budgetTokens` budget — RRF is strictly decreasing in rank, the
+order is fixed before the limit applies, and every non-empty line estimates at least one token. But
+`explain`'s `--limit` can exceed the budget, and D30 makes it a promise about the ranker rather than
+a view of the first 501 rows. `minCandidates` raises the floor for that one caller and provably
+cannot move anything: coverage reads the window columns over the unbounded set, and `ApplyBudget`
+stops at the first line that does not fit. Recall leaves it at 0.
+
+**An unavailable lane deflates coverage silently, so it is now stated.** With one lane the
+corroboration term degenerates to `(rank IS NOT NULL) > 1`, false for every row — so coverage can
+never reach `high`, and an overlap-only fact is absent from the result entirely. The digest then
+reads `coverage: none · gaps: no facts matched` about a store holding the answer, which is
+indistinguishable from an empty store and ends D6's discover-then-remember loop before it starts.
+The note is keyed to lane *state*, never to hit count: a query that matches nothing and a lane that
+could not look call for opposite responses. `Unavailable`, never `Off` — D18 makes `Off` a supported
+configuration and D37 says a diagnostic that reports a choice as a fault is one people stop reading.
+
+**`json_each` costs nothing, so the four stable texts stay.** The open question was whether to
+generate a literal `VALUES` list, which would make the statement text vary with term count. Measured
+at 3 and 12 terms on both corpora, arms alternated every iteration and calibrated by running
+`json_each` against itself: every delta sits at or below its own noise floor and the **sign flips**
+across the four cells (−0.431, −0.425, +0.423, +8.337 ms against floors of 0.016, 0.228, 16.838,
+6.635). Nothing to buy.
+
+**The `versions` subquery was 93–99% of every recall, and a plan guard could not have said so.**
+D57's thread count — one `COUNT` per returned candidate, so a line can carry `· v2` — was doing a
+full scan of `fact` per row, because `ux_fact_live` indexes exactly those two columns but is partial
+on `valid_to IS NULL` while a thread length deliberately counts closed rows. Measured against the
+same statement with the subquery patched out: 1,545 ms → 105 ms at 50,097 facts for a term matching
+45,132, and 31.8 ms → 1.0 ms at 5,308. The cost model is *candidates × corpus* and all four
+measurements fit it within a factor of 1.7 (16–27M row visits/sec), so this was never a large-store
+problem — only invisible at 5k, where the answer was 31.8 ms instead of 7. `ix_fact_thread` is the
+same two columns without the predicate; schema version 5.
+
+Three things about how this was found are worth more than the number. It **was** found during the
+cutover, allowlisted in the §3.2 plan guard with an investigation and one candidate fix —
+substituting the denormalized `fact.path`, which `ix_fact_path` already serves — and then correctly
+escalated rather than decided, because that trade buys speed with a rename staleness window (D8).
+The escalation was right and is why this was cheap to settle; an index is a third option that costs
+nothing on either side, since it changes which rows are *found* and never which are counted. What
+the escalation could not weigh is **how much** it was deferring, because a plan is not a clock:
+§3.2 could see `SCAN f2` and had no way to see that it was 99% of the statement. Pair a plan finding
+with a timing before ranking it. And the allowlist entry is deleted rather than annotated, so the
+guard fails if the scan returns.
+
+**A migration whose DDL is conditional needs a fixture that is actually missing it.** The version 5
+guard asserted the right shape and could not see the wrong one: `WriteVersion1Store` builds its
+"old" store by opening a *current*-schema one and rolling `schema_version` back, so the index was
+already present and `CREATE INDEX IF NOT EXISTS` no-opped. Measured — flipping the migration to
+create a *partial* index left 18 of 18 green. Version 4's step escapes this only by accident of
+shape, being an unconditional `DROP`/`CREATE` pair. The test now drops the index first, and that
+same break reds exactly one test. The shape is asserted concretely (`subject_id,predicate
+partial=0`) rather than only fresh-equals-migrated, because two stores that both lack the index
+compare equal.
+
+**Falsify against a committed tree.** The harness restored each arm with `git checkout --`, which
+restores to HEAD — and the change under test was uncommitted, so every arm reverted the work instead
+of the arm's patch and the "expect red" arms went red for the wrong reason. Separately, an earlier
+arm's pattern spelled `·` as a bare `.`, one regex character against two UTF-8 bytes, so the patch
+silently no-opped and the suite stayed green: a falsification reporting success while proving
+nothing. Both are the same failure in different clothes, and the defence is the same one line —
+assert the patch landed (`git diff --quiet`) before trusting an arm's result.
+
 *Open items deliberately left for later: entity-resolution fuzziness thresholds (start
 exact + alias + case-insensitive, per spec §12); whether `UserPromptSubmit` recall
 earns default-on (decide from M0/M1 coverage data); archive FTS for history search

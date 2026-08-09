@@ -600,6 +600,40 @@ leaves ~49 ms, with no room for an 84 ms read), so do not cite it as the larger 
 `TokenEstimator.Estimate` is `Math.Ceiling(text.Length / 3.6)` — arithmetic on a length, never a
 tokenization, which is why deferring it was rejected (D58).
 
+**`ix_fact_thread` looks redundant with `ux_fact_live` and is not — deleting it costs 93% of every
+recall.** Both index `fact(subject_id, predicate)`; `ux_fact_live` is partial on `valid_to IS NULL`,
+and the query that needs the other one counts a thread's *whole* history, closed rows included,
+which is what makes it a version count rather than a live-fact count (D57). A partial index cannot
+answer outside its predicate, so without the second one SQLite full-scans `fact` once per returned
+candidate. Measured with the subquery patched out: 1,545 ms → 105 ms at 50,097 live facts for a term
+matching 45,132, and 31.8 ms → 1.0 ms at 5,308 — the cost is *candidates × corpus*, so it was never
+a large-store problem, only invisible at 5k. Two process lessons came with it, both cheap and both
+paid for. `SCAN f2` was found during the cutover, investigated, and correctly escalated rather than
+decided — but ranked low, because **a plan is not a clock**: `EXPLAIN QUERY PLAN` could show the
+scan and could not show that it was 99% of the statement, so pair a plan finding with a timing
+before deciding it can wait. And a migration whose DDL is conditional needs a fixture genuinely
+missing it: `WriteVersion1Store` rolls a *current*-schema store back, so `CREATE INDEX IF NOT
+EXISTS` no-opped and a deliberately wrong migration left 18 of 18 green until the test dropped the
+index first (D60).
+
+**Recall says when a lane did not run, and that note is keyed to lane state, never to hit count.**
+With one lane the corroboration term degenerates to `(rank IS NOT NULL) > 1` — false for every row —
+so coverage cannot reach `high` and an overlap-only fact is absent entirely; the digest then reads
+`coverage: none · gaps: no facts matched` about a store holding the answer, which is
+indistinguishable from an empty store and ends D6's loop before it starts. So `AvailabilityNote`
+rides the coverage header at *every* coverage value, and fires on `Unavailable` but never on `Off` —
+D18 makes `Off` a supported configuration and D37 says a diagnostic reporting a choice as a fault is
+one people stop reading. A query that legitimately matches nothing must keep saying so, with no
+note. `RecallRanker.OverlapUnavailableDetail` is shared with `RetrievalExplainer`'s lane row so the
+two surfaces cannot word the same state differently (D60).
+
+**Falsify against a committed tree, and assert the patch landed.** A harness that restores arms with
+`git checkout --` restores to HEAD, so an uncommitted change under test is reverted by its own
+falsification and every arm goes red for the wrong reason. The sibling failure is quieter: a pattern
+spelling `·` as a bare `.` matches one byte against two in UTF-8, so the break silently no-ops and
+the suite stays green — a falsification reporting success while proving nothing. One `git diff
+--quiet` check before trusting an arm catches both (D60).
+
 **The webhook delivers the telemetry log; it is not a second event system.** Every kind Engram
 records already lands in `telemetry.jsonl`, so `WebhookService` tails that file rather than being
 notified at the point of emission — which is what makes a subscriber's live feed and a dashboard's
