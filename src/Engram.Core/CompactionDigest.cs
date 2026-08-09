@@ -15,6 +15,18 @@ public static class CompactionDigest
     public const int MaxItems = 25;
     public const int MaxItemLength = 500;
 
+    /// <summary>
+    /// The instruction's own illustrative items. A summarizer that echoes the instruction rather
+    /// than complying with it makes this text the last well-formed block in the record (rule 2),
+    /// which would otherwise reach the store as two facts. The parser drops items exactly equal to
+    /// these, counted under their own name — see docs/session-capture-design.md, item-grammar
+    /// section, "found in review before any code existed."
+    /// </summary>
+    public const string ExampleItem1 = "one durable fact, on one line";
+    public const string ExampleItem2 = "another";
+
+    public static readonly IReadOnlyList<string> ExampleItems = [ExampleItem1, ExampleItem2];
+
     public static readonly string Instruction = $"""
         Engram memory capture. This is an addition to your summary, not a change to it.
 
@@ -22,8 +34,8 @@ public static class CompactionDigest
         in exactly this format, with nothing after the closing line:
 
         {OpenSentinel}
-        - one durable fact, on one line
-        - another
+        - {ExampleItem1}
+        - {ExampleItem2}
         {CloseSentinel}
 
         Rules for the block:
