@@ -120,7 +120,7 @@ public class HookCommandTests
     }
 
     [Fact]
-    public void PreCompact_ExitsZero_WritesNothingToStdout()
+    public void PreCompact_ExitsZero_EmitsDigestInstructionOnBareStdout()
     {
         using var sandbox = new SandboxHome();
         var stdout = new StringWriter();
@@ -129,8 +129,18 @@ public class HookCommandTests
         var exitCode = CliApp.Run(["--home", sandbox.Home.Root, "hook", "pre-compact"], stdout, stderr);
 
         Assert.Equal(0, exitCode);
-        Assert.Equal(string.Empty, stdout.ToString());
         Assert.Equal(string.Empty, stderr.ToString());
+
+        var output = stdout.ToString();
+
+        // hookSpecificOutput is measured to be REJECTED on this event, so a habit-reflex
+        // WriteJson here would silently break the channel; this runs first so it gives a
+        // clearer failure message than the equality check below would on that regression.
+        Assert.False(output.TrimStart().StartsWith('{'), "PreCompact stdout must be bare, not a JSON envelope");
+
+        // Nothing else may write to this channel: contains-only checks would still pass if
+        // something appended a JSON envelope after the bare instruction.
+        Assert.Equal(CompactionDigest.Instruction + "\n", output);
     }
 
     [Fact]

@@ -4498,3 +4498,87 @@ which nothing currently does — is understood to require restoring one.
 exact + alias + case-insensitive, per spec §12); whether `UserPromptSubmit` recall
 earns default-on (decide from M0/M1 coverage data); archive FTS for history search
 (only if `LIKE` scans prove slow).*
+
+## D62 — The PreCompact digest instruction: no channel collision, a line-anchored block, and a cap enforced downstream
+
+Full design record and build order: `docs/session-capture-design.md`. This entry is the
+transcription D61 asked for.
+
+**The compaction-guard plugin does not collide, and the open question was answered by reading the
+artifact rather than reasoning about it.**
+`~/.claude/plugins/cache/jcline-claude-compaction-tools/compaction-guard/0.1.0/hooks/hooks.json`
+registers `SessionStart` and `PostCompact` only; it has no `PreCompact` hook, and its directive
+text never mentions `PreCompact`. Engram is the only writer on that hook's bare stdout — there is
+no ordering to get wrong. What is real is an *instruction* interaction, not a channel one: guard's
+directive addresses the assistant and is read by the summarizer as ordinary context it is
+compressing; Engram's addresses the summarizer directly, out of band, at `PreCompact`. Two
+instructions, one reader, different provenance. Three wording rules hold the two compatible, and
+all three are load-bearing: the instruction opens by declaring itself an addition and says to write
+the summary exactly as it otherwise would (guard's *preserve their wording* and a naive reading of
+Engram's own compression are in direct tension the moment the block is read as applying to the
+prose); it closes by stating its own subordination — any conflict with another instruction about
+the summary and the other instruction wins, because a memory backstop that degrades the summary is
+a net loss against a primary capture path that already works (106 `remember` calls against 0
+`digest`); and it never names a tool, since the summarizer has none and an instruction its reader
+cannot structurally follow only spends the attention it needs for the instructions it can follow.
+
+**The format is `<engram-digest v="1">` / `</engram-digest>`, line-anchored, ASCII-only,
+versioned, XML-ish rather than fenced.** Line-anchored because the alternative is a delimiter rare
+in prose, and nothing is rare in prose these summaries actually produce. ASCII-only because D60
+already paid for the alternative: a pattern spelling `·` as a bare `.` matched one byte against two
+in UTF-8, the break silently no-opped, and the suite stayed green — a sentinel that a grep, a test
+pattern and a C# literal must all spell identically has no business containing a multi-byte
+character. Versioned so a parser that accepts only `v="1"` cannot be confused by a future `v="2"`
+block, and so documentation can write an illustrative block that is not a live one by spelling it
+`v="EXAMPLE"`, which a strict parser does not recognise as an open sentinel at all. XML-ish rather
+than a fenced code block because fences nest badly and the facts this store holds are frequently
+code-heavy — one backtick run inside an item would terminate a fence early.
+
+**One item is one line, one self-contained sentence, and nothing else — no subject field, no
+predicate field, no separator.** `SessionFacts.Append` does take an optional subject, so a
+`subject :: statement` grammar was available and rejected: every inline separator available to
+carry it is ambiguous against the prose these summaries contain (`::` is a C++/Rust scope operator,
+`|` is a markdown table and a shell pipe, a bracketed prefix mis-splits this very repo's own
+`[memory] precedence` line). A mis-split subject silently corrupts the statement, which is exactly
+the partial garbage the harvester (todo 2) exists never to produce. If subjects turn out to be
+needed they arrive at `v="2"` as their own full-line-anchored field, never as an inline separator.
+
+**Parse strictness is split between block structure and item content, and conflating them is the
+bug to avoid.** *Malformed input yields nothing, never partial garbage* is a rule about the block:
+the open and close sentinels must each stand alone on their line; a non-blank line inside the block
+that is not `- ` or `* ` followed by non-empty text (a heading, a sentence of prose, a fence) makes
+the whole block malformed and the record yields nothing; an unterminated block yields nothing.
+**If more than one well-formed block is present, the harvester takes the last one, not "reject the
+record."** Earlier blocks are echoes — of the design doc, of the instruction, of the previous
+compaction's summary sitting at the head of the new context — and rejecting on duplicates would
+fail systematically from the second compaction onward, and permanently in a repo whose own docs
+contain the sentinel. This is safe because replay is already idempotent: `SessionFacts.PathFor`
+fingerprints the statement, and per D57 `Append` returns an existing id for a live match, so the
+same sentence harvested twice in one session resolves to one fact. Item-level problems are a
+different rule and **drop the item, not the block**: longer than 500 characters, or a duplicate of
+an item already taken from the same block. No minimum length — a length floor is a poor proxy for
+self-containedness and would reject a legitimately terse fact.
+
+**The cap is 25 items, enforced by the harvester, not trusted from the instruction.** The
+instruction states the limit so the summarizer *selects* rather than dumps; the harvester takes the
+first 25 after filtering, because that is what actually bounds the corpus, and items seen versus
+items taken are both recorded so the two can disagree visibly. Putting the cap at the harvester
+makes it a lever: the growth regime is still an open question (five compactions a day at cap is
+~45,000 facts a year, against a store where a term matching most of 50,097 facts costs 125.9 ms —
+D58/D60), and 25 can be lowered later without touching the block format, the instruction, or
+anything already harvested.
+
+**No per-compaction nonce in v1**, same reasoning shape as D58's rejected tripwire. The channel
+rests on one probe against one manual compaction; requiring the summarizer to copy a nonce verbatim
+adds a second, independent failure mode to an unproven first one, and when nothing is harvested
+*ignored* and *fumbled the nonce* would be indistinguishable. The escalation trigger is concrete
+rather than a vague "if this proves unreliable": add a nonce at `v="2"` the first time either the
+instruction's own placeholder text (`one durable fact, on one line`) turns up in the store — meaning
+the echo path fired — or harvest is asked to run over content that did not originate with the
+summarizer.
+
+Open past this decision, and left to whoever designs todo 2: whether harvested items may supersede
+existing facts or only append; the growth-regime cap number, which needs the real rate measured
+first; and scope/privacy — widening automatic ingestion from the user's words to the assistant's
+reasoning, which is explicitly the user's call, not the implementor's, and blocks todo 2 but not
+todo 1.

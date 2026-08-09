@@ -11,10 +11,6 @@ internal sealed record HookSpecificOutput(
 internal sealed record AdditionalContextHookOutput(
     [property: JsonPropertyName("hookSpecificOutput")] HookSpecificOutput HookSpecificOutput);
 
-internal sealed record PreCompactHookOutput(
-    [property: JsonPropertyName("decision")] string Decision,
-    [property: JsonPropertyName("reason")] string Reason);
-
 // agent_id is the discriminator for "this is a subagent" — agent_type is not, since it
 // is also set on a top-level `--agent` session. Note the key name differs by event:
 // SubagentStart says agent_type where PreToolUse's tool_input says subagent_type.
@@ -32,6 +28,5 @@ internal sealed record HookToolInput(
     [property: JsonPropertyName("file_path")] string? FilePath = null);
 
 [JsonSerializable(typeof(AdditionalContextHookOutput))]
-[JsonSerializable(typeof(PreCompactHookOutput))]
 [JsonSerializable(typeof(HookStdinInput))]
 internal sealed partial class HookJsonContext : JsonSerializerContext;

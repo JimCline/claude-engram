@@ -42,7 +42,7 @@ internal static class HookCommand
             // file, and its budget is 10ms unconditionally.
             "session-start" => RunSessionStart(home, stdout, ReadPayload()),
             "subagent-start" => RunSubagentStart(home, stdout, ReadPayload()),
-            "pre-compact" => RunPreCompact(home, ReadPayload()),
+            "pre-compact" => RunPreCompact(home, stdout, ReadPayload()),
             "user-prompt" => RunUserPrompt(home, stdout, ReadPayload()),
             "file-touched" => RunFileTouched(home, ReadPayload()),
             _ => 0,
@@ -325,7 +325,17 @@ internal static class HookCommand
         return 0;
     }
 
-    private static int RunPreCompact(EngramHome home, HookStdinInput? payload)
+    // For any initialised home (the shared gate above already returns 0 before this runs for
+    // an uninitialised one), emits unconditionally: no config read, no database open. There is
+    // no further state that could make the right answer differ, and a hook that decided from
+    // store state would be a hook that can be wrong about it (the same argument D51 uses for
+    // the primer against an empty store). Written bare, never through
+    // WriteJson/hookSpecificOutput — that envelope is measured to be REJECTED on this event,
+    // the exact inverse of SessionStart/SubagentStart. The telemetry write stays first: if the
+    // stdout write throws, the record of the attempt has already landed. FactCount stays null
+    // on this record — the instruction's length and its item cap are not facts returned
+    // (D43/D46).
+    private static int RunPreCompact(EngramHome home, TextWriter stdout, HookStdinInput? payload)
     {
         var sessionId = ResolveSessionId(payload);
 
@@ -339,6 +349,9 @@ internal static class HookCommand
         catch
         {
         }
+
+        stdout.Write(CompactionDigest.Instruction);
+        stdout.Write('\n');
 
         return 0;
     }

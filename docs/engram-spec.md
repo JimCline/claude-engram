@@ -487,7 +487,7 @@ Design notes: `remember` on a live-fact collision *without* `reason` returns a s
 |---|---|---|
 | `SessionStart` | `engram hook session-start` | Open session row; incremental index (≤ `max_sync_index_ms` sync, rest detached); emit primer (§6.3) as `additionalContext` |
 | `PostToolUse` (Edit\|Write\|MultiEdit\|NotebookEdit) | `engram hook file-touched` | Queue touched files for reindex; O(ms), never blocks |
-| `PreCompact` | `engram hook pre-compact` | Inject one instruction: flush durable learnings via `engram_digest` before context is compacted |
+| `PreCompact` | `engram hook pre-compact` | Write a digest instruction on bare stdout asking the compaction summarizer to append a delimited block of durable facts to its own summary (D62); a harvester reads it back into memory |
 | `SessionEnd` / `Stop` | `engram hook session-end` | Close session row; if no digest was written, log it (visible in `engram doctor`) |
 | `UserPromptSubmit` *(opt-in, off by default)* | `engram hook prompt-recall` | ≤ 150-token relevant recall injected as context; disabled by default to honor the no-flooding principle |
 
