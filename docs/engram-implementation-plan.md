@@ -3103,23 +3103,59 @@ inherits D52's assertions at four widths, but the width is read once per frame a
 the move-up and the write is a row this cannot see — the same class of thing D52 left one column
 unwritten for.
 
-## PreCompact cannot inject context
+## PreCompact injects on bare stdout, and that is still not how `digest` gets called
 
-Spec §10.1 assumes `PreCompact` can "inject one instruction" the same way `SessionStart`
-injects the primer via `hookSpecificOutput.additionalContext`. It cannot. Per the
-[Claude Code hooks reference](https://docs.claude.com/en/docs/claude-code/hooks),
-`additionalContext` injection is documented only for `SessionStart`, `UserPromptSubmit`,
-`PostToolUse`, and a handful of other events — `PreCompact` is not among them. The only
-`PreCompact` output that reaches the model is the top-level `decision`/`reason` pair, and
-`"decision": "block"` does not annotate the compaction — it refuses it outright. Emitting
-that on every `PreCompact` call blocks the user's every compaction, which is not what the
-spec intended.
+The erratum this section used to carry — *no injection channel exists for `PreCompact`* —
+was **wrong, and it was wrong in the way that is hardest to notice: it was read rather than
+measured.** It cited the hooks reference, which lists `additionalContext` for `SessionStart`,
+`UserPromptSubmit`, `PostToolUse` and others and omits `PreCompact`, and concluded from the
+omission. Measured 2026-08-09 by registering two `PreCompact` hooks against one real
+compaction, each writing to a log *before* writing to stdout so "never fired" could be told
+from "fired and discarded":
 
-> **Erratum (spec §10.1):** no injection channel exists for `PreCompact`. `engram hook
-> pre-compact` now only records its telemetry event and exits 0, emitting nothing on
-> stdout. The "flush durable learnings via `engram_digest`" nudge moves to the session
-> primer (`PrimerBuilder`) and the recall output footer, both already seen by the model
-> on every session and every recall.
+| channel | result |
+|---|---|
+| bare stdout | **delivered** — the marker arrived in the compaction request's *Additional Instructions*, and the summarizing model reproduced it on request |
+| `hookSpecificOutput.additionalContext` | **rejected** — `Hook JSON output validation failed — (root): Invalid input` |
+
+So the two channels are exactly inverted from `SessionStart`, where the envelope is required
+and bare stdout is silently discarded. The reference is wrong about this hook family in *both*
+directions, which makes the rule general: **measure the channel, never read it.** A probe costs
+one compaction and settles it; a documentation citation settled it wrongly here for months.
+
+Two caveats on that measurement, both real. Only the `manual` matcher was exercised — `auto`
+was registered and no auto-compaction occurred, and auto is the case that matters more, since
+it is the one nobody asked for. And the schema Claude Code prints on a validation failure is
+**not exhaustive**: it omits `SessionStart`, which demonstrably works, so its contents are
+evidence and not proof.
+
+**The channel working does not make §10.1's goal reachable through it,** and this is the part
+the original erratum got right for the wrong reason. `PreCompact` fires, the summarization runs,
+the new context begins — there is no model turn in between. The model that reads this stdout is
+the *summarizer*, which has no tools and whose only output is the summary. `PreCompact` therefore
+cannot cause a tool call at all; the most it can do is plant an obligation that the *next* model
+discharges, by which time the detail is gone. For `digest` that is backwards — its value is
+capturing what was learned while the material still exists, and a digest written from a summary
+is a digest of a digest.
+
+> **Erratum, retracted and replaced (spec §10.1):** `PreCompact` *can* inject, on bare stdout.
+> What it cannot do is cause a tool call, for a sequencing reason rather than a channel one. The
+> lever that can is **`Stop`**, whose own schema entry reads *"Feedback for the model; the
+> conversation continues so the model can act on it"* — turn end, full context, tools available.
+> Engram registers no `Stop` hook and `HookCommand` has no `stop` verb, which is the mechanical
+> reason M0's *"`digest` fires at session end without prompting"* has never been met. That gate
+> is therefore **unmet, not unmeetable**, and it was retired in error.
+
+The fallback this section installed — moving the nudge to the session primer and the recall
+footer — is **measured and does not work.** The footer line `→ engram_remember what you discover
+· engram_digest before session ends` rode 30 recalls across four days and produced 0 `digest`
+events (and 0 `forget`, 1 `revise`). Standing guidance in a place the model already reads is not
+a trigger; D51 says as much about memory precedence and it applies here unchanged. Anything built
+on `Stop` needs a gate — it fires every turn, and a hook that nags on all of them is one the model
+learns to skip (D37, applied to a hook) — and needs its telemetry to distinguish a prompted digest
+from a chosen one, or it inflates the very number D18 and D43 read to answer whether the model
+reaches for memory, in the direction that looks like success. That is the trap `user-prompt`
+avoided by taking a kind of its own (D56).
 
 ---
 
