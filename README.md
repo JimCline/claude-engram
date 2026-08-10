@@ -97,6 +97,11 @@ works, but it is outside what this repository tests or reasons about.
 
 ## Installing
 
+**Supported: macOS, Linux, and Windows via WSL (WSL takes the Linux path below).
+Windows outside WSL is unvalidated** — `install.ps1` exists but nobody has run it on a
+Windows machine yet to confirm it works end to end; see the Windows note further down and
+`docs/team-readiness-checklist.md`.
+
 `scripts/install.sh` builds the binary, installs it, puts it on your `PATH`, initialises
 the Engram home, and starts the server. **Running it installs** — no flag required:
 
