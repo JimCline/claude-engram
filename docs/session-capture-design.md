@@ -4,14 +4,18 @@ Working document for the change that replaces "the model remembers to call `engr
 with something that does not depend on the model remembering. Read
 `docs/engram-implementation-plan.md` first; this only covers what is not settled there.
 
-**Status: built end to end, pending reinstall verification. Stages A, B, and C are all green**, and
-auto-compaction is now confirmed too — see *The PostCompact trigger*. **2a (the parser)** —
-`src/Engram.Core/CompactionDigestParser.cs`, 23 tests — **and 2b (the trigger and writer)** —
-`HookCommand.RunPostCompact`, `HookPostCompactTests.cs` — are both built. Scope, privacy, and
-provenance are all decided and implemented; provenance needed no schema change (see 2b). Remaining:
-confirm the reinstalled binary's `PostCompact` hook fires correctly on this machine's *next* real
-compaction (built tonight, not yet observed live), and todo 3 (fold `digest` into a slash command)
-is untouched. Resume at *What's next*.
+**Status: built, live-confirmed end to end, 2026-08-10.** 2a and 2b are both built and green — see
+*What's next* for the parser and *The PostCompact trigger* for the writer. Live proof, not just
+tier-3 evidence: a real compaction produced a `post-compact` telemetry record at `00:11:34Z` and, in
+the same instant, six well-formed facts under `/sessions/52/compaction-digest/` — real project
+content (a milestone roadmap), no narration, no self-reference, no example-item leakage. One false
+negative preceded it, worth recording as its own lesson rather than a code defect: the first `/compact`
+attempt ran in a Claude Code session that had been open since before `PostCompact` was added to
+`hooks.json` — hook registrations are read once at session start, not reloaded on a plugin file
+change, so that session could still fire the pre-existing `pre-compact` and post-compaction
+`session-start` hooks while never having `post-compact` registered at all. A fresh session's
+compaction is what produced the live confirmation above. Remaining: todo 3 (fold `digest` into a
+slash command) is untouched.
 
 ---
 
