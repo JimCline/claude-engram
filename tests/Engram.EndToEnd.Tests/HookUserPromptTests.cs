@@ -21,7 +21,7 @@ public class HookUserPromptTests
 
         var (exitCode, stdout, stderr) = EngramProcess.RunWithStdin(
             home.Root,
-            Payload("I went to see a Spiderman movie last Saturday"),
+            Payload("I went to see a Spiderman movie last Saturday", TypedTranscript(home.Root)),
             "hook", "user-prompt");
 
         Assert.Equal(0, exitCode);
@@ -49,7 +49,9 @@ public class HookUserPromptTests
         using var home = new TestHome();
 
         var (exitCode, stdout, stderr) = EngramProcess.RunWithStdin(
-            home.Root, Payload("run the tests and tell me what fails"), "hook", "user-prompt");
+            home.Root,
+            Payload("run the tests and tell me what fails", TypedTranscript(home.Root)),
+            "hook", "user-prompt");
 
         Assert.Equal(0, exitCode);
         Assert.Equal(string.Empty, stdout);
@@ -68,7 +70,7 @@ public class HookUserPromptTests
 
         EngramProcess.RunWithStdin(
             home.Root,
-            Payload("I moved to Seattle in March. Now fix the failing test and push it."),
+            Payload("I moved to Seattle in March. Now fix the failing test and push it.", TypedTranscript(home.Root)),
             "hook", "user-prompt");
 
         var statement = Assert.Single(ReadCapturedStatements(home.Root));
@@ -85,7 +87,9 @@ public class HookUserPromptTests
         using var home = new TestHome(initialize: false);
 
         var (exitCode, stdout, _) = EngramProcess.RunWithStdin(
-            home.Root, Payload("I grew up in Fort Collins, Colorado"), "hook", "user-prompt");
+            home.Root,
+            Payload("I grew up in Fort Collins, Colorado", TypedTranscript(home.Root)),
+            "hook", "user-prompt");
 
         Assert.Equal(0, exitCode);
         Assert.Equal(string.Empty, stdout);
@@ -101,11 +105,12 @@ public class HookUserPromptTests
         Assert.SkipUnless(EndToEndBinary.Path is not null, EndToEndBinary.SkipReason);
 
         using var home = new TestHome();
+        var transcript = TypedTranscript(home.Root);
 
         var (_, firstStdout, _) = EngramProcess.RunWithStdin(
-            home.Root, Payload("I use a Dvorak keyboard"), "hook", "user-prompt");
+            home.Root, Payload("I use a Dvorak keyboard", transcript), "hook", "user-prompt");
         var (secondExit, secondStdout, _) = EngramProcess.RunWithStdin(
-            home.Root, Payload("I use a Dvorak keyboard."), "hook", "user-prompt");
+            home.Root, Payload("I use a Dvorak keyboard.", transcript), "hook", "user-prompt");
 
         Assert.Contains("Dvorak", firstStdout);
         Assert.Equal(0, secondExit);
@@ -114,12 +119,145 @@ public class HookUserPromptTests
         Assert.Single(ReadCapturedStatements(home.Root));
     }
 
-    private static string Payload(string prompt) =>
+    // The bug this whole file exists to guard against: a cross-session peer message reads as
+    // ordinary first-person prose to the classifier, exactly like a real statement would.
+    // Ground-truthed against this project's own transcript, 2026-08-09/10 — every real
+    // mis-capture carried promptSource "system", every real capture "typed".
+    [Fact]
+    public void DoesNotCaptureACrossSessionPeerMessage()
+    {
+        Assert.SkipUnless(EndToEndBinary.Path is not null, EndToEndBinary.SkipReason);
+
+        using var home = new TestHome();
+        var transcript = SystemTranscript(home.Root, origin: "peer");
+
+        var (exitCode, stdout, _) = EngramProcess.RunWithStdin(
+            home.Root,
+            Payload("Another Claude session sent a message: I decided to use SQLite for storage.", transcript),
+            "hook", "user-prompt");
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(string.Empty, stdout);
+        Assert.Empty(ReadCapturedStatements(home.Root));
+    }
+
+    [Fact]
+    public void DoesNotCaptureABackgroundTaskNotification()
+    {
+        Assert.SkipUnless(EndToEndBinary.Path is not null, EndToEndBinary.SkipReason);
+
+        using var home = new TestHome();
+        var transcript = SystemTranscript(home.Root, origin: "task-notification");
+
+        var (exitCode, stdout, _) = EngramProcess.RunWithStdin(
+            home.Root,
+            Payload("<task-notification>I found the bug in the parser.</task-notification>", transcript),
+            "hook", "user-prompt");
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(string.Empty, stdout);
+        Assert.Empty(ReadCapturedStatements(home.Root));
+    }
+
+    // Provenance is undocumented and this hook's own stdin carries none of it (D62's
+    // provenance fields live only on the transcript record) — a missing or unreadable
+    // transcript_path must fail closed, the same "harvest nothing, never harvest garbage"
+    // rule the PostCompact harvester follows.
+    [Fact]
+    public void DoesNotCaptureWhenTranscriptPathIsMissingFromThePayload()
+    {
+        Assert.SkipUnless(EndToEndBinary.Path is not null, EndToEndBinary.SkipReason);
+
+        using var home = new TestHome();
+
+        var payload = JsonSerializer.Serialize(new JsonObject
+        {
+            ["session_id"] = "e2e-user-prompt",
+            ["prompt"] = "I prefer tabs over spaces",
+        });
+
+        var (exitCode, stdout, _) = EngramProcess.RunWithStdin(home.Root, payload, "hook", "user-prompt");
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(string.Empty, stdout);
+        Assert.Empty(ReadCapturedStatements(home.Root));
+    }
+
+    [Fact]
+    public void DoesNotCaptureWhenTranscriptPathPointsToAMissingFile()
+    {
+        Assert.SkipUnless(EndToEndBinary.Path is not null, EndToEndBinary.SkipReason);
+
+        using var home = new TestHome();
+        var missingPath = Path.Combine(home.Root, "no-such-transcript.jsonl");
+
+        var (exitCode, stdout, _) = EngramProcess.RunWithStdin(
+            home.Root, Payload("I prefer tabs over spaces", missingPath), "hook", "user-prompt");
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(string.Empty, stdout);
+        Assert.Empty(ReadCapturedStatements(home.Root));
+    }
+
+    // Proves the read targets the LAST line, not the first: an earlier "typed" record must
+    // not make a later "system" record — the one that actually corresponds to this
+    // submission — look genuine.
+    [Fact]
+    public void UsesTheLastTranscriptLineNotAnEarlierOne()
+    {
+        Assert.SkipUnless(EndToEndBinary.Path is not null, EndToEndBinary.SkipReason);
+
+        using var home = new TestHome();
+        var transcript = Path.Combine(home.Root, "transcript.jsonl");
+        File.WriteAllText(
+            transcript,
+            TranscriptLine("typed", origin: null) + "\n" + TranscriptLine("system", origin: "peer") + "\n");
+
+        var (exitCode, stdout, _) = EngramProcess.RunWithStdin(
+            home.Root, Payload("I prefer tabs over spaces", transcript), "hook", "user-prompt");
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(string.Empty, stdout);
+        Assert.Empty(ReadCapturedStatements(home.Root));
+    }
+
+    private static string Payload(string prompt, string transcriptPath) =>
         JsonSerializer.Serialize(new JsonObject
         {
             ["session_id"] = "e2e-user-prompt",
             ["prompt"] = prompt,
+            ["transcript_path"] = transcriptPath,
         });
+
+    private static string TranscriptLine(string promptSource, string? origin)
+    {
+        var record = new JsonObject
+        {
+            ["type"] = "user",
+            ["promptSource"] = promptSource,
+        };
+
+        if (origin is not null)
+        {
+            record["origin"] = new JsonObject { ["kind"] = origin };
+        }
+
+        return JsonSerializer.Serialize(record);
+    }
+
+    private static string TypedTranscript(string root)
+    {
+        var path = Path.Combine(root, "transcript.jsonl");
+        File.WriteAllText(path, TranscriptLine("typed", origin: "human") + "\n");
+        return path;
+    }
+
+    private static string SystemTranscript(string root, string origin)
+    {
+        var path = Path.Combine(root, "transcript.jsonl");
+        File.WriteAllText(path, TranscriptLine("system", origin) + "\n");
+        return path;
+    }
 
     // Opened read-only, and through the provider rather than Engram.Core's own open routine:
     // a tier-3 test that asserts using the code under test stops saying anything about the

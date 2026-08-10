@@ -30,12 +30,23 @@ public class ActivityFeedEventsTests
             .ToList();
     }
 
-    private static string Payload(string prompt) =>
-        JsonSerializer.Serialize(new Dictionary<string, string>
+    // A capturing prompt needs a transcript_path whose last line carries promptSource
+    // "typed" — see HookUserPromptTests.cs for the discriminator's own test coverage; this
+    // file only needs a minimal fixture to keep exercising the telemetry record it wraps.
+    private static string Payload(string prompt, string? transcriptPath = null) =>
+        JsonSerializer.Serialize(new Dictionary<string, string?>
         {
             ["session_id"] = "s1",
             ["prompt"] = prompt,
+            ["transcript_path"] = transcriptPath,
         });
+
+    private static string TypedTranscript(string root)
+    {
+        var path = Path.Combine(root, "transcript.jsonl");
+        File.WriteAllText(path, """{"type":"user","promptSource":"typed"}""" + "\n");
+        return path;
+    }
 
     [Fact]
     public void AUserPromptThatCapturesAFact_IsRecorded()
@@ -46,7 +57,7 @@ public class ActivityFeedEventsTests
 
         var (exitCode, _, stderr) = EngramProcess.RunWithStdin(
             home.Root,
-            Payload("I went to see a Spiderman movie last Saturday"),
+            Payload("I went to see a Spiderman movie last Saturday", TypedTranscript(home.Root)),
             "hook", "user-prompt");
 
         Assert.Equal(0, exitCode);
@@ -93,7 +104,7 @@ public class ActivityFeedEventsTests
         Assert.SkipUnless(EndToEndBinary.Path is not null, EndToEndBinary.SkipReason);
 
         using var home = new TestHome();
-        var payload = Payload("I went to see a Spiderman movie last Saturday");
+        var payload = Payload("I went to see a Spiderman movie last Saturday", TypedTranscript(home.Root));
 
         var (first, _, _) = EngramProcess.RunWithStdin(home.Root, payload, "hook", "user-prompt");
         Assert.Equal(0, first);

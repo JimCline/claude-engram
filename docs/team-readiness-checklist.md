@@ -7,13 +7,19 @@ file for the next round.
 
 ## Blocking
 
-- [ ] **Fix the `UserPromptSubmit` mis-capture bug.** The hook sometimes stores text from a
-  subagent's report or a cross-session peer message as if the user had typed it. The fix is
-  already documented but not applied: a genuine user turn carries `promptSource`/`origin`/
-  `permissionMode` and no `toolUseResult`; injected or tool-borne text lacks that signature. See
-  `docs/session-capture-design.md`, "The transcript." Currently active — about 7 stray captures
-  were manually retracted in one session on 2026-08-09/10 alone, with nothing but a human
-  noticing to catch them.
+- [x] **Fix the `UserPromptSubmit` mis-capture bug.** Fixed 2026-08-10. Ground-truthed against
+  this session's own transcript rather than assumed: every one of 16 real mis-captures that
+  night carried `promptSource: "system"` on the transcript record Claude Code wrote for that
+  submission (`origin.kind` was `"peer"` for cross-session messages, `"task-notification"` for
+  background task notifications); both of the 2 genuine typed prompts carried `"typed"`. That
+  field isn't on the hook's own stdin payload — only `transcript_path` is, confirmed against
+  Claude Code's official hook docs — so the fix is a bounded, tail-only read of the transcript's
+  last line in `HookCommand.IsGenuinelyTyped`, checked after classification (the common case is
+  nothing to capture, and that path shouldn't pay for a file read). Any failure (missing path,
+  unreadable file, unparseable line) fails closed — skip capture, never guess. 10 new/updated
+  tests in `HookUserPromptTests.cs`, all passing against the published binary. Rebuilt and
+  reinstalled; takes effect on the next `UserPromptSubmit` in any already-running session, since
+  this changes behavior inside an existing hook rather than registering a new one.
 
 ## Should resolve before wider rollout
 

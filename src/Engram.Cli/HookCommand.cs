@@ -1,4 +1,6 @@
+using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Engram.Core;
 
 namespace Engram.Cli;
@@ -84,6 +86,23 @@ internal static class HookCommand
             return 0;
         }
 
+        // A cross-session peer message or a background task notification arrives on this
+        // hook's own Prompt field looking exactly like ordinary first-person prose — the
+        // classifier above cannot tell them apart, and neither can this hook's stdin
+        // payload, which carries no provenance field at all (session_id, cwd,
+        // transcript_path, permission_mode are the documented common fields; nothing marks
+        // who or what submitted it). The transcript record Claude Code just wrote for this
+        // exact submission does: confirmed against every real capture and every real
+        // mis-capture in this session's own history, 2026-08-09/10 — 2 of 2 genuine prompts
+        // carried promptSource "typed", 16 of 16 false positives carried "system". See
+        // docs/session-capture-design.md, "The transcript". Checked after classification,
+        // not before: the common case is an ordinary prompt with nothing to capture, and
+        // that path should not pay for a file read it will not use.
+        if (!IsGenuinelyTyped(payload))
+        {
+            return 0;
+        }
+
         var sessionId = ResolveSessionId(payload);
         var stored = new List<string>(candidates.Count);
 
@@ -146,6 +165,57 @@ internal static class HookCommand
             new AdditionalContextHookOutput(new HookSpecificOutput("UserPromptSubmit", nudge)));
 
         return 0;
+    }
+
+    // Bounded, tail-only, and any failure says "not typed" rather than guessing — the
+    // transcript format is private and undocumented (docs/session-capture-design.md, "The
+    // transcript"), so the failure mode here has to be "capture nothing", never "capture
+    // garbage". A missing path, an unreadable file, a record larger than the tail window, or
+    // a shape this cannot parse all fall through the same catch.
+    private const int TranscriptTailBytes = 262_144;
+
+    private static bool IsGenuinelyTyped(HookStdinInput? payload)
+    {
+        if (payload?.TranscriptPath is not { Length: > 0 } path)
+        {
+            return false;
+        }
+
+        try
+        {
+            var line = ReadLastTranscriptLine(path);
+            return line is not null && JsonNode.Parse(line)?["promptSource"]?.GetValue<string>() == "typed";
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    // UserPromptSubmit fires before Claude processes the prompt, so the record for this exact
+    // submission is already the last line — unlike PostCompact's isCompactSummary, there is no
+    // separate write path racing this read. Reading only the tail keeps this cheap on a
+    // transcript that only grows: this session's own reached 43 MB tonight, and a head-first
+    // read of the whole file on every single message would be the file-size trap D53 already
+    // paid for once. A read that lands mid-record (the common case, since the seek point is
+    // arbitrary) discards everything before the last newline; JsonNode.Parse rejecting a
+    // truncated line is what "harvest nothing" looks like when a record is larger than the tail
+    // window, not a bug to work around.
+    private static string? ReadLastTranscriptLine(string transcriptPath)
+    {
+        using var stream = new FileStream(transcriptPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+        var toRead = (int)Math.Min(TranscriptTailBytes, stream.Length);
+        if (toRead == 0)
+        {
+            return null;
+        }
+
+        stream.Seek(-toRead, SeekOrigin.End);
+        var buffer = new byte[toRead];
+        stream.ReadExactly(buffer);
+
+        var lines = Encoding.UTF8.GetString(buffer).Split('\n', StringSplitOptions.RemoveEmptyEntries);
+        return lines.Length > 0 ? lines[^1] : null;
     }
 
     /// <summary>
