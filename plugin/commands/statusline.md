@@ -86,11 +86,10 @@ These are not style preferences. Each one is a way this goes wrong that is invis
 - **Claude Code cuts a long line; it does not wrap it.** One line of output is one row, so a line
   wider than the terminal loses its tail, and a resize takes segments with it. `COLUMNS` and
   `LINES` are exported to the script (Claude Code v2.1.153+) — `tput` cannot see the terminal
-  because the output is captured, so read those instead. A script that packs its segments into
-  rows itself keeps everything visible at any width. Leave one column unwritten: terminals
-  disagree about whether writing the last cell wraps now or on the next character, and that
-  difference is a blank row. If you are adding a segment to a line that already fills the width,
-  you are the one who pushed something off the edge — say so, or fix it while you are there.
+  because the output is captured, so read those instead. Pack segments into rows yourself — see
+  "Packing segments into rows" below — rather than emitting one line and hoping it fits. If you
+  are adding a segment to a line that already fills the width, you are the one who pushed
+  something off the edge — say so, or fix it while you are there.
 - **Clear stale activity, and know which clock you are on.** The newest event describes what
   happened, not what is happening, so an activity word has to be dropped once it ages out —
   otherwise the line freezes on "indexing" forever and stops meaning anything. Keep the durable
@@ -128,6 +127,81 @@ These are not style preferences. Each one is a way this goes wrong that is invis
   the log, so a burst of edits drops a small fraction — measured 2% idle, 30% on a busy machine.
   Fine for "something is happening"; useless for counting edits or deriving a rate. Do not build a
   number out of it.
+
+## Packing segments into rows
+
+Collect segments into an array before printing anything — you cannot know whether one fits until
+you know the width of everything already on its row. This is a working recipe, not a sketch;
+build the same shape rather than inventing your own layout logic.
+
+**Measure width after stripping color, never before.** A colored segment carries ANSI escapes
+(`\033[36m...\033[0m`) that cost zero screen columns but count as characters to `${#seg}`. Skip
+this and every width is wrong in the direction that wastes space — segments wrap a row early:
+
+```bash
+strip_ansi() {   # sets REPLY rather than printing; a command substitution forks once per
+                  # segment, and this runs for every segment on every render
+    local s=$1
+    REPLY=""
+    while [[ $s == *$'\033'* ]]; do
+        REPLY+="${s%%$'\033'*}"
+        s=${s#*$'\033'}
+        s=${s#*m}
+    done
+    REPLY+=$s
+}
+```
+
+**Leave one column unwritten.** Terminals disagree about whether writing the last cell wraps
+immediately or on the next character written after it. Budget one column narrower than `COLUMNS`
+reports, or that disagreement becomes an extra blank row on some terminals and not others:
+
+```bash
+sep="$(printf " ${DIM}|${RESET} ")"
+sep_width=3
+avail=$(( ${COLUMNS:-0} - 1 ))
+```
+
+**Fall back to a single line when there is nothing to lay out against.** No `COLUMNS` (an older
+Claude Code, or the script run by hand outside Claude Code) or a width too narrow to pack against
+meaningfully — emit the one line this always was rather than guessing at a size:
+
+```bash
+if [ "$avail" -lt 20 ]; then
+    [ -n "$row" ] && row="${row}${sep}"
+    row="${row}${seg}"
+    continue
+fi
+```
+
+**Pack greedily, and never split a segment across rows.** Walk the segment list once, adding each
+to the current row if it fits alongside the separator, starting a new row otherwise:
+
+```bash
+rows=()
+row=""; row_width=0
+for seg in "${segments[@]}"; do
+    strip_ansi "$seg"; seg_width=${#REPLY}
+
+    if [ -z "$row" ]; then
+        row="$seg"; row_width=$seg_width
+    elif [ $(( row_width + sep_width + seg_width )) -le "$avail" ]; then
+        row="${row}${sep}${seg}"; row_width=$(( row_width + sep_width + seg_width ))
+    else
+        rows+=("$row")
+        row="$seg"; row_width=$seg_width
+    fi
+done
+[ -n "$row" ] && rows+=("$row")
+
+for row in "${rows[@]}"; do
+    printf "%b\n" "$row"
+done
+```
+
+A segment wider than `avail` on its own still gets a row to itself rather than being cut — this
+packs rows, it does not truncate a segment. That gap is real and this recipe does not close it;
+say so rather than inventing a truncation rule nobody asked for.
 
 ## Making the change
 
