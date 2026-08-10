@@ -211,12 +211,19 @@ If they have **no** status line, write a small script (`~/.engram/statusline.sh`
 add the key:
 
 ```json
-{ "statusLine": { "type": "command", "command": "~/.engram/statusline.sh" } }
+{ "statusLine": { "type": "command", "command": "~/.engram/statusline.sh", "refreshInterval": 1 } }
 ```
 
 If they **already** have one, add your segment inside their script and leave their `settings.json`
-alone. Match the code around it — their quoting, their helper functions, their separator, their
-colour scheme. A segment that looks bolted on is a segment they will delete.
+alone — with one exception. Your segment clears a stale event after a few seconds (see "What the
+segment must get right" above), and that clearing is invisible without `refreshInterval`: without
+it the script only re-runs when a new assistant message arrives, so the event your script means to
+age out sits frozen on screen until the next turn no matter what the script computes. Check their
+`statusLine` block for `refreshInterval`; if it is absent or larger than your freshness window
+(`engram_fresh_seconds` above), set it to `1` and say you did — this is the one line in
+`settings.json` you touch even when everything else stays as it was. Match the code around your
+segment — their quoting, their helper functions, their separator, their colour scheme. A segment
+that looks bolted on is a segment they will delete.
 
 ## Before you say it is done
 
@@ -237,6 +244,10 @@ Three checks that each catch a defect the happy path cannot:
   `started` well outside it, and confirm the first two behave and the third still shows.
 - Run at `COLUMNS=80` and confirm every row fits, then at `COLUMNS=200` for the single-line case.
 - Delete the log entirely and confirm the script still exits 0 and prints their other segments.
+- Grep the live `settings.json` for `refreshInterval` and confirm it is present and `<=` your
+  freshness window. The script passing the checks above in isolation proves the *logic* is right;
+  it proves nothing about whether anything ever re-runs it on a timer, and that is the one failure
+  this whole checklist can pass while the feature is silently frozen in real use.
 
 Then break each guard you added and show it failing before restoring it — a filter that was never
 tested against a foreign record is indistinguishable from no filter. Report the per-render cost if
