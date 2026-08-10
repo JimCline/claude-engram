@@ -217,7 +217,7 @@ public static class RecallRanker
             lines.Add($"gaps: {RecallEngine.GapsMessage(query, outcome.Coverage)}");
         }
 
-        lines.Add("→ engram_remember what you discover · engram_digest before session ends");
+        lines.Add("→ engram_remember what you discover");
 
         return new RecallPackResult(
             string.Join('\n', lines),

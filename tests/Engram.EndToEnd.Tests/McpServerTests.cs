@@ -27,7 +27,7 @@ public class McpServerTests
                 .Select(t => t!["name"]!.GetValue<string>())
                 .OrderBy(name => name, StringComparer.Ordinal)
                 .ToArray();
-            Assert.Equal(["engram_browse", "engram_digest", "engram_expand", "engram_forget", "engram_recall", "engram_remember", "engram_revise", "engram_start", "engram_status", "engram_stop"], toolNames);
+            Assert.Equal(["engram_browse", "engram_expand", "engram_forget", "engram_recall", "engram_remember", "engram_revise", "engram_start", "engram_status", "engram_stop"], toolNames);
 
             var hitText = await client.CallToolTextAsync(
                 "engram_recall", new JsonObject { ["query"] = "AOT packaging and Roslyn" }, cancellationToken);
@@ -42,11 +42,6 @@ public class McpServerTests
             await client.CallToolTextAsync(
                 "engram_remember",
                 new JsonObject { ["statement"] = "Test statement written by the end-to-end suite." },
-                cancellationToken);
-
-            await client.CallToolTextAsync(
-                "engram_digest",
-                new JsonObject { ["learnings"] = new JsonArray("learning one from the end-to-end suite") },
                 cancellationToken);
 
             var telemetryPath = Path.Combine(home.Root, "telemetry.jsonl");
@@ -64,10 +59,9 @@ public class McpServerTests
             Assert.Equal(1, kinds.Count(k => k == "session-open"));
             Assert.Equal(2, kinds.Count(k => k == "recall"));
             Assert.Equal(1, kinds.Count(k => k == "remember"));
-            Assert.Equal(1, kinds.Count(k => k == "digest"));
             Assert.Equal(1, kinds.Count(k => k == "server-start"));
             Assert.DoesNotContain(kinds, k =>
-                k is not ("session-open" or "recall" or "remember" or "digest" or "server-start"));
+                k is not ("session-open" or "recall" or "remember" or "server-start"));
         }
         finally
         {
@@ -97,7 +91,7 @@ public class McpServerTests
                 .Select(t => t!["name"]!.GetValue<string>())
                 .OrderBy(name => name, StringComparer.Ordinal)
                 .ToArray();
-            Assert.Equal(["engram_browse", "engram_digest", "engram_expand", "engram_forget", "engram_recall", "engram_remember", "engram_revise", "engram_start", "engram_status", "engram_stop"], toolNames);
+            Assert.Equal(["engram_browse", "engram_expand", "engram_forget", "engram_recall", "engram_remember", "engram_revise", "engram_start", "engram_status", "engram_stop"], toolNames);
 
             var telemetryPath = Path.Combine(home.Root, "telemetry.jsonl");
             Assert.False(File.Exists(telemetryPath));

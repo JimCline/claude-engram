@@ -14,8 +14,19 @@ attempt ran in a Claude Code session that had been open since before `PostCompac
 `hooks.json` — hook registrations are read once at session start, not reloaded on a plugin file
 change, so that session could still fire the pre-existing `pre-compact` and post-compaction
 `session-start` hooks while never having `post-compact` registered at all. A fresh session's
-compaction is what produced the live confirmation above. Remaining: todo 3 (fold `digest` into a
-slash command) is untouched.
+compaction is what produced the live confirmation above. Todo 3 (fold `digest` into a slash
+command) closed 2026-08-09: `engram_digest` is removed as an MCP tool — the same "a capture the
+model has to opt into is a capture that does not happen" failure this design already fixed for
+compaction, confirmed by 0 fires ever recorded. `session_summary`/`SessionStore.WriteDigest` were
+dropped outright rather than preserved elsewhere: `WriteDigest` had exactly one caller (the tool
+being removed) and nothing ever read the field it wrote — no display path, no primer, no
+browse/expand — so there was no capability to carry forward. `/digest`'s prompt now calls
+`engram_remember` once per learning instead of one batched tool call; this is a verified behavioral
+match, not an approximation — `Remember`'s default path calls the same `SessionFacts.Append` `Digest`
+used, including the same dedup-on-live-match guarantee. The recall footer's dead
+`· engram_digest before session ends` clause is dropped as doubly redundant: this design's own
+automatic harvest covers the compaction moment, and the surviving `→ engram_remember what you
+discover` clause already covers the rest.
 
 ---
 

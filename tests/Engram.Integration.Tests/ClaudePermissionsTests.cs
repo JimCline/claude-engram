@@ -119,13 +119,13 @@ public class ClaudePermissionsTests
         File.WriteAllText(
             settings,
             """
-            { "permissions": { "allow": ["mcp__plugin_engram_engram__engram_digest"] } }
+            { "permissions": { "allow": ["mcp__plugin_engram_engram__engram_status"] } }
             """);
 
         var revoke = ClaudePermissions.PlanRevoke(settings, sandbox.Home.GrantedPermissionsPath);
 
         Assert.Empty(revoke.ToRemove);
-        Assert.Contains("mcp__plugin_engram_engram__engram_digest", revoke.LeftAlone);
+        Assert.Contains("mcp__plugin_engram_engram__engram_status", revoke.LeftAlone);
     }
 
     [Fact]

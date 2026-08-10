@@ -315,7 +315,7 @@ public static class RecallEngine
             lines.Add($"gaps: {GapsMessage(query, coverage)}");
         }
 
-        lines.Add("→ engram_remember what you discover · engram_digest before session ends");
+        lines.Add("→ engram_remember what you discover");
 
         return new RecallPackResult(
             string.Join('\n', lines), factCount, tokensUsed, coverage, sessionFactCount, longTermFactCount, priorSessionFactCount);

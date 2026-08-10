@@ -5,13 +5,6 @@ List what memory holds under a path — children, fact counts, and the top facts
   param: depth
   Levels of children to show, 1-3. Defaults to 1.
 
-tool: engram_digest
-Flush the durable learnings from this session in one call, before context is compacted or the session ends. Accepts up to 25 short learnings plus an optional summary. Each is stored as a session note — recallable in later sessions too — and comes back with an id you can pass to engram_forget. Re-sending one already stored creates no duplicate, so calling this at compaction and again at the end is safe.
-  param: learnings
-  Up to 25 short, self-contained facts learned this session.
-  param: session_summary
-  A one- or two-sentence summary of the session.
-
 tool: engram_expand
 The full story behind one fact handle: its supersession history, related facts on the same subject, its evidence, or where it was learned. Call it when a fact engram_recall returned needs scrutiny before you rely on it.
   param: id

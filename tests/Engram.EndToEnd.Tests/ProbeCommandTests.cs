@@ -30,8 +30,6 @@ public class ProbeCommandTests
             await client.CallToolTextAsync("engram_recall", new JsonObject { ["query"] = "zzqqxxnonexistentquery12345" }, cancellationToken);
             await client.CallToolTextAsync(
                 "engram_remember", new JsonObject { ["statement"] = "Test statement from the probe end-to-end test." }, cancellationToken);
-            await client.CallToolTextAsync(
-                "engram_digest", new JsonObject { ["learnings"] = new JsonArray("probe end-to-end learning") }, cancellationToken);
         }
         finally
         {

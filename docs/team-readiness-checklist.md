@@ -65,6 +65,16 @@ file for the next round.
   should not go in blind. Drop the flag requirement once someone has. Deferred 2026-08-09;
   README now states supported platforms up front (macOS, Linux, WSL) and flags Windows
   outside WSL as unvalidated, so this isn't silently implied anymore.
-- [ ] **Todo 3 — retire the `digest` MCP tool now that D62 replaces it.** It costs roughly 509 of
-  the tool surface's ~2,575 characters every session and has fired 0 times since telemetry
-  started. Fold it into a slash command per `docs/session-capture-design.md`.
+- [x] **Todo 3 — retire the `digest` MCP tool now that D62 replaces it.** Done 2026-08-09.
+  `engram_digest` is removed entirely (`EngramMcpTools.cs`), along with `SessionStore.WriteDigest`
+  and `session_summary` — confirmed by grep that `WriteDigest` had exactly one caller and nothing
+  ever read the field it wrote, so there was no capability to preserve. `/digest`'s prompt now
+  calls `engram_remember` once per learning instead of one batched tool call; verified this is a
+  true behavioral match (same underlying `SessionFacts.Append`, same dedup-on-live-match
+  guarantee), not an approximation. Also updated: the recall footer (dropped the dead
+  `engram_digest` mention), `ClaudePermissions.cs` (removed the stale grant),
+  `docs/mcp-tool-descriptions.golden.txt`, and every test that referenced the tool — 5 tests
+  deleted (`DigestTests.cs` in full, one method in `SessionMemoryTests.cs`), 5 more updated for
+  the new tool count/fixtures. Full suite green against the published binary (Core 475, Integration
+  613, EndToEnd 166 passed) except one unrelated flaky timing test that passed in isolation.
+  D62's own `PreCompact`/`PostCompact` mechanism and its tests were untouched.

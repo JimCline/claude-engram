@@ -19,7 +19,7 @@ public class McpToolSurfaceBudgetTests
     // a reason in the commit message, not a knob to turn when a description outgrows it.
     private const int MaxDefinitionChars = 3800;
 
-    private const int ExpectedToolCount = 7;
+    private const int ExpectedToolCount = 6;
 
     [Fact]
     public void ToolDefinitions_StayUnderCharacterCeiling()

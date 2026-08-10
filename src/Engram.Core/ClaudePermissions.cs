@@ -50,7 +50,6 @@ public static class ClaudePermissions
     [
         "mcp__plugin_engram_engram__engram_recall",
         "mcp__plugin_engram_engram__engram_remember",
-        "mcp__plugin_engram_engram__engram_digest",
         "mcp__plugin_engram_engram__engram_status",
 
         // Reads, like recall. engram_revise and engram_forget stay ungranted on purpose:

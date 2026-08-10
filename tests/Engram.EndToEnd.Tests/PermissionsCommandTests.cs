@@ -50,13 +50,12 @@ public class PermissionsCommandTests
             home.Root, "permissions", "--settings", settings, "--apply");
 
         Assert.Equal(0, exitCode);
-        Assert.Contains("Granted 6 tool(s).", stdout);
+        Assert.Contains("Granted 5 tool(s).", stdout);
 
         var allowed = AllowListOf(settings);
-        Assert.Equal(6, allowed.Count);
+        Assert.Equal(5, allowed.Count);
         Assert.Contains("mcp__plugin_engram_engram__engram_recall", allowed);
         Assert.Contains("mcp__plugin_engram_engram__engram_remember", allowed);
-        Assert.Contains("mcp__plugin_engram_engram__engram_digest", allowed);
         Assert.Contains("mcp__plugin_engram_engram__engram_status", allowed);
         Assert.Contains("mcp__plugin_engram_engram__engram_browse", allowed);
         Assert.Contains("mcp__plugin_engram_engram__engram_expand", allowed);
@@ -80,15 +79,15 @@ public class PermissionsCommandTests
             {
               "model": "opus",
               "permissions": {
-                "allow": ["Bash(git status)", "mcp__plugin_engram_engram__engram_digest"]
+                "allow": ["Bash(git status)", "mcp__plugin_engram_engram__engram_status"]
               }
             }
             """);
 
-        // The user's two entries plus the grant, minus the digest they already had.
+        // The user's two entries plus the grant, minus the tool they already had.
         var (grantExit, _, _) = EngramProcess.Run(home.Root, "permissions", "--settings", settings, "--apply");
         Assert.Equal(0, grantExit);
-        Assert.Equal(7, AllowListOf(settings).Count);
+        Assert.Equal(6, AllowListOf(settings).Count);
 
         var (revokeExit, revokeOut, _) = EngramProcess.Run(
             home.Root, "permissions", "--settings", settings, "--remove", "--apply");
@@ -96,9 +95,9 @@ public class PermissionsCommandTests
         Assert.Equal(0, revokeExit);
         Assert.Contains("left alone", revokeOut);
 
-        // engram_digest was the user's before we ran, so it survives the uninstall.
+        // engram_status was the user's before we ran, so it survives the uninstall.
         Assert.Equal(
-            ["Bash(git status)", "mcp__plugin_engram_engram__engram_digest"],
+            ["Bash(git status)", "mcp__plugin_engram_engram__engram_status"],
             AllowListOf(settings).OrderBy(x => x, StringComparer.Ordinal).ToArray());
 
         var root = (JsonObject)JsonNode.Parse(File.ReadAllText(settings))!;

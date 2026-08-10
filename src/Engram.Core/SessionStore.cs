@@ -69,37 +69,4 @@ public static class SessionStore
         return Convert.ToInt64(insert.ExecuteScalar()!);
     }
 
-    /// <summary>
-    /// Records a session's closing summary, creating the session row if nothing else has
-    /// written for it yet.
-    /// </summary>
-    /// <remarks>
-    /// This overwrites, which is deliberate and is not the append-only rule bending. That
-    /// rule governs belief content — a fact's predicate, body, and validity window. A session
-    /// summary is neither: it is one description of one session, and `engram_digest` may fire
-    /// twice in a session (once at compaction, once at the end), where the later call has seen
-    /// strictly more. Keeping the first would pin the summary to the least-informed moment.
-    /// The learnings themselves go through <see cref="SessionFacts"/> and stay append-only.
-    /// </remarks>
-    public static long WriteDigest(
-        SqliteConnection connection,
-        string externalId,
-        string digest,
-        DateTimeOffset now)
-    {
-        using var transaction = EngramDatabase.BeginWrite(connection);
-        var sessionId = EnsureSession(connection, transaction, externalId, now);
-
-        using (var update = connection.CreateCommand())
-        {
-            update.Transaction = transaction;
-            update.CommandText = "UPDATE session SET digest = $digest WHERE id = $id;";
-            update.Parameters.AddWithValue("$digest", digest);
-            update.Parameters.AddWithValue("$id", sessionId);
-            update.ExecuteNonQuery();
-        }
-
-        transaction.Commit();
-        return sessionId;
-    }
 }
