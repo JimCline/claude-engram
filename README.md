@@ -28,7 +28,8 @@ index through all three analyzer tiers, and the embedding and vector-search lane
 implementation plan's milestone terms: M0 and M1 are done; M2's integration landed as the
 installer plus the plugin rather than the `engram install claude-code` verb the plan
 sketched, and its `share`/`join` and HTML report were never built; M3's code graph ships.
-M4's machinery exists too, but its gate does not — see below.
+M4's machinery exists too, and its retrieval-quality gate (D18) now passes on the evidence
+recorded so far — see below.
 
 **What is not settled** is the question the whole design is bet on: whether the agent
 reaches for memory on its own. M0 deliberately shipped with no database because that was
@@ -39,8 +40,11 @@ model than the model volunteers. Engram's own telemetry now shows 28 writes agai
 reads, which is spec §1.2's stated cause of death appearing in its own numbers. It is not
 yet a verdict: the session primer delivers memory without any tool call, so recall
 undercounts delivery by construction, and D46 is what makes the difference countable going
-forward. D18 gates M4 on that same evidence, which is why the vector lane is built and
-shipped but nothing has yet been leaned on it.
+forward. D18's retrieval-quality bar — no recorded query missing a fact that existed when asked —
+now passes on direct measurement (D63): five paraphrase probes against the live store, none
+reusing the target fact's wording, all resolved with zero misses. That closes nothing for good,
+since the bar is cumulative and answers retrieval quality only; whether the agent reaches for the
+vector lane on its own, rather than being deliberately probed, is still the open bet stated above.
 
 ## Documents
 

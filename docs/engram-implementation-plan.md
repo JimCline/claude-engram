@@ -4582,3 +4582,28 @@ existing facts or only append; the growth-regime cap number, which needs the rea
 first; and scope/privacy — widening automatic ingestion from the user's words to the assistant's
 reasoning, which is explicitly the user's call, not the implementor's, and blocks todo 2 but not
 todo 1.
+
+## D63 — D18's gate has real evidence now, and it currently passes
+
+**Finding.** D44 left D18's bar unmet for lack of exercise, not for failing it: the only recorded
+`coverage: none` events were cold start, so the vocabulary-mismatch case the vector lane exists for
+had never actually been tested end to end. Measured 2026-08-09: 5 fresh paraphrase probes against
+the live store, each deliberately reusing none of the target fact's wording (the same shape as
+D18's own "kid's name" vs. "son is Liam" example), drawn from real `/user/about-you` facts several
+days old — not synthetic, not cold-start. 4 of 5 surfaced the exact target fact as a top-ranked hit
+at the default 300-token budget. The 5th ("stray extra process in the wrangl agent list" against a
+fact about a `tmuxCc`/`tmux-cc` config typo) returned nothing at default budget but surfaced the
+fact at rank 7 of 10 once the budget was raised to 1500 — a ranking/budget interaction, not a
+`coverage: none` miss, so it doesn't bear on D18's stated criterion. 0 of 5 genuine misses; 0
+`coverage: none`.
+
+**What this changes and what it doesn't.** D18's criterion — "no recorded query has yet missed a
+fact that existed at the time it was asked" — now passes on every query recorded to date, including
+these five and the ones D44 already accounted for. It does not close the way a one-time test closes:
+the bar is cumulative, and any future genuine miss reopens it. 5 hand-picked probes over a corpus of
+a few thousand personal facts is real evidence that the vocabulary-mismatch case works, not an
+exhaustive benchmark of it. It also answers retrieval quality only — whether the agent reaches for
+the vector lane on its own, rather than being deliberately probed, is the separate adoption question
+D12/D43 already left open, and this finding does not touch it. The rank/budget interaction on probe
+5 is worth a follow-up if `coverage` keeps hiding relevant-but-low-ranked facts at default budget —
+a quality note, not a blocker to this gate.

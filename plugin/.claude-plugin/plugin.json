@@ -1,6 +1,6 @@
 {
   "name": "engram",
-  "version": "0.4.0",
+  "version": "1.0.0",
   "description": "Local-only temporal memory for Claude Code sessions. Adds an MCP server, nine /engram: slash commands, and SessionStart, SubagentStart, UserPromptSubmit, PreCompact, and file-touched hooks backed by a single-binary, append-only SQLite store at ~/.engram — no account, and nothing that leaves your machine: the server listens on 127.0.0.1 only. Facts are never mutated or deleted, only superseded, with the reason for every revision recorded.",
   "author": {
     "name": "Jim Cline"
