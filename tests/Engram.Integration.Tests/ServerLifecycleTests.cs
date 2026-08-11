@@ -313,6 +313,30 @@ public class ServerLifecycleTests
         Assert.Null(PidFile.Read(sandbox.Home));
     }
 
+    // SIGKILL cannot be ignored, but it is not synchronous either — the kernel can still be
+    // tearing the process down for a moment after Kill returns. A caller that binds the port
+    // right after Stop returns (restart's Start half) can lose the bind to a server that still
+    // holds it if Stop returns on the Kill call alone rather than on the pid actually going away.
+    [Fact]
+    public void Stop_Running_Ours_WaitsForKillToTakeEffect()
+    {
+        using var sandbox = new SandboxHome();
+        PidFile.Write(sandbox.Home, new PidFileRecord(654, 7433, Version, StartTime));
+        var (lifecycle, inspector, _, _) = CreateLifecycle();
+        inspector.SetAlive(654, new ProcessIdentity(ExePath, StartTime, Token));
+        inspector.LingerAfterKill.Add(654);
+
+        var result = lifecycle.Stop(sandbox.Home, FastTimeouts);
+
+        Assert.Equal(StopOutcome.Stopped, result.Outcome);
+        Assert.Equal([654], inspector.TerminateCalls);
+        Assert.Equal([654], inspector.KillCalls);
+        Assert.True(
+            inspector.ObservedRunningAfterKill,
+            "Stop must re-poll after Kill until IsRunning reports false, not return on the Kill call alone");
+        Assert.Null(PidFile.Read(sandbox.Home));
+    }
+
     // The dangerous row for stop too: a genuinely recycled PID must never be killed. Recycling is
     // a start time that does not match what was recorded, which is now the whole test — the
     // executable path never distinguished a stranger from our own server started elsewhere.

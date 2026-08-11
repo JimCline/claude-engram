@@ -41,6 +41,7 @@ public static class CliApp
             "serve" => ServeCommand.Run(homePath, rest, stdout, stderr),
             "start" => StartCommand.Run(homePath, rest, stdout, stderr),
             "stop" => StopCommand.Run(homePath, rest, stdout, stderr),
+            "restart" => RestartCommand.Run(homePath, rest, stdout, stderr),
             "status" => StatusCommand.Run(homePath, rest, stdout, stderr),
             "doctor" => DoctorCommand.Run(homePath, rest, stdout, stderr),
             "hook" => HookCommand.Run(homePath, rest, stdout, stderr),
@@ -77,6 +78,7 @@ public static class CliApp
         writer.WriteLine("  serve [--port <n>]                 run the MCP server over HTTP in the foreground");
         writer.WriteLine("  start [--port <n>]                 start the MCP server as a detached daemon");
         writer.WriteLine("  stop                               stop the running MCP server");
+        writer.WriteLine("  restart [--port <n>]               stop the running server if any, then start one");
         writer.WriteLine("  status                             report whether the MCP server is running");
         writer.WriteLine("  doctor [options]                   check the whole instance, and say what to type about it");
         writer.WriteLine("  hook <event>                       hook entrypoint: session-start|subagent-start|pre-compact|user-prompt|file-touched");

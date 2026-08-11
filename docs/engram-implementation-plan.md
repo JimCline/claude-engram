@@ -4717,3 +4717,39 @@ literal `+0`); and both `DetailsChars` derivations, long-term and session-tier, 
 practice under this tool description specifically — the ~97% figure is the store's history under the
 OLD description, before `details` existed to redirect depth toward. Worth reading back after some
 adoption, the same way D18/D43 read recall adoption back.
+
+## D65 — `restart`: composes Stop and Start, adds no kill path
+
+**Decision.** `engram restart` is `Stop` then `Start`, nothing else. `ServerLifecycle.Start`
+already replaces a wedged or version-mismatched server on its own — it `TerminateAndWait`s the
+impostor and launches — so restart's entire delta over `start` is one case: a **healthy**
+same-version server, which `Start` alone reports `AlreadyRunning` on and leaves running. Stopping
+first closes that gap. Nothing running is not an error — `restart` just starts, exit 0,
+`systemctl restart` semantics on a stopped unit. No new kill path exists: termination is still
+only ever token-verified (D42), riding the same `TerminateAndWait` both `Stop` and the wedged
+branch of `Start` already called.
+
+**The wait-after-Kill gap in `TerminateAndWait`, and why restart is what surfaced it.** Before
+this, `TerminateAndWait` escalated Terminate → poll → Kill and returned immediately after calling
+`Kill`, without re-checking `IsRunning`. A SIGTERM-ignoring server can still hold its port for a
+moment after SIGKILL while the kernel tears it down; plain `stop` never noticed, because nothing
+bound the port again right after it returned. `restart` does — its `Start` half binds that same
+port seconds later — so a race that was latent under `stop` becomes an intermittent
+`PortHeldByStranger` under `restart`. Fixed by re-entering the same poll loop after `Kill`,
+reusing `TerminateTimeout` rather than adding a new timeout field, since SIGKILL cannot be ignored
+and this second window only ever covers kernel teardown. `stop` gets the fix for free, since both
+call the one shared method.
+
+**No `engram_restart` MCP tool**, for the same reason `start.md` already gives for cold start:
+reaching an MCP tool at all proves the server is up, and the reply dies with the process that
+would have served it. Restart is inherently something reached from outside the process it acts on.
+No `--force`/`--kill` flag either — `Stop` already escalates Terminate → Kill on its own timeout,
+and a flag would be a second way to say the same thing.
+
+**Falsified:** the wait-after-Kill fix, with a fake `IProcessInspector` that reports still-running
+for one poll after `Kill` before going dead — reverting to return-immediately-after-Kill drops the
+assertion that a poll observed that transient true, showing the old code could return before the
+pid was actually gone. And the load-bearing one for `restart` itself: skipping the `Stop` call
+(calling `Start` alone) against a healthy running server yields `AlreadyRunning` with the same
+pid, unchanged — proving restart's only behavioral difference from `start` is exactly that one
+case.

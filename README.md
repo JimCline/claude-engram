@@ -539,7 +539,7 @@ engram backup replay --apply           # read facts.jsonl into the store, adding
 
 ### Slash commands
 
-`plugin/commands/` adds nine, all namespaced `/engram:`:
+`plugin/commands/` adds ten, all namespaced `/engram:`:
 
 | Command | What it does |
 | --- | --- |
@@ -549,6 +549,7 @@ engram backup replay --apply           # read facts.jsonl into the store, adding
 | `/engram:status` | Server pid, port, version, uptime, and whether the home is initialised. |
 | `/engram:start` | Start the server. |
 | `/engram:stop` | Stop it. |
+| `/engram:restart` | Stop it, then start a fresh one. |
 | `/engram:forget <id>` | Retract anything memory holds — a captured fact, a session note, a shipped one. |
 | `/engram:doctor` | Read-only diagnosis: resolved binary, port holder, home contents, telemetry, log tail. |
 | `/engram:statusline` | Add live Engram activity to your status line — adds a segment to whatever you already have rather than replacing it. |

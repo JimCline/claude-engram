@@ -208,21 +208,39 @@ public sealed class ServerLifecycle(
     {
         processInspector.Terminate(pid);
 
+        if (WaitUntilNotRunning(pid, timeouts))
+        {
+            return;
+        }
+
+        if (!processInspector.IsRunning(pid))
+        {
+            return;
+        }
+
+        processInspector.Kill(pid);
+
+        // SIGKILL cannot be ignored, so this second window covers only kernel teardown —
+        // but a caller that binds the port right after this returns (Start, composing
+        // Stop then Start for restart) loses the bind to a server that still holds it if
+        // this returns on the Kill call alone rather than on the pid actually going away.
+        WaitUntilNotRunning(pid, timeouts);
+    }
+
+    private bool WaitUntilNotRunning(int pid, ServerLifecycleTimeouts timeouts)
+    {
         var elapsed = Stopwatch.StartNew();
         while (elapsed.Elapsed < timeouts.TerminateTimeout)
         {
             if (!processInspector.IsRunning(pid))
             {
-                return;
+                return true;
             }
 
             Thread.Sleep(timeouts.PollInterval);
         }
 
-        if (processInspector.IsRunning(pid))
-        {
-            processInspector.Kill(pid);
-        }
+        return false;
     }
 
     /// <summary>
