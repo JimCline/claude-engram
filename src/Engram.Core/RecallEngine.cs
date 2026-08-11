@@ -116,6 +116,15 @@ public static class RecallEngine
     /// </remarks>
     public const int RrfK = 60;
 
+    /// <summary>
+    /// A body inline up to this many tokens costs nothing to show whole; past it, truncation
+    /// keeps one oversized fact from crowding the rest of the digest out of the budget.
+    /// </summary>
+    public const int MaxInlineBodyTokens = 120;
+
+    /// <summary>How much of an oversized body is kept before the cut.</summary>
+    public const int TruncatedBodyTokens = 100;
+
     private static readonly Dictionary<long, int> EmptyRanks = [];
 
     public static IReadOnlyList<RankedFact> Rank(string query, IReadOnlyList<CannedFact> facts)
@@ -497,12 +506,16 @@ public static class RecallEngine
         queryTerms.Count == 0 ? 0 : queryTerms.Count(Tokenizer.Tokenize(text).Contains);
 
     /// <summary>
-    /// Marks the prefix that fits, and returns what it spent.
+    /// Marks the candidates that fit within the budget, and returns what it spent.
     /// </summary>
     /// <remarks>
-    /// Stops at the first candidate that does not fit rather than skipping it to try smaller ones
-    /// further down. Packing tightly would reorder the digest by length, and a model reading a
-    /// ranked list is entitled to assume the order means something.
+    /// Skips a candidate that does not fit and keeps trying smaller ones further down. Relative
+    /// order of packed items is preserved — the budget changes selection, never sequence. The
+    /// earlier contract stopped at the first misfit to keep the digest a strict rank-prefix, but
+    /// that guarantee was stated nowhere a model could read it, and its failure mode — a
+    /// top-ranked oversized fact emptying the whole digest and reading as "the store knows
+    /// nothing" — misleads worse than a subset does. Formatting-time truncation bounds line
+    /// sizes, so skips are rare tail events.
     /// </remarks>
     internal static int ApplyBudget(List<RecallCandidate> candidates, int budgetTokens)
     {
@@ -511,7 +524,7 @@ public static class RecallEngine
         {
             if (tokensUsed + candidates[i].Tokens > budgetTokens)
             {
-                break;
+                continue;
             }
 
             candidates[i] = candidates[i] with { Packed = true };
@@ -572,11 +585,68 @@ public static class RecallEngine
     /// leads anywhere: recall returns live beliefs, so a revised one and one held all along are
     /// the same line, and picking the wrong handle to expand reports "1 version" — which reads
     /// exactly like "never changed". Marking the thread head turns that from luck into a lookup.
+    ///
+    /// <para>A body past <see cref="MaxInlineBodyTokens"/> is shown truncated rather than whole,
+    /// and a "· +N" marker at the end of the paren group reports everything withheld — the
+    /// truncated tail plus any <see cref="CannedFact.DetailsChars"/> — so a fact this large is
+    /// never invisible-or-poisonous to the rest of the digest (D57's marking pattern: present
+    /// only when something is actually withheld, never on a whole, untruncated body).</para>
     /// </summary>
-    internal static string FormatFactLine(CannedFact fact) =>
-        fact.Versions > 1
-            ? $"[{fact.Id}] {fact.Body} ({fact.Scope} · {fact.AgeDays}d · v{fact.Versions})"
-            : $"[{fact.Id}] {fact.Body} ({fact.Scope} · {fact.AgeDays}d)";
+    internal static string FormatFactLine(CannedFact fact)
+    {
+        var (shownBody, withheldBodyChars) = TruncateBody(fact.Body);
+        var marker = MarkerFor(withheldBodyChars + fact.DetailsChars);
+
+        return fact.Versions > 1
+            ? $"[{fact.Id}] {shownBody} ({fact.Scope} · {fact.AgeDays}d · v{fact.Versions}{marker})"
+            : $"[{fact.Id}] {shownBody} ({fact.Scope} · {fact.AgeDays}d{marker})";
+    }
+
+    /// <summary>
+    /// Cuts a body at a word boundary once it exceeds <see cref="MaxInlineBodyTokens"/>, and
+    /// returns how many characters of the original were left out. Never splits a surrogate pair.
+    /// </summary>
+    private static (string Shown, int WithheldChars) TruncateBody(string body)
+    {
+        if (TokenEstimator.Estimate(body) <= MaxInlineBodyTokens)
+        {
+            return (body, 0);
+        }
+
+        var maxChars = (int)(TruncatedBodyTokens * TokenEstimator.CharactersPerToken);
+        var end = Math.Min(maxChars, body.Length);
+
+        if (end < body.Length)
+        {
+            // Back up to the last space only when doing so makes progress — a space at index 0
+            // would otherwise cut to nothing (same non-advancing-page class step 3 guards against).
+            var lastSpace = body.LastIndexOf(' ', end - 1, end);
+            if (lastSpace > 0)
+            {
+                end = lastSpace;
+            }
+        }
+
+        if (end < body.Length && char.IsLowSurrogate(body[end]))
+        {
+            end--;
+        }
+
+        return (body[..end] + "…", body.Length - end);
+    }
+
+    /// <summary>
+    /// The "· +N" suffix reporting withheld content, or empty when nothing was withheld — marking
+    /// every line would be as useless as marking none (D57).
+    /// </summary>
+    private static string MarkerFor(int withheldChars) =>
+        withheldChars > 0 ? $" · +{FormatCharCount(withheldChars)}" : string.Empty;
+
+    /// <summary>Formats a character count for the withheld-content marker: "999", "1k", "1.2k".</summary>
+    internal static string FormatCharCount(int chars) =>
+        chars < 1000
+            ? chars.ToString(CultureInfo.InvariantCulture)
+            : (chars / 1000.0).ToString("0.#", CultureInfo.InvariantCulture) + "k";
 
     /// <summary>
     /// A session line carries no version marker, and the asymmetry with <see cref="FormatFactLine"/>
@@ -590,11 +660,19 @@ public static class RecallEngine
     /// thread holding one sentence twice; marking that would announce history carrying nothing the
     /// line above it already says. Both halves are pinned by tests, because the cheap reading of
     /// this — "session notes are never superseded" — is false and would justify the wrong fix.
+    ///
+    /// <para>The withheld-chars marker is not part of that asymmetry: a session statement gets the
+    /// same <see cref="TruncateBody"/> + marker treatment as a long-term body, through the same
+    /// helpers <see cref="FormatFactLine"/> uses — a hook-captured verbatim statement can be long,
+    /// and <c>engram_remember</c>'s own <c>details</c> lands in this tier, so an unmarked session
+    /// line would be a hole in the ladder exactly where the model's own writes go.</para>
     /// </remarks>
     internal static string FormatSessionFactLine(SessionFact fact)
     {
+        var (shown, withheldBodyChars) = TruncateBody(fact.Statement);
+        var marker = MarkerFor(withheldBodyChars + fact.DetailsChars);
         var scope = string.IsNullOrWhiteSpace(fact.Agent) ? "session" : $"session · {fact.Agent}";
-        return $"[{FactCatalog.HandleFor(fact.FactId)}] {fact.Statement} ({scope})";
+        return $"[{FactCatalog.HandleFor(fact.FactId)}] {shown} ({scope}{marker})";
     }
 
     // The session discriminator sits in the annotation rather than inside the handle, where
@@ -602,10 +680,12 @@ public static class RecallEngine
     // grouping meant the string the model saw was not the string engram_forget accepts.
     internal static string FormatPriorSessionFactLine(SessionFact fact, string discriminator)
     {
+        var (shown, withheldBodyChars) = TruncateBody(fact.Statement);
+        var marker = MarkerFor(withheldBodyChars + fact.DetailsChars);
         var scope = string.IsNullOrWhiteSpace(fact.Agent)
             ? $"session · {discriminator} · {fact.AgeDays}d"
             : $"session · {discriminator} · {fact.Agent} · {fact.AgeDays}d";
-        return $"[{FactCatalog.HandleFor(fact.FactId)}] {fact.Statement} ({scope})";
+        return $"[{FactCatalog.HandleFor(fact.FactId)}] {shown} ({scope}{marker})";
     }
 
     internal static string GapsMessage(string query, RecallCoverage coverage) => coverage switch

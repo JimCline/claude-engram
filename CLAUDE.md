@@ -784,6 +784,21 @@ and someone is waiting at the other end of it. There is deliberately no `enabled
 configured URL is the switch, since two ways to turn one thing off is how a setting disagrees with
 itself (D55).
 
+**A fact has a statement, and may have details — only one of the two is capped.** `statement` is
+never rejected for length (advisory only; the store's own history hits ~97% compliance under the
+advisory alone, and a bounced write risks the capture, not just its length); `details` refuses hard
+at 2,000 tokens, because details is always deliberately authored and a refusal costs nothing a retry
+can't fix. Recall's line marks exactly what it withholds — a `· +Nk` suffix iff a body is truncated
+or a details field exists, never otherwise — and `engram_expand ... details` pages the rest by
+character offset, stateless, nothing held server-side. `CannedFact.DetailsChars` and
+`SessionFact.DetailsChars` are each computed by two independent derivations, C# and SQL, that must
+agree; the equivalence fixture guarding that is only armed when a seeded fact actually carries
+`Details` — a details-less fixture cannot catch either one drifting. `details` plays no part in
+replay identity (subject+predicate+body+valid_from, unchanged) and `engram_revise` never carries it
+forward — an omitted `details` on revise means none, not the old value, since carrying it silently
+manufactures a belief paired with a stale elaboration. Neither FTS, the token-overlap lane, nor the
+vector lane read `details` (D64).
+
 ## Build constraints
 
 - .NET 10, `net10.0`. Warnings are errors.

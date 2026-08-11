@@ -90,7 +90,8 @@ public sealed class EngramMcpTools
         EngramHome home,
         McpSessionId session,
         McpHomeState homeState,
-        [Description("The fact to remember, as a short, self-contained statement.")] string statement,
+        [Description("The fact to remember, as a short, self-contained statement — aim under ~300 characters; depth belongs in details.")] string statement,
+        [Description("Depth the statement cannot carry — a full config, a long rationale, verbatim output. Most memories need none: if the statement holds it, stop there.")] string? details = null,
         [Description("What or who the fact is about, if not obvious from the statement.")] string? subject = null,
         [Description("Where this was learned — a file path, PR, or command output.")] string? evidence = null,
         [Description("Your own name, if you are a subagent recording this fact rather than the main agent.")] string? agent = null,
@@ -101,6 +102,11 @@ public sealed class EngramMcpTools
         if (!homeState.Initialized)
         {
             return "Engram home is not initialised (run 'engram init'); this statement was not saved.";
+        }
+
+        if (DetailsCeilingError(details) is { } ceilingError)
+        {
+            return ceilingError;
         }
 
         // A restatement of something the user said replaces the capture in place — same
@@ -116,7 +122,8 @@ public sealed class EngramMcpTools
             }
 
             using var connection = EngramDatabase.OpenInitialized(home);
-            var replacementId = UserFacts.Restate(connection, targetId, statement, session.Value, DateTimeOffset.UtcNow);
+            var replacementId = UserFacts.Restate(
+                connection, targetId, statement, session.Value, DateTimeOffset.UtcNow, details: details);
 
             if (replacementId is null)
             {
@@ -136,7 +143,7 @@ public sealed class EngramMcpTools
         using (var connection = EngramDatabase.OpenInitialized(home))
         {
             factId = SessionFacts.Append(
-                connection, session.Value, statement, subject, evidence, agent, DateTimeOffset.UtcNow);
+                connection, session.Value, statement, subject, evidence, agent, DateTimeOffset.UtcNow, details);
         }
 
         Telemetry.Append(home, new TelemetryRecord(
@@ -251,13 +258,16 @@ public sealed class EngramMcpTools
     [Description(
         "The full story behind one fact handle: its supersession history, related facts on the same " +
         "subject, its evidence, or where it was learned. Call it when a fact engram_recall returned " +
-        "needs scrutiny before you rely on it.")]
+        "needs scrutiny before you rely on it. The details view returns everything the handle holds, " +
+        "paged by budget_tokens and offset.")]
     public static string Expand(
         EngramHome home,
         McpSessionId session,
         McpHomeState homeState,
         [Description("The bracketed fact id, e.g. \"f42\".")] string id,
-        [Description("One of: history, related, evidence, source.")] string view)
+        [Description("One of: history, related, evidence, source, details.")] string view,
+        [Description("Maximum tokens returned per call. Defaults to 800.")] int budget_tokens = 800,
+        [Description("Character offset to continue a paged details view from. Defaults to 0.")] int offset = 0)
     {
         if (!FactCatalog.TryParseHandle(id, out var factId))
         {
@@ -286,7 +296,8 @@ public sealed class EngramMcpTools
             "related" => ExpandRelated(connection, fact),
             "evidence" => ExpandEvidence(fact),
             "source" => ExpandSource(connection, fact),
-            _ => $"Unknown view '{view}'. The views are history, related, evidence, and source.",
+            "details" => ExpandDetails(fact, budget_tokens, offset),
+            _ => $"Unknown view '{view}'. The views are history, related, evidence, source, and details.",
         };
     }
 
@@ -302,7 +313,8 @@ public sealed class EngramMcpTools
         [Description("The bracketed id of the fact to revise, e.g. \"f42\".")] string fact_id,
         [Description("The corrected statement, short and self-contained.")] string statement,
         [Description("Why the belief changed.")] string reason,
-        [Description("Where the correction came from — a file, PR, or the user's words.")] string? evidence = null)
+        [Description("Where the correction came from — a file, PR, or the user's words.")] string? evidence = null,
+        [Description("Depth for the corrected fact. Does not carry forward from the old version — restate it or drop it deliberately.")] string? details = null)
     {
         if (!homeState.Initialized)
         {
@@ -317,6 +329,11 @@ public sealed class EngramMcpTools
         if (string.IsNullOrWhiteSpace(statement) || string.IsNullOrWhiteSpace(reason))
         {
             return "Revision needs both a corrected statement and a reason. Nothing was revised.";
+        }
+
+        if (DetailsCeilingError(details) is { } ceilingError)
+        {
+            return ceilingError;
         }
 
         using var connection = EngramDatabase.OpenInitialized(home);
@@ -349,7 +366,8 @@ public sealed class EngramMcpTools
                 "stated",
                 evidence,
                 Regenerable: false,
-                SessionId: sessionId),
+                SessionId: sessionId,
+                Details: details),
             now,
             reason.Trim());
 
@@ -469,6 +487,67 @@ public sealed class EngramMcpTools
         return $"[{FactCatalog.HandleFor(fact.Id)}] was {origin}, learned via '{fact.LearnedVia}' "
             + $"on {When(fact.CreatedAt)}."
             + (fact.ValidTo is { } closed ? $" It was closed {When(closed)}." : " It is currently believed.");
+    }
+
+    // Shared by engram_remember and engram_revise so the ceiling and its wording cannot
+    // drift into checking two different limits.
+    private static string? DetailsCeilingError(string? details)
+    {
+        if (details is null)
+        {
+            return null;
+        }
+
+        var tokens = TokenEstimator.Estimate(details);
+        return tokens > 2000
+            ? $"details is ~{tokens} tokens against the 2,000-token ceiling — a memory that large is a "
+                + "document; store where to find it (evidence, a path) rather than its contents. Nothing "
+                + "was stored."
+            : null;
+    }
+
+    private static string ExpandDetails(StoredFact fact, int budgetTokens, int offset)
+    {
+        var text = fact.Details is null ? fact.Body : fact.Body + "\n\n" + fact.Details;
+
+        if (offset < 0 || offset >= text.Length)
+        {
+            return $"offset {offset} is past the end ({text.Length} chars).";
+        }
+
+        // A budget under 1 char produces an empty, non-advancing page — the same failure
+        // class the word-boundary progress guard below exists for.
+        if (budgetTokens < 1)
+        {
+            return "budget_tokens must be at least 1.";
+        }
+
+        // Clamped to the remaining length in the double domain before casting: budgetTokens
+        // as large as int.MaxValue would otherwise overflow int arithmetic and go negative.
+        var maxChars = (int)Math.Min(budgetTokens * TokenEstimator.CharactersPerToken, text.Length - offset);
+        var end = offset + maxChars;
+
+        if (end < text.Length)
+        {
+            // Cut at a word boundary rather than mid-word — a hard cut is the fallback only
+            // when the window holds no space to back up to.
+            var lastSpace = text.LastIndexOf(' ', end - 1, end - offset);
+            if (lastSpace > offset)
+            {
+                end = lastSpace;
+            }
+        }
+
+        if (end < text.Length && char.IsLowSurrogate(text[end]))
+        {
+            end--;
+        }
+
+        var page = text[offset..end];
+
+        return end < text.Length
+            ? $"{page}\n\nshowing chars {offset}–{end} of {text.Length} · continue with offset: {end}"
+            : page;
     }
 
     private static string When(long unixSeconds) => MomentText.Local(unixSeconds);

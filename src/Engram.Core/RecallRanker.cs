@@ -38,13 +38,23 @@ public sealed record RankOutcome(
 /// for a second file that contains it.</para>
 ///
 /// <para><b>SQL ranks and bounds; C# formats and packs.</b> The statement returns at most
-/// <c>budgetTokens + 1</c> rows — proof: RRF is strictly decreasing in rank, the final order is
-/// fixed before the row limit applies, and every non-empty line estimates at least one token, so no
-/// candidate beyond that position could ever be packed. <see cref="RecallEngine.FormatFactLine"/>,
-/// <see cref="RecallEngine.FormatSessionFactLine"/>, <see cref="RecallEngine.FormatPriorSessionFactLine"/>
-/// and <see cref="RecallEngine.ApplyBudget"/> run unchanged over that bounded set — building the
-/// line in SQL would be a second implementation of three C# format strings that drifts the first
-/// time one of them is edited.</para>
+/// <c>budgetTokens + 1</c> rows — a materialization bound, not a completeness proof: it guarantees
+/// only that at most that many rank-ordered candidates are ever considered, and that packed items
+/// keep their rank order within them. Under the skip contract (<see cref="RecallEngine.ApplyBudget"/>)
+/// a fitting candidate can pack from arbitrarily deep in the rank order once everything above it is
+/// skipped as oversized, so a candidate beyond this bound is unmaterialized rather than provably
+/// unpackable. The exposure is quantified and accepted rather than closed: reaching a candidate the
+/// bound hides needs more oversized-for-remaining-budget candidates than the bound itself
+/// (<c>budgetTokens + 1</c> of them) ranked above the first packable fact — against a store measured
+/// to hold roughly ten facts over 500 tokens. D64's formatting-time truncation is in place and bounds
+/// every line to ~130 tokens, so the residual exposure is a tail-fill loss at ranks beyond the
+/// bound — accepted, not deferred: raising <c>$limit</c> reopens the O(matches) cost control D58/D60
+/// priced, and it stays closed unless recorded evidence (D44's method) shows a hidden candidate
+/// actually mattering.
+/// <see cref="RecallEngine.FormatFactLine"/>, <see cref="RecallEngine.FormatSessionFactLine"/>,
+/// <see cref="RecallEngine.FormatPriorSessionFactLine"/> and <see cref="RecallEngine.ApplyBudget"/>
+/// run unchanged over that bounded set — building the line in SQL would be a second implementation of
+/// three C# format strings that drifts the first time one of them is edited.</para>
 /// </remarks>
 public static class RecallRanker
 {
@@ -69,13 +79,22 @@ public static class RecallRanker
 
     /// <param name="minCandidates">
     /// Materialize at least this many candidates, for a caller that renders more rows than the
-    /// budget can pack. Recall must leave this at 0: <c>budgetTokens + 1</c> is provably enough to
-    /// pack a <c>budgetTokens</c> budget, and reading further would put O(matches) materialization
-    /// back on the recall path — the cost D58 priced and deferred. <c>explain</c> is the caller
-    /// that needs it, because its <c>--limit</c> can exceed the budget bound and D30 makes it a
-    /// promise about the ranker rather than a view of the first 501 rows. Raising it cannot move
-    /// <c>Coverage</c> or <c>TokensUsed</c>: coverage reads the window columns over the unbounded
-    /// set, and <see cref="RecallEngine.ApplyBudget"/> stops at the first line that does not fit.
+    /// budget can pack. Recall leaves this at 0. <c>budgetTokens + 1</c> is a materialization bound,
+    /// not a completeness proof, now that <see cref="RecallEngine.ApplyBudget"/> skips rather than
+    /// stops: it still guarantees that at most that many rank-ordered candidates are ever considered,
+    /// and that packed items keep their rank order within them, but a fitting candidate ranked deeper
+    /// than the bound is unmaterialized rather than provably unpackable — and raising this value is
+    /// exactly what would surface it, which is why recall does not (reading further would put
+    /// O(matches) materialization back on the recall path — the cost D58 priced and deferred).
+    /// Reaching a hidden candidate needs more oversized-for-remaining-budget candidates than the bound
+    /// itself ranked above it, against a store measured to hold roughly ten facts over 500 tokens, and
+    /// D64's formatting-time line truncation narrows this further. Accepted, not deferred: the bound
+    /// stays as is unless recorded evidence (D44's method) shows a hidden candidate actually
+    /// mattering. <c>explain</c> is the caller that needs
+    /// a larger value, because its <c>--limit</c> can exceed the budget bound and D30 makes it a
+    /// promise about the ranker rather than a view of the first 501 rows. Coverage is unaffected
+    /// either way: it reads the window columns computed over the unbounded matched set, not the
+    /// materialized one.
     /// </param>
     public static RankOutcome Rank(
         SqliteConnection connection,
@@ -278,6 +297,7 @@ public static class RecallRanker
         var vectorRank = NullableInt(reader, "vector_rank");
         var fused = reader.GetDouble(reader.GetOrdinal("fused"));
         var body = reader.GetString(reader.GetOrdinal("body"));
+        var detailsChars = reader.GetInt32(reader.GetOrdinal("details_chars"));
         var scope = reader.GetString(reader.GetOrdinal("scope"));
         var createdAt = reader.GetInt64(reader.GetOrdinal("created_at"));
         var subjectName = reader.GetString(reader.GetOrdinal("subject_name"));
@@ -290,11 +310,11 @@ public static class RecallRanker
         var line = origin switch
         {
             FactOrigin.LongTerm => RecallEngine.FormatFactLine(
-                new CannedFact(handle, subjectName, string.Empty, body, scope, string.Empty, ageDays, null, versions)),
+                new CannedFact(handle, subjectName, string.Empty, body, scope, string.Empty, ageDays, null, versions, detailsChars)),
             FactOrigin.CurrentSession => RecallEngine.FormatSessionFactLine(
-                ToSessionFact(factId, body, path, subjectName, ageDays, agentNames)),
+                ToSessionFact(factId, body, path, subjectName, ageDays, detailsChars, agentNames)),
             FactOrigin.PriorSession => RecallEngine.FormatPriorSessionFactLine(
-                ToSessionFact(factId, body, path, subjectName, ageDays, agentNames),
+                ToSessionFact(factId, body, path, subjectName, ageDays, detailsChars, agentNames),
                 "p" + (labelIndex ?? throw new InvalidOperationException(
                     $"fact {handle} ranked as a prior-session candidate with no prior_sessions label — "
                     + "the origin CASE and the prior_sessions CTE's predicates have drifted apart."))
@@ -311,7 +331,7 @@ public static class RecallRanker
     // entity's display name, falling back to its path slug, and Subject is null when nothing named
     // this note (the entity name still equals the path's fingerprint leaf).
     private static SessionFact ToSessionFact(
-        long factId, string body, string path, string subjectName, int ageDays,
+        long factId, string body, string path, string subjectName, int ageDays, int detailsChars,
         IReadOnlyDictionary<string, string> agentNames)
     {
         var segments = path.Split('/', StringSplitOptions.RemoveEmptyEntries);
@@ -326,7 +346,7 @@ public static class RecallRanker
             ? null
             : subjectName;
 
-        return new SessionFact(factId, 0, body, subject, agent, ageDays);
+        return new SessionFact(factId, 0, body, subject, agent, ageDays, detailsChars);
     }
 
     private static int AgeDaysOf(long createdAtUnixSeconds, DateTimeOffset now)
@@ -506,6 +526,7 @@ public static class RecallRanker
                 {string.Join("\n              + ", fusedTerms)} AS fused,
                 ({string.Join(" + ", corroboratedTerms)}) > 1  AS is_corroborated,
                 f.body, f.scope, f.predicate, f.session_id, f.created_at,
+                COALESCE(length(f.details), 0) AS details_chars,
                 e.name AS subject_name, e.path, ps.label_index AS label_index
               FROM candidates c
               JOIN fact f          ON f.id = c.fact_id

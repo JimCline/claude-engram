@@ -22,7 +22,8 @@ public sealed record JournalFact(
     long? ValidTo,
     long? SupersededBy,
     string? SupersessionReason,
-    long CreatedAt);
+    long CreatedAt,
+    string? Details = null);
 
 /// <summary>What a replay did, or would do.</summary>
 /// <param name="Conflicted">
@@ -174,7 +175,7 @@ public static class FactJournal
             """
             SELECT f.id, se.path, se.kind, f.predicate, f.body, oe.path, oe.kind, f.scope,
                    f.learned_via, f.regenerable, f.evidence, f.valid_from, f.valid_to,
-                   f.superseded_by, s.reason, f.created_at
+                   f.superseded_by, s.reason, f.created_at, f.details
             FROM fact f
             JOIN entity se ON se.id = f.subject_id
             LEFT JOIN entity oe ON oe.id = f.object_id
@@ -201,7 +202,8 @@ public static class FactJournal
                 reader.IsDBNull(12) ? null : reader.GetInt64(12),
                 reader.IsDBNull(13) ? null : reader.GetInt64(13),
                 reader.IsDBNull(14) ? null : reader.GetString(14),
-                reader.GetInt64(15));
+                reader.GetInt64(15),
+                reader.IsDBNull(16) ? null : reader.GetString(16));
         }
     }
 
@@ -455,9 +457,10 @@ public static class FactJournal
         command.CommandText =
             """
             INSERT INTO fact (subject_id, predicate, body, object_id, path, scope, learned_via,
-                              regenerable, evidence, session_id, valid_from, valid_to, created_at)
+                              regenerable, evidence, session_id, valid_from, valid_to, created_at,
+                              details)
             VALUES ($subject, $predicate, $body, $object, $path, $scope, $learnedVia,
-                    $regenerable, $evidence, NULL, $validFrom, $validTo, $createdAt)
+                    $regenerable, $evidence, NULL, $validFrom, $validTo, $createdAt, $details)
             RETURNING id;
             """;
         command.Parameters.AddWithValue("$subject", subjectId);
@@ -472,6 +475,7 @@ public static class FactJournal
         command.Parameters.AddWithValue("$validFrom", fact.ValidFrom);
         command.Parameters.AddWithValue("$validTo", (object?)fact.ValidTo ?? DBNull.Value);
         command.Parameters.AddWithValue("$createdAt", fact.CreatedAt);
+        command.Parameters.AddWithValue("$details", (object?)fact.Details ?? DBNull.Value);
 
         var factId = (long)command.ExecuteScalar()!;
 
@@ -569,6 +573,7 @@ public static class FactJournal
         ["superseded_by"] = fact.SupersededBy,
         ["reason"] = fact.SupersessionReason,
         ["created_at"] = fact.CreatedAt,
+        ["details"] = fact.Details,
     };
 
     private static JournalFact? FromJson(JsonObject record)
@@ -598,7 +603,8 @@ public static class FactJournal
             Number(record, "valid_to"),
             Number(record, "superseded_by"),
             Text(record, "reason"),
-            Number(record, "created_at") ?? 0);
+            Number(record, "created_at") ?? 0,
+            Text(record, "details"));
     }
 
     private static string? Text(JsonObject record, string key) =>

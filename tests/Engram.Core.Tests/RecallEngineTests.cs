@@ -125,6 +125,29 @@ public class RecallEngineTests
         Assert.Equal(0, RecallEngine.LanesThatFound(candidate with { OverlapRank = null, LexicalRank = null }));
     }
 
+    [Fact]
+    public void ApplyBudget_SkipsAnOversizedCandidate_InsteadOfStoppingAtIt()
+    {
+        RecallCandidate Candidate(long id, int tokens) => new(
+            FactId: id, Handle: $"f{id}", Line: "x", Fused: 0.1,
+            OverlapRank: 1, LexicalRank: null, VectorRank: null,
+            Origin: FactOrigin.LongTerm, Tokens: tokens, Packed: false);
+
+        var candidates = new List<RecallCandidate>
+        {
+            Candidate(1, 900),
+            Candidate(2, 50),
+            Candidate(3, 50),
+        };
+
+        var tokensUsed = RecallEngine.ApplyBudget(candidates, budgetTokens: 500);
+
+        Assert.Equal(100, tokensUsed);
+        Assert.False(candidates[0].Packed);
+        Assert.True(candidates[1].Packed);
+        Assert.True(candidates[2].Packed);
+    }
+
     /// <summary>
     /// The marker is the only thing distinguishing a handle that heads a supersession thread from
     /// one that goes nowhere, and expanding the wrong handle reports "1 version" — indistinguishable
@@ -155,6 +178,61 @@ public class RecallEngineTests
 
         Assert.Contains("[f901]", result.Text);
         Assert.DoesNotContain("· v", result.Text);
+    }
+
+    [Fact]
+    public void FormatFactLine_NothingWithheld_HasNoMarker()
+    {
+        var fact = new CannedFact("f001", "subject", "states", "Short body.", "project", "topic", 3);
+
+        var line = RecallEngine.FormatFactLine(fact);
+
+        Assert.Equal("[f001] Short body. (project · 3d)", line);
+        Assert.DoesNotContain("+", line);
+    }
+
+    [Fact]
+    public void FormatFactLine_ShortBodyWithDetails_MarksSizedToDetailsAlone()
+    {
+        var fact = new CannedFact("f001", "subject", "states", "Short body.", "project", "topic", 3, DetailsChars: 1234);
+
+        var line = RecallEngine.FormatFactLine(fact);
+
+        Assert.Equal("[f001] Short body. (project · 3d · +1.2k)", line);
+    }
+
+    // 200 space-separated "word"s is 999 chars — well past the 432-char (120-token) inline
+    // limit. The 360-char truncation window lands exactly on a unit boundary (360 = 5 * 72), so
+    // the last space inside it is at 359, giving an exact, hand-checkable withheld count.
+    [Fact]
+    public void FormatFactLine_BodyOverTheInlineLimit_TruncatesAtAWordBoundaryWithExactWithheldCount()
+    {
+        var wordsBuilder = new System.Text.StringBuilder();
+        for (var i = 0; i < 200; i++)
+        {
+            if (i > 0)
+            {
+                wordsBuilder.Append(' ');
+            }
+
+            wordsBuilder.Append("word");
+        }
+
+        var body = wordsBuilder.ToString();
+        var fact = new CannedFact("f001", "subject", "states", body, "project", "topic", 3);
+
+        var line = RecallEngine.FormatFactLine(fact);
+
+        Assert.Equal("[f001] " + body[..359] + "… (project · 3d · +640)", line);
+    }
+
+    [Theory]
+    [InlineData(999, "999")]
+    [InlineData(1000, "1k")]
+    [InlineData(1234, "1.2k")]
+    public void FormatCharCount_FormatsBoundariesExactly(int chars, string expected)
+    {
+        Assert.Equal(expected, RecallEngine.FormatCharCount(chars));
     }
 
     [Fact]

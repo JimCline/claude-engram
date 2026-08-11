@@ -202,7 +202,8 @@ public static class LegacyUserFacts
                 ValidTo: validTo,
                 SupersededBy: supersededBy,
                 SupersessionReason: reason,
-                CreatedAt: entry.At));
+                CreatedAt: entry.At,
+                Details: null));
         }
 
         return new LegacyImport(facts, statements.Count, retractions.Count, superseded, dangling, skipped);

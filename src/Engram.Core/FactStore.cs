@@ -12,7 +12,8 @@ public sealed record FactWrite(
     string LearnedVia,
     string? Evidence = null,
     bool Regenerable = false,
-    long? SessionId = null);
+    long? SessionId = null,
+    string? Details = null);
 
 /// <summary>A fact as stored, with its subject joined back in.</summary>
 public sealed record StoredFact(
@@ -29,7 +30,8 @@ public sealed record StoredFact(
     long ValidFrom,
     long? ValidTo,
     long? SupersededBy,
-    long CreatedAt);
+    long CreatedAt,
+    string? Details);
 
 public sealed record RememberResult(long FactId, long? SupersededFactId);
 
@@ -628,7 +630,7 @@ public static class FactStore
     internal const string FactColumns =
         "f.id, f.subject_id, e.path, e.name, f.predicate, f.body, f.scope, "
         + "f.learned_via, f.regenerable, f.evidence, f.valid_from, f.valid_to, "
-        + "f.superseded_by, f.created_at";
+        + "f.superseded_by, f.created_at, f.details";
 
     private const string SelectFactColumns =
         $"""
@@ -650,10 +652,10 @@ public static class FactStore
             """
             INSERT INTO fact
               (subject_id, predicate, body, path, scope, learned_via, regenerable,
-               evidence, session_id, valid_from, created_at)
+               evidence, session_id, valid_from, created_at, details)
             VALUES
               ($subject, $predicate, $body, $path, $scope, $learnedVia, $regenerable,
-               $evidence, $session, $now, $now);
+               $evidence, $session, $now, $now, $details);
             SELECT last_insert_rowid();
             """,
             ("$subject", subjectId),
@@ -665,7 +667,8 @@ public static class FactStore
             ("$regenerable", write.Regenerable ? 1 : 0),
             ("$evidence", (object?)write.Evidence ?? DBNull.Value),
             ("$session", (object?)write.SessionId ?? DBNull.Value),
-            ("$now", timestamp))!.Value;
+            ("$now", timestamp),
+            ("$details", (object?)write.Details ?? DBNull.Value))!.Value;
 
         FactTokenIndex.Add(connection, transaction, factId);
 
@@ -718,7 +721,8 @@ public static class FactStore
         ValidFrom: reader.GetInt64(10),
         ValidTo: reader.IsDBNull(11) ? null : reader.GetInt64(11),
         SupersededBy: reader.IsDBNull(12) ? null : reader.GetInt64(12),
-        CreatedAt: reader.GetInt64(13));
+        CreatedAt: reader.GetInt64(13),
+        Details: reader.IsDBNull(14) ? null : reader.GetString(14));
 
     private static int Execute(
         SqliteConnection connection,

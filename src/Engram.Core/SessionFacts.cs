@@ -15,7 +15,8 @@ public sealed record SessionFact(
     string Statement,
     string? Subject,
     string? Agent,
-    int AgeDays);
+    int AgeDays,
+    int DetailsChars = 0);
 
 /// <summary>
 /// Working memory: what the model would otherwise hold in context and lose to compaction,
@@ -89,7 +90,8 @@ public static class SessionFacts
         string? subject,
         string? evidence,
         string? agent,
-        DateTimeOffset now)
+        DateTimeOffset now,
+        string? details = null)
     {
         using var transaction = EngramDatabase.BeginWrite(connection);
 
@@ -125,7 +127,8 @@ public static class SessionFacts
                 LearnedVia: LearnedVia,
                 Evidence: evidence,
                 Regenerable: false,
-                SessionId: sessionId),
+                SessionId: sessionId,
+                Details: details),
             now,
             reason: "re-recorded in the same session");
 
@@ -216,7 +219,8 @@ public static class SessionFacts
             // fingerprint — not a subject anyone wrote, so it is not reported as one.
             Subject: stored.SubjectName == segments[^1] ? null : stored.SubjectName,
             Agent: agent,
-            AgeDays: age.TotalDays > 0 ? (int)age.TotalDays : 0);
+            AgeDays: age.TotalDays > 0 ? (int)age.TotalDays : 0,
+            DetailsChars: stored.Details?.Length ?? 0);
     }
 
     private static void SetEntityName(

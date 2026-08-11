@@ -12,8 +12,8 @@ public sealed class FactJournalTests
 {
     private static readonly DateTimeOffset T0 = new(2026, 8, 6, 12, 0, 0, TimeSpan.Zero);
 
-    private static long Write(SqliteConnection connection, string path, string body, DateTimeOffset at) =>
-        FactStore.Remember(connection, new FactWrite(path, "note", "states", body, "project", "stated"), at).FactId;
+    private static long Write(SqliteConnection connection, string path, string body, DateTimeOffset at, string? details = null) =>
+        FactStore.Remember(connection, new FactWrite(path, "note", "states", body, "project", "stated", Details: details), at).FactId;
 
     private static IReadOnlyList<JournalFact> Reread(EngramHome home)
     {
@@ -314,6 +314,69 @@ public sealed class FactJournalTests
         using var command = rebuilt.CreateCommand();
         command.CommandText = "SELECT valid_from FROM fact;";
         Assert.Equal(T0.ToUnixTimeSeconds(), (long)command.ExecuteScalar()!);
+    }
+
+    [Fact]
+    public void Write_AndReplay_CarriesDetailsIntact()
+    {
+        using var source = new SandboxHome(initialize: false);
+        using (var connection = EngramDatabase.OpenInitialized(source.Home))
+        {
+            Write(connection, "/project/a", "the short version", T0, details: "the long version, verbatim.");
+            FactJournal.Write(connection, source.Home, T0);
+        }
+
+        var facts = Reread(source.Home);
+        Assert.Equal("the long version, verbatim.", Assert.Single(facts).Details);
+
+        using var target = new SandboxHome(initialize: false);
+        using var rebuilt = EngramDatabase.OpenInitialized(target.Home);
+        FactJournal.Replay(rebuilt, facts, apply: true);
+
+        var replayed = Assert.Single(FactStore.ReadLive(rebuilt));
+        Assert.Equal("the long version, verbatim.", replayed.Details);
+    }
+
+    [Fact]
+    public void Parse_AJournalLineWrittenBeforeDetailsExisted_ParsesWithDetailsNull()
+    {
+        var facts = FactJournal.Parse(
+            [
+                """{"id":7,"subject":"/project/a","kind":"note","predicate":"states","body":"written before details existed","scope":"project","learned_via":"stated","valid_from":1767225600,"created_at":1767225600}""",
+            ],
+            out var skipped);
+
+        Assert.Equal(0, skipped);
+        Assert.Null(Assert.Single(facts).Details);
+    }
+
+    /// <summary>
+    /// Replay identity is subject + predicate + body + <c>valid_from</c> — details rides along on
+    /// insert but is never compared, so a body match with differing details is still
+    /// <c>AlreadyPresent</c> rather than a conflict, and the target's own details survive untouched.
+    /// </summary>
+    [Fact]
+    public void Replay_WhenBodyMatchesButDetailsDiffer_CountsAlreadyPresentAndLeavesTheTargetUntouched()
+    {
+        using var source = new SandboxHome(initialize: false);
+        using (var connection = EngramDatabase.OpenInitialized(source.Home))
+        {
+            Write(connection, "/project/a", "shared body", T0, details: "the journal's details");
+            FactJournal.Write(connection, source.Home, T0);
+        }
+
+        using var target = new SandboxHome(initialize: false);
+        using var rebuilt = EngramDatabase.OpenInitialized(target.Home);
+        var targetId = Write(rebuilt, "/project/a", "shared body", T0, details: "the target's own details");
+
+        var result = FactJournal.Replay(rebuilt, Reread(source.Home), apply: true);
+
+        Assert.Equal(0, result.Written);
+        Assert.Equal(1, result.AlreadyPresent);
+
+        var targetFact = FactStore.ReadById(rebuilt, targetId);
+        Assert.NotNull(targetFact);
+        Assert.Equal("the target's own details", targetFact.Details);
     }
 
     [Fact]

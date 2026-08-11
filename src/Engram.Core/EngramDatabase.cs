@@ -20,7 +20,7 @@ namespace Engram.Core;
 /// </remarks>
 public static class EngramDatabase
 {
-    public const int SchemaVersion = 5;
+    public const int SchemaVersion = 6;
 
     public const int BusyTimeoutMilliseconds = 5000;
 
@@ -236,6 +236,12 @@ public static class EngramDatabase
     /// day one needs to alter a fact body, a validity window, or a supersession row, it is not a
     /// migration — it is a rewrite of authored truth, and the answer is a new fact.</para>
     ///
+    /// <para>Version 6 adds a nullable column rather than rebuilding an index, and that still
+    /// qualifies under D8: adding a nullable column leaves every existing row's belief content
+    /// byte-identical; it adds capacity for future authored truth without rewriting any. The day
+    /// a migration backfills or splits an existing body, THAT is the alteration the rule
+    /// forbids.</para>
+    ///
     /// <para>Forward only, and no version is skipped, so each step can assume exactly the shape
     /// the one before it left.</para>
     /// </remarks>
@@ -293,6 +299,12 @@ public static class EngramDatabase
             // IF NOT EXISTS covers a downgrade fixture that does.
             Execute(connection, null, "CREATE INDEX IF NOT EXISTS ix_fact_thread ON fact(subject_id, predicate);");
             WriteMeta(connection, null, "schema_version", "5");
+        }
+
+        if (from < 6)
+        {
+            Execute(connection, null, "ALTER TABLE fact ADD COLUMN details TEXT;");
+            WriteMeta(connection, null, "schema_version", "6");
         }
     }
 

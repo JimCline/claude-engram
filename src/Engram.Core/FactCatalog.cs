@@ -109,7 +109,8 @@ public static class FactCatalog
         Topic: TopicOf(fact.SubjectPath, topicNames),
         AgeDays: AgeDaysOf(fact, now),
         Evidence: fact.Evidence,
-        Versions: versions > 1 ? versions : 1);
+        Versions: versions > 1 ? versions : 1,
+        DetailsChars: fact.Details?.Length ?? 0);
 
     /// <summary>
     /// The display text of a fact's topic: the second path segment, resolved through the

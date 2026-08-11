@@ -57,8 +57,9 @@ public class RecallExplanationTests
     }
 
     /// <summary>
-    /// Packing tightly would let a short low-ranked fact jump a long high-ranked one, turning a
-    /// ranked digest into a length-sorted one. The cut is a prefix.
+    /// The budget selects; it never reorders — packed items keep their rank order. An
+    /// oversized top-ranked candidate must not empty the whole digest: an empty digest reads
+    /// to the model as "the store knows nothing." This test pins the skip.
     /// </summary>
     /// <remarks>
     /// The fixture is built so the two rules disagree: a long candidate first, a short one after
@@ -66,7 +67,7 @@ public class RecallExplanationTests
     /// budget, which is how a test of this can pass while asserting nothing.
     /// </remarks>
     [Fact]
-    public void Explain_ShowsTheBudgetCuttingAPrefix_NotASubset()
+    public void Explain_ShowsTheBudgetSkippingAnOversizedCandidate_NotTruncatingThePrefix()
     {
         const int Budget = 30;
         IReadOnlyList<SessionFact> longNoteFirst =
@@ -85,8 +86,8 @@ public class RecallExplanationTests
         Assert.True(explanation.Candidates[1].Tokens <= Budget, "the second candidate must fit on its own");
 
         Assert.False(explanation.Candidates[0].Packed);
-        Assert.False(explanation.Candidates[1].Packed);
-        Assert.Equal(0, explanation.TokensUsed);
+        Assert.True(explanation.Candidates[1].Packed);
+        Assert.Equal(explanation.Candidates[1].Tokens, explanation.TokensUsed);
     }
 
     [Fact]

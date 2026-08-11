@@ -28,6 +28,33 @@ public class FactStoreTests
     }
 
     [Fact]
+    public void Remember_WithDetails_StoresThemAndReadByIdReturnsThem()
+    {
+        using var fixture = new StoreFixture();
+
+        var result = fixture.Remember(
+            "prefers",
+            "Tabs over spaces.",
+            details: "A verbatim config block that does not fit the statement.");
+
+        var fact = FactStore.ReadById(fixture.Connection, result.FactId);
+        Assert.NotNull(fact);
+        Assert.Equal("A verbatim config block that does not fit the statement.", fact.Details);
+    }
+
+    [Fact]
+    public void Remember_WithoutDetails_ReadByIdReturnsNull()
+    {
+        using var fixture = new StoreFixture();
+
+        var result = fixture.Remember("prefers", "Tabs over spaces.");
+
+        var fact = FactStore.ReadById(fixture.Connection, result.FactId);
+        Assert.NotNull(fact);
+        Assert.Null(fact.Details);
+    }
+
+    [Fact]
     public void Remember_ReusesTheSubjectEntityRatherThanDuplicatingIt()
     {
         using var fixture = new StoreFixture();
@@ -316,10 +343,11 @@ public class FactStoreTests
             string body,
             DateTimeOffset? at = null,
             string scope = "user",
-            string reason = FactStore.DefaultSupersessionReason) =>
+            string reason = FactStore.DefaultSupersessionReason,
+            string? details = null) =>
             FactStore.Remember(
                 Connection,
-                new FactWrite(SubjectPath, "person", predicate, body, scope, "stated"),
+                new FactWrite(SubjectPath, "person", predicate, body, scope, "stated", Details: details),
                 at ?? T0,
                 reason);
 

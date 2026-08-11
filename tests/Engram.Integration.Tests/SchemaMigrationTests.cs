@@ -7,6 +7,12 @@ namespace Engram.Integration.Tests;
 /// Every schema version bump ships with a test that opens a database written by the previous
 /// version and reads it correctly. These are those tests, one downgrade fixture per version.
 /// </summary>
+/// <remarks>
+/// A rollback-built fixture inherits every current-schema structure it does not explicitly
+/// revert. A version-N fixture must be version-N-shaped for everything any migration touches —
+/// v6 was the first migration to alter <c>fact</c>'s own columns, and the first to catch this.
+/// Extend these drops when a future migration adds another column.
+/// </remarks>
 [Collection(SqlitePoolCollection.Name)]
 public class SchemaMigrationTests
 {
@@ -69,6 +75,15 @@ public class SchemaMigrationTests
         UPDATE schema_meta SET value = '2' WHERE key = 'schema_version';
         """;
 
+    /// <summary>
+    /// The structural half of making a downgrade fixture version-N-shaped for <c>details</c> (v6).
+    /// Must run AFTER any facts are written in the same fixture: pre-v6 <c>details</c> did not exist
+    /// to constrain those writes, but current-schema <see cref="FactStore.InsertFact"/> still writes
+    /// to it, so dropping the column first would fail the insert rather than the migration.
+    /// </summary>
+    private static void DropDetailsColumn(SqliteConnection connection) =>
+        Execute(connection, "ALTER TABLE fact DROP COLUMN details;");
+
     /// <summary>Builds a store at version 1 holding one fact, and closes it.</summary>
     private static long WriteVersion1Store(SandboxHome sandbox, string path, string body)
     {
@@ -80,7 +95,37 @@ public class SchemaMigrationTests
             new FactWrite(path, "note", "states", body, "project", "stated"),
             T0).FactId;
 
+        DropDetailsColumn(connection);
         Assert.Equal(1, EngramDatabase.ReadSchemaVersion(connection));
+        return id;
+    }
+
+    /// <summary>
+    /// Version 6 added <c>details</c> directly on <c>fact</c> — the first migration to alter that
+    /// table's own columns rather than an auxiliary index or FTS structure. Every earlier fixture in
+    /// this file rolls back only auxiliary state and leaves <c>fact</c> untouched, which is exactly
+    /// what the version-5 shape here cannot do: <c>ALTER TABLE ... DROP COLUMN</c> is what makes the
+    /// fixture GENUINELY lack the column (the D60 lesson — a fixture that only rewrites
+    /// <c>schema_version</c> already has it, and the migration's <c>ADD COLUMN</c> would be a no-op
+    /// that a broken migration could still pass).
+    /// </summary>
+    /// <remarks>
+    /// The fact is written through the current <see cref="FactStore.Remember"/> API before
+    /// <see cref="DropDetailsColumn"/> runs, because that column has to exist for the write to
+    /// succeed — the store only becomes genuinely version-5-shaped once the column is gone.
+    /// </remarks>
+    private static long WriteVersion5Store(SandboxHome sandbox, string path, string body)
+    {
+        using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
+        var id = FactStore.Remember(
+            connection,
+            new FactWrite(path, "note", "states", body, "project", "stated"),
+            T0).FactId;
+
+        DropDetailsColumn(connection);
+        Execute(connection, "UPDATE schema_meta SET value = '5' WHERE key = 'schema_version';");
+        Assert.Equal(5, EngramDatabase.ReadSchemaVersion(connection));
+
         return id;
     }
 
@@ -100,6 +145,7 @@ public class SchemaMigrationTests
             T0).FactId;
         Execute(connection, $"UPDATE fact SET valid_to = '{T0:O}' WHERE id = {closed};");
 
+        DropDetailsColumn(connection);
         Assert.Equal(2, EngramDatabase.ReadSchemaVersion(connection));
         return (live, closed);
     }
@@ -219,6 +265,38 @@ public class SchemaMigrationTests
 
         Assert.Equal(1, EngramDatabase.ReadSchemaVersion(fromSnapshot));
         Assert.Empty(FactStore.SearchRanked(fromSnapshot, "kestrel", 10));
+    }
+
+    /// <summary>
+    /// The migration adds capacity, never rewrites belief content (D8) — the pre-existing fact's
+    /// body must survive byte-identical, and its new <c>details</c> column reads NULL rather than
+    /// some backfilled value, because splitting an existing body is exactly what the rule forbids.
+    /// </summary>
+    [Fact]
+    public void Migrating_AVersion5Store_AddsTheDetailsColumnWithoutTouchingExistingFacts()
+    {
+        using var sandbox = new SandboxHome(initialize: false);
+        const string Body = "It binds loopback only.";
+        var id = WriteVersion5Store(sandbox, "/knowledge/testing/kestrel", Body);
+        SqliteConnection.ClearAllPools();
+
+        using var reopened = EngramDatabase.OpenInitialized(sandbox.Home);
+
+        Assert.Equal(EngramDatabase.SchemaVersion, EngramDatabase.ReadSchemaVersion(reopened));
+
+        using (var command = reopened.CreateCommand())
+        {
+            command.CommandText = "SELECT COUNT(*) FROM pragma_table_info('fact') WHERE name = 'details';";
+            Assert.Equal(1L, (long)command.ExecuteScalar()!);
+        }
+
+        var fact = FactStore.ReadById(reopened, id);
+        Assert.NotNull(fact);
+        Assert.Equal(Body, fact.Body);
+        Assert.Null(fact.Details);
+
+        var snapshot = Assert.Single(BackupStore.List(sandbox.Home));
+        Assert.Contains("pre-v" + EngramDatabase.SchemaVersion, snapshot.Name, StringComparison.Ordinal);
     }
 
     [Fact]

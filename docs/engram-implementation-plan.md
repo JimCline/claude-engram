@@ -4607,3 +4607,113 @@ the vector lane on its own, rather than being deliberately probed, is the separa
 D12/D43 already left open, and this finding does not touch it. The rank/budget interaction on probe
 5 is worth a follow-up if `coverage` keeps hiding relevant-but-low-ranked facts at default budget —
 a quality note, not a blocker to this gate.
+
+## D64 — Two-field memory: a statement every fact carries, and depth it may defer
+
+**Decision.** `engram_remember` and `engram_revise` gain an optional `details` parameter alongside
+`statement`; `fact.details` is a new nullable column, belief content like the body it accompanies —
+append-only, never indexed, never compared for replay identity (D8). Recall packs the statement (or a
+truncated legacy body); `engram_expand ... details` pages the rest. Three rungs, each an explicit,
+priced step deeper — the same pattern the toolchain already runs on (skill description → skill body,
+deferred tool name → fetched schema, Read's offset/limit): the recall line (statement, or a body
+truncated to 100 tokens on a word boundary, plus a `· +Nk` marker sized to everything withheld); the
+first page of `expand details` (`budget_tokens`, default 800); further pages via a stateless character
+`offset`. A details-fact and a legacy long-body fact ride the same ladder — the model never needs to
+know which kind it is looking at.
+
+**`statement` is never rejected for length; `details` is, hard, at 2,000 tokens — the asymmetry is
+deliberate.** Hard rejection on `statement` was designed first and struck on review, for three
+reasons: the store's own history is the evidence against it — mean 112 characters, p90 200, achieved
+under nothing but the advisory "short, self-contained" already in the tool description, so soft
+guidance already yields roughly 97% compliance; a bounced write risks losing the capture outright — a
+model that hits a wall may chop its statement to fit (discarding depth rather than moving it
+somewhere real) or give up on saving at all, and D51's argument ("a capture the model has to opt into
+is a capture that does not happen") applies with more force to a capture that was attempted and
+refused than to one merely encouraged toward brevity; and the read path has to defend against an
+over-length body regardless, since hooks are exempt from the advisory and legacy long bodies already
+exist, so rejecting statement would buy only behavioral pressure the data says is unneeded, at a
+capture-loss price a truncated recall line does not carry. `details`, in contrast, is never passively
+captured — always deliberately authored by a model that can retry with a pointer (a path, a handle)
+in the same breath — so refusing it loses nothing, and "a memory that large is a document; store
+where to find it rather than its contents" is the refusal's own text.
+
+**The ceiling is enforced once, ahead of both call sites, deliberately as one implementation.**
+`EngramMcpTools.DetailsCeilingError` is called by both `engram_remember` and `engram_revise` before
+either opens a connection — "same check, same message shape" written once rather than twice, so the
+two tools cannot drift into checking different limits or wording their refusals differently.
+
+**Paging is the recall budget idiom plus the Read tool's offset idiom, not page-number machinery, and
+it is stateless on purpose.** `expand ... details` renders from a character `offset`, cuts at the
+budget on a word boundary (never mid-surrogate-pair), and appends a continuation line
+(`showing chars A–B of N · continue with offset: B`) — or nothing, on the terminal page, because an
+ever-continuing pager reads as more content existing when none does. Character offsets rather than
+token offsets, because they are exact and stable and token math is arithmetic on a length anyway
+(D58's `TokenEstimator`). No cursor is held server-side; the offset round-trips through the caller,
+which is what lets a stateless MCP tool serve it at all.
+
+**`details` is indexed nowhere in v1 — FTS, the token-overlap lane, and the vector lane all continue
+to read `body`/`statement` only** — for four reasons, in order of weight: the contract already demands
+the statement carry the searchable essence, so a statement whose distinguishing keyword lives only in
+its details has failed its own contract and the fix is a better statement, not a bigger index; lane
+symmetry keeps D44's corroboration (2+ lanes agreeing on one candidate) meaning agreement about one
+text rather than two lanes seeing different documents; the blast radius collapses to zero schema or
+trigger changes and no tokenizer-version bump (which would force a full token rebuild — 4.16 s at
+50,097 facts, D59) and no embedding-space question (D18/D38); and it is reversible in the direction
+that matters — indexing details later is additive, un-indexing it later strands expectations. Named
+revisit condition, not vibes: recorded recall misses (D44's method — check `valid_from` against the
+telemetry timestamp before trusting any miss) whose query terms lived only in a details field and
+nowhere in the statement.
+
+**Replay identity is unchanged, and `details` deliberately plays no part in it.** `backup replay`
+still matches on subject, predicate, body, and `valid_from` exactly as D32 defined it; `details` rides
+along on insert and is never compared, so a journalled fact whose body matches the target's is
+`AlreadyPresent` even when their `details` differ. Depth is not identity; the belief is the statement.
+
+**`engram_revise` never carries `details` forward.** Omitting it on a revision means the new version
+has none, full stop — `FactWrite.Details` is always exactly what the caller passed, never
+`?? target.Details`. Carrying stale details onto a revised statement would manufacture the exact
+born-inconsistent pair (a corrected belief paired with an uncorrected elaboration of the old one) this
+design exists to avoid.
+
+**Rejected: depth as a linked child fact**, a second row under the same subject rather than a column
+on the same row. A two-call write breaks atomicity (a crash between the two calls orphans the depth);
+superseding the summary orphans or strands the child; the child competes in recall ranking as its own
+candidate and pollutes results unless filtered by more machinery than the feature is worth; and the
+recall marker would need a join just to know depth exists at all. The nullable column is strictly
+simpler on every axis, at the cost of nothing D8 protects — `details` is exactly as append-only as
+`body`, closed the same way, by the same supersession.
+
+**`ApplyBudget`'s break→skip reversal is this feature's own precondition, not a separate change riding
+along with it.** A details-bearing or truncated-legacy fact that ranks first and does not fit the
+budget must not empty the whole digest the way the old stop-at-first-misfit contract would have let it
+— that failure mode reads to the model as "the store knows nothing" (the same principle D57's marking
+discipline generalizes: a digest gone silent over one oversized winner is worse than one that skips it
+and packs what fits). Formatting-time truncation, below, keeps that skip rare in practice, but the
+skip is what keeps an untruncated legacy body or a details-heavy fact from being able to poison the
+digest at all.
+
+**The equivalence trap fired twice, and neither arm was loaded until proven.** `CannedFact.DetailsChars`
+and its session-tier counterpart on `SessionFact` are each computed by two independent derivations —
+one reading `StoredFact.Details` in C#, one reading a `COALESCE(length(f.details), 0)` SQL column —
+and `RecallRankerEquivalenceTests` is the instrument meant to catch them disagreeing. Dropping either
+long-term derivation did not redden that test against its existing fixture, because no seeded fact had
+ever set `Details`; the same was true, independently, for the session-tier pair. The fixture was
+strengthened (one details-bearing long-term fact, one details-bearing fact in each session origin) and
+both pairs of derivations were falsified again — each now reddens on its own, with an exact `Line` and
+`Tokens` mismatch, and passes once restored. A lint or guard test that cannot fail is worthless until
+someone deliberately breaks the rule it exists to enforce and watches it get caught — this is that,
+twice, for a guard the spec asserted was already armed.
+
+**Falsified, each broken, reddened, restored, re-greened:** `ApplyBudget`'s skip; the details ceiling
+on both tools (writes nothing, exact message); revise's no-carry-forward (details leaked through when
+defaulted to `?? target.Details`); the paging word-boundary progress guard (`lastSpace > offset` —
+without it, a page cut lands on its own leading space and cannot advance); the surrogate-pair split
+guard (an emoji orphaned across a page boundary without the low-surrogate step-back); `budget_tokens <
+1` (an unguarded zero throws `ArgumentOutOfRangeException` from `LastIndexOf`, not merely returns a
+bad value); the withheld-chars marker's iff (forcing it always-on reddens the no-marker case on a
+literal `+0`); and both `DetailsChars` derivations, long-term and session-tier, independently.
+
+**Not measured:** whether a model, given the advisory clause, actually keeps statements short in
+practice under this tool description specifically — the ~97% figure is the store's history under the
+OLD description, before `details` existed to redirect depth toward. Worth reading back after some
+adoption, the same way D18/D43 read recall adoption back.

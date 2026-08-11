@@ -144,6 +144,7 @@ CREATE TABLE fact (
   regenerable   INTEGER NOT NULL DEFAULT 0 CHECK (regenerable IN (0,1)),
 
   evidence      TEXT,               -- "src/Auth.cs:120", "commit a1b2c3"
+  details       TEXT,               -- depth beyond the statement; never indexed by any lane (v1); see the two-field design.
   session_id    INTEGER REFERENCES session(id),
   valid_from    INTEGER NOT NULL,
   valid_to      INTEGER,            -- NULL = currently believed
@@ -360,7 +361,7 @@ CREATE INDEX ix_fact_token_fact ON fact_token(fact_id);
 
 
 CREATE TABLE schema_meta (key TEXT PRIMARY KEY, value TEXT);
-INSERT INTO schema_meta(key, value) VALUES ('schema_version', '5');
+INSERT INTO schema_meta(key, value) VALUES ('schema_version', '6');
 
 -- Built by a fresh CREATE, and pre-stamped ready: an empty table matches whatever
 -- FactTokenIndex.Rebuild would produce over zero facts, so a new store needs no rebuild pass.

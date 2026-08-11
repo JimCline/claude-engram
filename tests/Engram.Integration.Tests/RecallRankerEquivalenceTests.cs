@@ -28,10 +28,11 @@ public class RecallRankerEquivalenceTests
 {
     private static readonly DateTimeOffset T0 = new(2026, 8, 5, 12, 0, 0, TimeSpan.Zero);
 
-    private static long Write(SqliteConnection connection, string slug, string body, string learnedVia = "stated") =>
+    private static long Write(
+        SqliteConnection connection, string slug, string body, string learnedVia = "stated", string? details = null) =>
         FactStore.Remember(
             connection,
-            new FactWrite("/knowledge/testing/" + slug, "note", "states", body, "project", learnedVia),
+            new FactWrite("/knowledge/testing/" + slug, "note", "states", body, "project", learnedVia, Details: details),
             T0).FactId;
 
     /// <summary>
@@ -85,6 +86,13 @@ public class RecallRankerEquivalenceTests
         Write(connection, "fox", "The quick brown fox jumps over the lazy dog.");
         Write(connection, "cafe", "café naïve 東京 — non-ASCII survives round-tripping.");
         Write(connection, "unrelated", "Nothing here concerns listeners or binding at all.", "inferred");
+
+        // D64's trap: DetailsChars is computed by two separate derivations (FactCatalog.ToCannedFact
+        // and RecallRanker's SQL projection), and neither the sweep above nor AssertCandidatesEqual's
+        // Line comparison can catch the two disagreeing unless a seeded fact actually carries Details.
+        Write(
+            connection, "gannet", "Gannets dive from height to catch fish.",
+            details: "Depth beyond the statement, present only to make the two DetailsChars derivations comparable.");
 
         var queries = new List<string>();
 
@@ -282,8 +290,16 @@ public class RecallRankerEquivalenceTests
         using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
 
         Write(connection, "longterm-kestrel", "Kestrel binds loopback only.");
-        SessionFacts.Append(connection, "session-current", "Kestrel needs a loopback binding here too.", null, null, null, T0);
-        SessionFacts.Append(connection, "session-prior-a", "Kestrel loopback binding noted in an earlier session.", null, null, null, T0);
+        // 4d's trap, mirroring 4a's: DetailsChars is computed by two derivations for session
+        // facts too (SessionFacts.ToSessionFact and RecallRanker's own), so at least one
+        // current-session and one prior-session fact here must carry Details or neither
+        // derivation disagreeing would redden this test.
+        SessionFacts.Append(
+            connection, "session-current", "Kestrel needs a loopback binding here too.", null, null, null, T0,
+            details: "Depth beyond the statement, to exercise the current-session derivation.");
+        SessionFacts.Append(
+            connection, "session-prior-a", "Kestrel loopback binding noted in an earlier session.", null, null, null, T0,
+            details: "Depth beyond the statement, to exercise the prior-session derivation.");
         SessionFacts.Append(connection, "session-prior-b", "Another earlier session also noted kestrel loopback.", null, null, "worker", T0);
 
         const string Query = "kestrel loopback binding";

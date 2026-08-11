@@ -179,7 +179,8 @@ public static class UserFacts
         string statement,
         string? sessionExternalId,
         DateTimeOffset now,
-        string reason = "restated so it stands on its own")
+        string reason = "restated so it stands on its own",
+        string? details = null)
     {
         var target = FactStore.ReadById(connection, targetFactId);
         if (target is null || target.ValidTo is not null)
@@ -205,7 +206,8 @@ public static class UserFacts
                 LearnedVia: LearnedVia,
                 Evidence: "stated by the user",
                 Regenerable: false,
-                SessionId: sessionId),
+                SessionId: sessionId,
+                Details: details),
             now,
             reason);
 

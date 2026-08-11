@@ -6,11 +6,15 @@ List what memory holds under a path — children, fact counts, and the top facts
   Levels of children to show, 1-3. Defaults to 1.
 
 tool: engram_expand
-The full story behind one fact handle: its supersession history, related facts on the same subject, its evidence, or where it was learned. Call it when a fact engram_recall returned needs scrutiny before you rely on it.
+The full story behind one fact handle: its supersession history, related facts on the same subject, its evidence, or where it was learned. Call it when a fact engram_recall returned needs scrutiny before you rely on it. The details view returns everything the handle holds, paged by budget_tokens and offset.
   param: id
   The bracketed fact id, e.g. "f42".
   param: view
-  One of: history, related, evidence, source.
+  One of: history, related, evidence, source, details.
+  param: budget_tokens
+  Maximum tokens returned per call. Defaults to 800.
+  param: offset
+  Character offset to continue a paged details view from. Defaults to 0.
 
 tool: engram_forget
 Retract a stored fact by its bracketed id (e.g. "f42"). Use it whenever the user says something stored is wrong, private, or no longer true, and to clear a session note that turned out to be mistaken. Retracted facts stop appearing in recall immediately, and stay retracted — nothing re-seeds them. Call engram_recall first if you need to find the id.
@@ -27,7 +31,9 @@ Check memory BEFORE reading files or exploring the repo. Searches Engram's store
 tool: engram_remember
 Engram's durable memory, and where anything worth keeping goes even when another memory system is available. Call it when the user asks you to remember or save something, and whenever you learn something durable: a decision, a constraint, a partial result, a dead end already ruled out — state you would otherwise repeat in context and would lose to compaction. `engram_recall` ranks these above long-term memory for the rest of this session, and they stay recallable in later ones, so this is for anything still true next week rather than only the next ten minutes. Subagents pass their own name in `agent`. When restating something the user just said, pass the bracketed id of its automatic capture in `supersedes` so the rewrite replaces it rather than duplicating it.
   param: statement
-  The fact to remember, as a short, self-contained statement.
+  The fact to remember, as a short, self-contained statement — aim under ~300 characters; depth belongs in details.
+  param: details
+  Depth the statement cannot carry — a full config, a long rationale, verbatim output. Most memories need none: if the statement holds it, stop there.
   param: subject
   What or who the fact is about, if not obvious from the statement.
   param: evidence
@@ -47,4 +53,6 @@ Replace a stored belief with a corrected statement, recording why. The old fact 
   Why the belief changed.
   param: evidence
   Where the correction came from — a file, PR, or the user's words.
+  param: details
+  Depth for the corrected fact. Does not carry forward from the old version — restate it or drop it deliberately.
 
