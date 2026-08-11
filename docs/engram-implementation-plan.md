@@ -4753,3 +4753,33 @@ pid was actually gone. And the load-bearing one for `restart` itself: skipping t
 (calling `Start` alone) against a healthy running server yields `AlreadyRunning` with the same
 pid, unchanged — proving restart's only behavioral difference from `start` is exactly that one
 case.
+
+## D66 — `memory-guard`: a PreToolUse checkpoint on file-based memory, not a block
+
+**Decision.** The plugin gains a PreToolUse hook on `Write|Edit|MultiEdit` routing to `engram
+hook memory-guard`. A write to `<projects>/<slug>/memory/*.md` — `MEMORY.md` exempt by exact
+ordinal basename, since it is the index and never memory content — denies once per session with
+a reason naming `engram_remember`, then allows silently for the rest of the session; re-running
+the identical call proceeds immediately. `[memory] precedence = off` is the only switch (a second
+`nudge` key would be two ways to turn one thing off, D55); every other case — non-matching path,
+the index file, an uninitialized home, missing `session_id`/`file_path` — allows with no output.
+The hook's existence is itself the answer to whether Engram is installed, matching how
+`ensure-server` already runs at session start; no separate flag, no server-aliveness check.
+
+**Fail open, and never opens the database** — the same two rules D4 already established for
+`file-touched`, for the same reason: a state-append failure allows rather than denies (a nudge
+that cannot record itself must not re-fire forever), an unreadable config falls back to
+`MemorySettings.Default` rather than throwing, and the non-matching fast path is parse-stdin ->
+path check -> exit 0, PreToolUse's own frequency class being identical to `file-touched`'s.
+
+**The shared `File.Exists(home.ConfigPath)` gate in `HookCommand.Run` stays; memory-guard's own
+ordering rule narrows to what that gate leaves undecided.** A falsification built to prove "the
+path check precedes every home/config touch" could not fail under a broken ordering, because that
+existing gate — priced into `file-touched`'s measured budget already — answers the probing
+scenario before `RunMemoryGuard` ever runs, correct or broken alike. The rule inside
+`RunMemoryGuard` narrows to what is actually distinguishable — no config parse, no state or
+telemetry or database touch before the path-match check — stated as a comment, since ordering of
+side-effect-free checks cannot fail a test by construction. What replaced the falsification is
+`NonMatchingPath_LeavesNoTrace`: a non-matching path against an initialized home must leave no
+state file and no telemetry record, which does red when the state append moves above the path
+check.

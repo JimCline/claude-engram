@@ -17,7 +17,7 @@ internal static class HookCommand
 
         var eventName = rest[0];
         if (eventName is not ("session-start" or "subagent-start" or "pre-compact" or "post-compact"
-            or "user-prompt" or "file-touched"))
+            or "user-prompt" or "file-touched" or "memory-guard"))
         {
             return Usage(stderr);
         }
@@ -48,6 +48,7 @@ internal static class HookCommand
             "post-compact" => RunPostCompact(home, ReadPayload()),
             "user-prompt" => RunUserPrompt(home, stdout, ReadPayload()),
             "file-touched" => RunFileTouched(home, ReadPayload()),
+            "memory-guard" => RunMemoryGuard(home, stdout, ReadPayload()),
             _ => 0,
         };
     }
@@ -577,6 +578,72 @@ internal static class HookCommand
 
         return 0;
     }
+
+    // PreToolUse fires ahead of every Write/Edit/MultiEdit, in every session — the same
+    // frequency class as file-touched (D4) — so the non-matching path must do nothing beyond
+    // parse-stdin -> path check -> exit 0. No config parse, no state/telemetry/database touch
+    // may precede the path-match check below; the shared File.Exists(home.ConfigPath) gate this
+    // switch already sits behind is the one exception, priced into file-touched's own measured
+    // budget already (Amendment 1 to the memory-guard spec).
+    private static int RunMemoryGuard(EngramHome home, TextWriter stdout, HookStdinInput? payload)
+    {
+        if (payload?.ToolInput?.FilePath is not { Length: > 0 } filePath)
+        {
+            return 0;
+        }
+
+        if (!MemoryGuardPathMatcher.IsFileBasedMemoryFile(filePath, home.ClaudeProjectsDir))
+        {
+            return 0;
+        }
+
+        if (Precedence(home) == MemoryPrecedence.Off)
+        {
+            return 0;
+        }
+
+        if (payload?.SessionId is not { Length: > 0 } sessionId)
+        {
+            return 0;
+        }
+
+        if (MemoryGuardState.Contains(home, sessionId))
+        {
+            return 0;
+        }
+
+        // Before emitting the deny, not after — a crash between the two must not produce a
+        // session that gets denied twice; the reverse order risks exactly that.
+        if (!MemoryGuardState.TryAppend(home, sessionId))
+        {
+            return 0;
+        }
+
+        try
+        {
+            Telemetry.Append(home, new TelemetryRecord(
+                Timestamp: DateTimeOffset.UtcNow.ToString("o"),
+                SessionId: sessionId,
+                Kind: TelemetryEventKind.MemoryGuard,
+                Path: filePath));
+        }
+        catch
+        {
+        }
+
+        WriteJson(stdout, HookJsonContext.Default.PreToolUseHookOutput,
+            new PreToolUseHookOutput(new PreToolUseHookSpecificOutput(
+                "PreToolUse", "deny", MemoryGuardDenyReason(filePath))));
+
+        return 0;
+    }
+
+    private static string MemoryGuardDenyReason(string filePath) =>
+        $"Engram memory guard: this write targets file-based memory ({filePath}), but Engram is "
+        + "installed and is the preferred durable store. Save durable facts with engram_remember "
+        + "instead — supersede the auto-captured id if one was printed. If the file write is "
+        + "genuinely right (content that must stay human-browsable on disk), re-run the exact "
+        + "same call and it will proceed; this reminder fires once per session.";
 
     private static void WriteJson<T>(TextWriter stdout, System.Text.Json.Serialization.Metadata.JsonTypeInfo<T> typeInfo, T value)
     {

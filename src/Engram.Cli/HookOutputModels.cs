@@ -35,6 +35,17 @@ internal sealed record HookStdinInput(
 internal sealed record HookToolInput(
     [property: JsonPropertyName("file_path")] string? FilePath = null);
 
+// PreToolUse's own shape — AdditionalContextHookOutput cannot be reused, since
+// hookSpecificOutput.additionalContext is required there and a permission decision carries none.
+internal sealed record PreToolUseHookSpecificOutput(
+    [property: JsonPropertyName("hookEventName")] string HookEventName,
+    [property: JsonPropertyName("permissionDecision")] string PermissionDecision,
+    [property: JsonPropertyName("permissionDecisionReason")] string PermissionDecisionReason);
+
+internal sealed record PreToolUseHookOutput(
+    [property: JsonPropertyName("hookSpecificOutput")] PreToolUseHookSpecificOutput HookSpecificOutput);
+
 [JsonSerializable(typeof(AdditionalContextHookOutput))]
 [JsonSerializable(typeof(HookStdinInput))]
+[JsonSerializable(typeof(PreToolUseHookOutput))]
 internal sealed partial class HookJsonContext : JsonSerializerContext;

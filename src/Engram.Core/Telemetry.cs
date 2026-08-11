@@ -63,6 +63,17 @@ public static class TelemetryEventKind
     /// </remarks>
     public const string UserPrompt = "user-prompt";
 
+    /// <summary>
+    /// The <c>memory-guard</c> PreToolUse hook denying a write to Claude Code's file-based
+    /// auto-memory directory, once per session.
+    /// </summary>
+    /// <remarks>
+    /// Its own kind rather than <see cref="Remember"/> or <see cref="UserPrompt"/>: this is a
+    /// nudge away from a write, not a fact captured, and folding it into either would inflate a
+    /// D18/D43 adoption number in the direction that looks like success.
+    /// </remarks>
+    public const string MemoryGuard = "memory-guard";
+
     /// <summary>A run of <c>engram index</c>, which had recorded nothing at all until now.</summary>
     public const string Index = "index";
 
@@ -81,7 +92,7 @@ public static class TelemetryEventKind
     [
         Recall, Remember, Digest, Browse, Expand, Revise,
         SessionStart, ServerStart, ServerStop, SessionOpen, SubagentStart, PreCompact, PostCompact,
-        FileTouched, UserPrompt, Index, Embedding,
+        FileTouched, UserPrompt, MemoryGuard, Index, Embedding,
     ];
 }
 

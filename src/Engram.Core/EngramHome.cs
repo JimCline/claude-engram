@@ -63,11 +63,25 @@ public sealed class EngramHome
     public string GrantedPermissionsPath { get; }
 
     /// <summary>
+    /// Sessions <c>memory-guard</c> has already nudged once this run, one <c>session_id</c> per
+    /// line.
+    /// </summary>
+    public string MemoryGuardStatePath { get; }
+
+    /// <summary>
     /// Claude Code's user-scope settings file. It is outside the Engram home on purpose — it
     /// belongs to Claude Code — but it is resolved here because this is the only place allowed
     /// to turn a home directory into a path.
     /// </summary>
     public string ClaudeSettingsPath { get; }
+
+    /// <summary>
+    /// Claude Code's per-project directories, where its file-based auto-memory lives
+    /// (<c>&lt;projects&gt;/&lt;slug&gt;/memory/*.md</c>). Outside the Engram home for the same
+    /// reason <see cref="ClaudeSettingsPath"/> is — it belongs to Claude Code, and this is the
+    /// only place allowed to turn a home directory into a path.
+    /// </summary>
+    public string ClaudeProjectsDir { get; }
 
     private EngramHome(string root, string userProfileDirectory)
     {
@@ -83,7 +97,9 @@ public sealed class EngramHome
         MetalRecordPath = Path.Combine(root, "metal.json");
         EmbeddingProgressPath = Path.Combine(root, "embedding.json");
         GrantedPermissionsPath = Path.Combine(root, "granted-permissions.json");
+        MemoryGuardStatePath = Path.Combine(root, "memory-guard.state");
         ClaudeSettingsPath = Path.Combine(userProfileDirectory, ".claude", "settings.json");
+        ClaudeProjectsDir = Path.Combine(userProfileDirectory, ".claude", "projects");
     }
 
     public static EngramHome Resolve(

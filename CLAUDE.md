@@ -799,6 +799,16 @@ forward — an omitted `details` on revise means none, not the old value, since 
 manufactures a belief paired with a stale elaboration. Neither FTS, the token-overlap lane, nor the
 vector lane read `details` (D64).
 
+**`memory-guard` is in `file-touched`'s frequency class and never opens the database.** The
+PreToolUse hook on `Write|Edit|MultiEdit` denies once per session, keyed on `session_id` alone,
+when a write targets Claude Code's file-based memory (`<projects>/<slug>/memory/*.md`, `MEMORY.md`
+exempt); every other case allows silently, forever after the one deny. Inside `RunMemoryGuard`, no
+config parse and no state or telemetry touch precedes the path-match check — the shared
+`File.Exists(home.ConfigPath)` gate every hook verb already sits behind is the one exception,
+priced into `file-touched`'s own budget already. Fails open everywhere (a state-append failure
+allows; an unreadable config falls back to the default precedence rather than throwing), and
+`[memory] precedence = off` is the only switch — no second key (D66).
+
 ## Build constraints
 
 - .NET 10, `net10.0`. Warnings are errors.
