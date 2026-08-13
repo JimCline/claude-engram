@@ -189,6 +189,34 @@ public class StoreCompactorTests
         Assert.Equal(1, Scalar(connection, "SELECT count(*) FROM repo_registry;"));
     }
 
+    /// <summary>
+    /// Guard 8.3-6: repo_enrollment is authored truth (D8), never repo_registry's residue — a
+    /// path compact that deregisters a repo must leave the user's enrollment decision alone.
+    /// Falsified by temporarily adding a `DELETE FROM repo_enrollment` line beside the
+    /// repo_registry delete in <see cref="StoreCompactor"/>'s path block, confirming this test
+    /// reds, then reverting.
+    /// </summary>
+    [Fact]
+    public void PathCompact_NeverTouchesRepoEnrollment_EvenAsItDeregistersTheRepo()
+    {
+        using var sandbox = new SandboxHome(initialize: false);
+        using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
+
+        Code(connection, "/projects/acme/code/api/src/A.cs", "about the request pipeline");
+        Execute(connection,
+            "INSERT INTO repo_registry (repo_path, identity, disk_path, created_at) VALUES "
+            + "('/projects/acme/code/api', 'github.com/acme/api', '/tmp/api', 0);");
+        Execute(connection,
+            "INSERT INTO repo_enrollment (identity, state, source, last_root, decided_at, last_full_scan_at) VALUES "
+            + "('github.com/acme/api', 'enrolled', 'user', '/tmp/api', 0, NULL);");
+
+        var report = StoreCompactor.Compact(connection, sandbox.Home, "/projects/acme/code/api", apply: true, T0);
+
+        Assert.Equal(1, report.ReposDeregistered);
+        Assert.Equal(0, Scalar(connection, "SELECT count(*) FROM repo_registry WHERE repo_path = '/projects/acme/code/api';"));
+        Assert.Equal(1, Scalar(connection, "SELECT count(*) FROM repo_enrollment WHERE identity = 'github.com/acme/api';"));
+    }
+
     [Fact]
     public void DryRun_CountsEverything_AndChangesNothing()
     {

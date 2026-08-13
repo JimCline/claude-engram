@@ -108,6 +108,10 @@ public static class StoreCompactor
                 entities = Scalar(connection, EntitySql("SELECT count(*) FROM entity"), ("$p", prefix));
                 fileStates = Scalar(connection, FileStateSql("SELECT count(*) FROM file_state"), ("$p", prefix));
                 repos = Scalar(connection, RegistrySql("SELECT count(*) FROM repo_registry"), ("$p", prefix));
+
+                // repo_enrollment is authored truth — the user's yes/no/later decision — never
+                // residue of indexing like repo_registry. Counting or deleting it here would let
+                // `compact` silently un-decline a repo the user declined (D8).
             }
 
             var report = new CompactReport(
@@ -166,6 +170,9 @@ public static class StoreCompactor
                     Execute(connection, transaction, EntitySql("DELETE FROM entity"), ("$p", prefix));
                     Execute(connection, transaction, FileStateSql("DELETE FROM file_state"), ("$p", prefix));
                     Execute(connection, transaction, RegistrySql("DELETE FROM repo_registry"), ("$p", prefix));
+
+                    // repo_enrollment must not appear above: it is authored truth, not derived
+                    // state, and this method may only touch what can be regenerated (D8).
                 }
 
                 transaction.Commit();

@@ -337,6 +337,20 @@ CREATE TABLE repo_registry (
 CREATE UNIQUE INDEX ux_repo_identity ON repo_registry(identity);
 
 
+-- Authored truth: the user's answer to "should Engram index this repo". Deliberately NOT in
+-- repo_registry, which StoreCompactor deletes rows from under a path prefix — a decision stored
+-- there would be un-declined by `engram compact` and the user re-prompted (D8).
+CREATE TABLE repo_enrollment (
+  identity          TEXT PRIMARY KEY,  -- CodeIndexer.ResolveIdentity(root); same key as repo_registry.identity
+  state             TEXT NOT NULL CHECK (state IN ('enrolled','declined','deferred')),
+  source            TEXT NOT NULL CHECK (source IN ('user','backfill')),
+  last_root         TEXT,              -- last seen checkout root: a lookup cache, never the key
+  decided_at        INTEGER NOT NULL,  -- unix seconds
+  last_full_scan_at INTEGER            -- unix seconds; NULL = never scanned = due
+);
+CREATE INDEX ix_repo_enrollment_root ON repo_enrollment(last_root);
+
+
 -- ---------------------------------------------------------------------------
 -- Literal-token overlap lane: fact_token(token, fact_id) over LIVE facts only.
 -- ---------------------------------------------------------------------------
@@ -361,7 +375,7 @@ CREATE INDEX ix_fact_token_fact ON fact_token(fact_id);
 
 
 CREATE TABLE schema_meta (key TEXT PRIMARY KEY, value TEXT);
-INSERT INTO schema_meta(key, value) VALUES ('schema_version', '6');
+INSERT INTO schema_meta(key, value) VALUES ('schema_version', '7');
 
 -- Built by a fresh CREATE, and pre-stamped ready: an empty table matches whatever
 -- FactTokenIndex.Rebuild would produce over zero facts, so a new store needs no rebuild pass.

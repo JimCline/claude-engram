@@ -10,8 +10,11 @@ namespace Engram.Integration.Tests;
 /// <remarks>
 /// A rollback-built fixture inherits every current-schema structure it does not explicitly
 /// revert. A version-N fixture must be version-N-shaped for everything any migration touches —
-/// v6 was the first migration to alter <c>fact</c>'s own columns, and the first to catch this.
-/// Extend these drops when a future migration adds another column.
+/// v6 was the first migration to alter <c>fact</c>'s own columns, and v7 the first to add a whole
+/// new table (<c>repo_enrollment</c>), both catching this the same way: every rollback-built
+/// fixture below v7 must also drop that table, or the version-7 migration's unconditional
+/// <c>CREATE TABLE</c> fails against a fixture that silently still has it.
+/// Extend these drops when a future migration adds another column or table.
 /// </remarks>
 [Collection(SqlitePoolCollection.Name)]
 public class SchemaMigrationTests
@@ -96,6 +99,7 @@ public class SchemaMigrationTests
             T0).FactId;
 
         DropDetailsColumn(connection);
+        Execute(connection, "DROP TABLE repo_enrollment;");
         Assert.Equal(1, EngramDatabase.ReadSchemaVersion(connection));
         return id;
     }
@@ -123,10 +127,33 @@ public class SchemaMigrationTests
             T0).FactId;
 
         DropDetailsColumn(connection);
+        Execute(connection, "DROP TABLE repo_enrollment;");
         Execute(connection, "UPDATE schema_meta SET value = '5' WHERE key = 'schema_version';");
         Assert.Equal(5, EngramDatabase.ReadSchemaVersion(connection));
 
         return id;
+    }
+
+    /// <summary>
+    /// Version 7 adds <c>repo_enrollment</c> as a brand new table — CREATE, not ALTER — so unlike
+    /// <see cref="WriteVersion5Store"/>'s column revert, "version-6-shaped" means dropping the
+    /// table outright rather than reverting a value. It has to exist long enough for the
+    /// <c>repo_registry</c> rows below to be written first, then it goes — the same D60 ordering
+    /// <see cref="WriteVersion5Store"/> uses, so a migration whose CREATE TABLE degrades to
+    /// IF NOT EXISTS cannot no-op against this fixture the way it could against a rolled-back one.
+    /// </summary>
+    private static void WriteVersion6Store(SandboxHome sandbox)
+    {
+        using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
+        Execute(
+            connection,
+            "INSERT INTO repo_registry (repo_path, identity, disk_path, created_at) VALUES "
+            + "('/projects/acme/code/api', 'github.com/acme/api', '/tmp/api', 0), "
+            + "('/projects/acme/code/gone', 'github.com/acme/gone', NULL, 0);");
+
+        Execute(connection, "DROP TABLE repo_enrollment;");
+        Execute(connection, "UPDATE schema_meta SET value = '6' WHERE key = 'schema_version';");
+        Assert.Equal(6, EngramDatabase.ReadSchemaVersion(connection));
     }
 
     /// <summary>Builds a store at version 2 holding one live fact and one closed one.</summary>
@@ -146,6 +173,7 @@ public class SchemaMigrationTests
         Execute(connection, $"UPDATE fact SET valid_to = '{T0:O}' WHERE id = {closed};");
 
         DropDetailsColumn(connection);
+        Execute(connection, "DROP TABLE repo_enrollment;");
         Assert.Equal(2, EngramDatabase.ReadSchemaVersion(connection));
         return (live, closed);
     }
@@ -294,6 +322,55 @@ public class SchemaMigrationTests
         Assert.NotNull(fact);
         Assert.Equal(Body, fact.Body);
         Assert.Null(fact.Details);
+
+        var snapshot = Assert.Single(BackupStore.List(sandbox.Home));
+        Assert.Contains("pre-v" + EngramDatabase.SchemaVersion, snapshot.Name, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Guard 8.3-8: the migration must create repo_enrollment unconditionally and backfill only
+    /// registered repos with a live disk_path — a detached repo_registry row backfilling to
+    /// 'enrolled' would silently re-consent a repo whose checkout is already gone. Falsified by
+    /// temporarily dropping the version 7 migration's <c>WHERE disk_path IS NOT NULL</c> clause
+    /// on the backfill INSERT; confirmed red (the detached 'github.com/acme/gone' row backfilled
+    /// too), then restored.
+    /// </summary>
+    [Fact]
+    public void Migrating_AVersion6Store_CreatesRepoEnrollmentAndBackfillsOnlyLiveRegistrations()
+    {
+        using var sandbox = new SandboxHome(initialize: false);
+        WriteVersion6Store(sandbox);
+        SqliteConnection.ClearAllPools();
+
+        using var reopened = EngramDatabase.OpenInitialized(sandbox.Home);
+
+        Assert.Equal(EngramDatabase.SchemaVersion, EngramDatabase.ReadSchemaVersion(reopened));
+
+        using (var command = reopened.CreateCommand())
+        {
+            command.CommandText =
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'repo_enrollment';";
+            Assert.Equal(1L, (long)command.ExecuteScalar()!);
+        }
+
+        using (var command = reopened.CreateCommand())
+        {
+            command.CommandText =
+                "SELECT state, source, last_root, last_full_scan_at FROM repo_enrollment "
+                + "WHERE identity = 'github.com/acme/api';";
+            using var reader = command.ExecuteReader();
+            Assert.True(reader.Read());
+            Assert.Equal("enrolled", reader.GetString(0));
+            Assert.Equal("backfill", reader.GetString(1));
+            Assert.Equal("/tmp/api", reader.GetString(2));
+            Assert.True(reader.IsDBNull(3));
+        }
+
+        using (var command = reopened.CreateCommand())
+        {
+            command.CommandText = "SELECT COUNT(*) FROM repo_enrollment WHERE identity = 'github.com/acme/gone';";
+            Assert.Equal(0L, (long)command.ExecuteScalar()!);
+        }
 
         var snapshot = Assert.Single(BackupStore.List(sandbox.Home));
         Assert.Contains("pre-v" + EngramDatabase.SchemaVersion, snapshot.Name, StringComparison.Ordinal);

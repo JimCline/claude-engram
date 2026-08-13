@@ -20,7 +20,7 @@ namespace Engram.Core;
 /// </remarks>
 public static class EngramDatabase
 {
-    public const int SchemaVersion = 6;
+    public const int SchemaVersion = 7;
 
     public const int BusyTimeoutMilliseconds = 5000;
 
@@ -305,6 +305,48 @@ public static class EngramDatabase
         {
             Execute(connection, null, "ALTER TABLE fact ADD COLUMN details TEXT;");
             WriteMeta(connection, null, "schema_version", "6");
+        }
+
+        if (from < 7)
+        {
+            // repo_enrollment is authored truth (D8) — the user's yes/no/later decision — kept
+            // out of repo_registry because StoreCompactor deletes registry rows under a path
+            // prefix. Backfilling every already-registered repo to enrolled narrows nothing:
+            // today's --auto already indexes any git checkout gated on nothing else. Every
+            // backfilled row gets last_full_scan_at = NULL, which is due, forcing one full scan
+            // per repo on its next session start — the one-shot repair of defect (a).
+            //
+            // This backfill emits no telemetry (§6.2/§6.10): a store with thousands of already-
+            // registered repos would otherwise write that many `enrollment` records on the first
+            // open after upgrade, none of them a real decision, and corrupt D18/D43's adoption
+            // counts with rows nobody made.
+            Execute(
+                connection,
+                null,
+                """
+                CREATE TABLE repo_enrollment (
+                  identity          TEXT PRIMARY KEY,
+                  state             TEXT NOT NULL CHECK (state IN ('enrolled','declined','deferred')),
+                  source            TEXT NOT NULL CHECK (source IN ('user','backfill')),
+                  last_root         TEXT,
+                  decided_at        INTEGER NOT NULL,
+                  last_full_scan_at INTEGER
+                );
+
+                CREATE INDEX ix_repo_enrollment_root ON repo_enrollment(last_root);
+                """);
+
+            Execute(
+                connection,
+                null,
+                """
+                INSERT INTO repo_enrollment (identity, state, source, last_root, decided_at, last_full_scan_at)
+                SELECT identity, 'enrolled', 'backfill', disk_path, created_at, NULL
+                  FROM repo_registry
+                 WHERE disk_path IS NOT NULL;
+                """);
+
+            WriteMeta(connection, null, "schema_version", "7");
         }
     }
 
