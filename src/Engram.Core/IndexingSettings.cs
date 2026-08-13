@@ -14,19 +14,47 @@ namespace Engram.Core;
 /// <para>Every skip is counted and reported rather than silent, so an over-eager rule shows up as
 /// a number in <c>doctor</c> instead of as a repo that mysteriously has no code facts.</para>
 /// </remarks>
+/// <param name="Ignored">
+/// Settings Engram itself once wrote here and no longer reads, described. Kept apart from
+/// <paramref name="Problems"/> deliberately: a retired key is not a misconfiguration, and folding
+/// it in would report every config old enough to contain one as broken rather than merely stale.
+/// </param>
 public sealed record IndexingSettings(
     bool AutoIndexOnSessionStart,
-    int MaxSyncIndexMs,
     IReadOnlyList<string> Ignore,
     long MaxFileBytes,
     int MaxMeanLineBytes,
     bool UseGit,
-    IReadOnlyList<string> Problems)
+    IReadOnlyList<string> Problems,
+    IReadOnlyList<string> Ignored)
 {
     public const string Section = "indexing";
 
     public const bool DefaultAutoIndexOnSessionStart = true;
-    public const int DefaultMaxSyncIndexMs = 1500;
+
+    /// <summary>
+    /// Keys this section used to have, and what answers for them now.
+    /// </summary>
+    /// <remarks>
+    /// D33's pattern, second instance: an explicit list rather than "anything not in the shipped
+    /// default", since the parser is lenient about unknown keys on purpose. <c>max_sync_index_ms</c>
+    /// was parsed into a field nothing read; wiring it up would walk back D4's rule that a hook
+    /// opening the database is a decision with a measurement behind it, so it stays retired.
+    /// </remarks>
+    public static IReadOnlyList<(string Key, string Note)> Retired { get; } =
+    [
+        ("max_sync_index_ms", "session-start indexing runs asynchronously; nothing bounds it to a synchronous window"),
+    ];
+
+    /// <summary>
+    /// How long a repo's freshness stamp is trusted before a drain escalates to a full scan.
+    /// </summary>
+    /// <remarks>
+    /// A constant rather than a config key: <see cref="ScanBudget"/> already bounds every scan
+    /// regardless of repo size, and a truncated scan already refuses to drive deletions, so this
+    /// cadence collapses a compaction burst rather than protecting correctness (§7 Q2).
+    /// </remarks>
+    public const int FullScanIntervalMinutes = 60;
 
     /// <summary>
     /// Files above this are skipped whole.
@@ -114,12 +142,12 @@ public sealed record IndexingSettings(
 
     public static IndexingSettings Default { get; } = new(
         DefaultAutoIndexOnSessionStart,
-        DefaultMaxSyncIndexMs,
         DefaultIgnore,
         DefaultMaxFileBytes,
         DefaultMaxMeanLineBytes,
         UseGit: true,
-        Problems: []);
+        Problems: [],
+        Ignored: []);
 
     public static IndexingSettings Read(ConfigFile config)
     {
@@ -133,14 +161,23 @@ public sealed record IndexingSettings(
             ignore = DefaultIgnore;
         }
 
+        var ignored = new List<string>();
+        foreach (var (key, note) in Retired)
+        {
+            if (config.Raw(Section, key) is not null)
+            {
+                ignored.Add($"{key} — {note}");
+            }
+        }
+
         return new IndexingSettings(
             config.Bool(Section, "auto_index_on_session_start") ?? DefaultAutoIndexOnSessionStart,
-            Positive(config, "max_sync_index_ms", DefaultMaxSyncIndexMs, problems),
             ignore,
             Positive(config, "max_file_bytes", (int)DefaultMaxFileBytes, problems),
             Positive(config, "max_mean_line_bytes", DefaultMaxMeanLineBytes, problems),
             config.Bool(Section, "use_git") ?? true,
-            problems);
+            problems,
+            ignored);
     }
 
     private static int Positive(ConfigFile config, string key, int fallback, List<string> problems)

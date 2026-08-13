@@ -195,7 +195,6 @@ public class IndexFilterTests
         Assert.Equal(IndexingSettings.DefaultIgnore, settings.Ignore);
         Assert.Equal(IndexingSettings.DefaultMaxFileBytes, settings.MaxFileBytes);
         Assert.Equal(IndexingSettings.DefaultMaxMeanLineBytes, settings.MaxMeanLineBytes);
-        Assert.Equal(IndexingSettings.DefaultMaxSyncIndexMs, settings.MaxSyncIndexMs);
         Assert.True(settings.UseGit);
     }
 }

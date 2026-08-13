@@ -129,6 +129,7 @@ public static class Diagnostics
         Try(checks, "webhook", list => CheckWebhook(config, list));
         Try(checks, "code analysis", list => list.Add(CheckRoslyn(environment)));
         Try(checks, "tree-sitter", list => list.Add(CheckTreeSitter(environment, home)));
+        Try(checks, "indexing config", list => CheckIndexingConfig(IndexingSettings.Read(config), list));
 
         if (repoRoot is not null)
         {
@@ -902,6 +903,18 @@ public static class Diagnostics
             DiagnosisState.Off,
             $"{Plural(spooled, "edit")} spooled by file-touched, waiting for an indexer to drain them",
             spooled > SpoolCompactor.Threshold ? "engram queue compact --apply" : null);
+    }
+
+    private static void CheckIndexingConfig(IndexingSettings settings, List<Diagnosis> checks)
+    {
+        foreach (var stale in settings.Ignored)
+        {
+            checks.Add(new Diagnosis(
+                "indexing",
+                DiagnosisState.Warn,
+                $"[indexing] {stale}; the line is ignored",
+                "delete it from config.toml"));
+        }
     }
 
     /// <param name="budget">

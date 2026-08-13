@@ -8,13 +8,21 @@ namespace Engram.Core;
 /// <see cref="ScanBudget.Default"/>. Per run rather than per install, because it is the seam a test
 /// needs to reach the truncated path without building a tree large enough to exhaust the machine.
 /// </param>
+/// <param name="Queue">
+/// A queue snapshot to drain against, in place of a fresh <see cref="SpoolQueue.Peek"/>. Null takes
+/// the default fresh peek — every caller before <c>--drain-all</c> passes null and sees no change.
+/// Set by a multi-root pass that must peek the spool directory exactly once and drain every root
+/// against the same captured list (§6.3e), rather than re-reading the whole directory per root.
+/// </param>
 public sealed record IndexOptions(
     string Root,
     bool Apply,
     bool Drain,
     bool Full,
     string? SidecarPath = null,
-    ScanBudget? Budget = null);
+    ScanBudget? Budget = null,
+    bool AllowFullScanDue = true,
+    SpoolQueue? Queue = null);
 
 public sealed record IndexReport(
     string RepoPath,
@@ -71,6 +79,18 @@ public static class CodeIndexer
         var notes = new List<string>();
         var root = ResolveRoot(options.Root);
         var identity = ResolveIdentity(root);
+
+        // A repo enrolled once and later moved on disk still resolves to the same identity
+        // from its new location; without this repair the stale last_root sticks, the
+        // session-start hook's cache-only lookup keeps missing it, and the primer offers
+        // enrollment again for a checkout the user already answered about. Runs ahead of
+        // anything that decides the repo is unenrolled (§6.3c, §6.4, guard 12).
+        var enrollmentRow = RepoEnrollment.Get(connection, identity);
+        if (options.Apply && enrollmentRow is not null)
+        {
+            RepoEnrollment.UpdateLastRoot(connection, identity, root);
+        }
+
         var repoPath = EnsureRepo(connection, config, root, identity, options.Apply, now, notes);
 
         var storedVersion = ReadMeta(connection, VersionKey);
@@ -80,11 +100,18 @@ public static class CodeIndexer
             notes.Add($"grammar/analyzer moved {storedVersion} -> {CurrentVersion}; re-reading everything");
         }
 
-        var full = options.Full || versionForcedFull || !options.Drain;
+        var fullScanDue = options.AllowFullScanDue
+            && RepoEnrollment.IsFullScanDue(enrollmentRow, IndexingSettings.FullScanIntervalMinutes, now);
+        if (fullScanDue)
+        {
+            notes.Add($"full scan due: more than {IndexingSettings.FullScanIntervalMinutes} minutes since the last one");
+        }
+
+        var full = options.Full || versionForcedFull || !options.Drain || fullScanDue;
         var states = LoadStates(connection, repoPath);
         var filter = new IndexFilter(settings);
 
-        var queue = options.Drain ? SpoolQueue.Peek(home.QueueDir) : SpoolQueue.Empty;
+        var queue = options.Drain ? options.Queue ?? SpoolQueue.Peek(home.QueueDir) : SpoolQueue.Empty;
         if (options.Drain && queue.Pathless > 0)
         {
             full = true;
@@ -93,6 +120,12 @@ public static class CodeIndexer
 
         List<string> targets;
         List<string> deletions;
+
+        // Set inside the full-scan branch below and read after the fact-writing pass commits,
+        // so a failure between "the scan completed" and "the writes landed" cannot stamp
+        // last_full_scan_at for work that never happened — that would read as freshly scanned
+        // for a full FullScanIntervalMinutes and silently downgrade the repo to incremental.
+        var stampFullScan = false;
 
         if (full)
         {
@@ -112,6 +145,10 @@ public static class CodeIndexer
             else
             {
                 deletions = states.Keys.Where(rel => !onDisk.Contains(rel)).ToList();
+
+                // Only a completed scan has actually seen the repo, and only an applied run
+                // may move state (§6.3b) — a dry run must report what it would do, not do it.
+                stampFullScan = options.Apply;
             }
         }
         else
@@ -182,6 +219,12 @@ public static class CodeIndexer
         foreach (var rel in deletions)
         {
             ProcessDeletion(connection, repoPath, rel, options.Apply, now, counters);
+        }
+
+        // After the writes, not before: see the comment on stampFullScan above.
+        if (stampFullScan)
+        {
+            RepoEnrollment.StampFullScan(connection, identity, now);
         }
 
         if (options.Apply && storedVersion != CurrentVersion)
@@ -617,7 +660,7 @@ public static class CodeIndexer
     public static bool IsGitCheckout(string root) =>
         !string.IsNullOrEmpty(GitFileLister.Run(Path.GetFullPath(root), "rev-parse", "--show-toplevel")?.Trim());
 
-    private static string ResolveRoot(string requested)
+    public static string ResolveRoot(string requested)
     {
         var full = Path.GetFullPath(requested);
         var toplevel = GitFileLister.Run(full, "rev-parse", "--show-toplevel")?.Trim();

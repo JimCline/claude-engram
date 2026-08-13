@@ -14,6 +14,7 @@ internal static class IndexCommand
     {
         var apply = false;
         var drain = false;
+        var drainAll = false;
         var full = false;
         var auto = false;
         string? target = null;
@@ -27,6 +28,10 @@ internal static class IndexCommand
                     break;
                 case "--drain":
                     drain = true;
+                    break;
+                case "--drain-all":
+                    drain = true;
+                    drainAll = true;
                     break;
                 case "--full":
                     full = true;
@@ -56,6 +61,7 @@ internal static class IndexCommand
         var home = EngramHome.ResolveFromProcess(homePath);
         var config = ConfigFile.Load(home.ConfigPath);
         var settings = IndexingSettings.Read(config);
+        var identity = CodeIndexer.ResolveIdentity(root);
 
         // --auto is the session-start maintenance child asking. The whole policy lives
         // here, like --if-due and --if-large: the config gate, the requirement that the
@@ -67,6 +73,16 @@ internal static class IndexCommand
             if (!settings.AutoIndexOnSessionStart
                 || !File.Exists(home.DatabasePath)
                 || !CodeIndexer.IsGitCheckout(root))
+            {
+                return 0;
+            }
+
+            // Read-only and scoped to this check alone: --auto must stay a silent refusal,
+            // never a migration or a write, and this runs inside the detached maintenance
+            // child rather than on the session-start hook's own clock, so the subprocess
+            // fallback inside IsEnrolled is affordable here (D4).
+            using var enrollmentConnection = EngramDatabase.Open(home);
+            if (!RepoEnrollment.IsEnrolled(enrollmentConnection, root))
             {
                 return 0;
             }
@@ -88,7 +104,7 @@ internal static class IndexCommand
         // Emitted for a dry run too. The scan is the slow half and it happens either way, so
         // "is Engram busy with the repo" is answered the same for both; what differs is whether
         // anything is written, which the report says.
-        Note(home, "started");
+        Note(home, "started", identity);
 
         try
         {
@@ -96,25 +112,113 @@ internal static class IndexCommand
                 ? EngramDatabase.OpenInitialized(home)
                 : EngramDatabase.Open(home);
 
+            // Peeked once, up front, so a --drain-all pass reads the spool directory a single
+            // time and every root — this one and each secondary root below — drains against the
+            // same captured list rather than a fresh listing per repo (§6.3e).
+            var sharedQueue = drainAll ? SpoolQueue.Peek(home.QueueDir) : null;
+
             var report = CodeIndexer.Index(
                 connection,
                 home,
                 config,
                 settings,
-                new IndexOptions(root, apply, drain, full),
+                new IndexOptions(root, apply, drain, full, Queue: sharedQueue),
                 DateTimeOffset.UtcNow);
 
-            Print(report, stdout);
-            Note(home, "finished");
+            // DiscardExcept deletes queue state, so the whole secondary-root pass — including
+            // discarding — is gated on --apply the same way Consume is (D49): a dry run must not
+            // move state, and printing "N left for other repos" implies a discard that never runs.
+            var draining = drainAll && apply && sharedQueue is not null;
+
+            Print(report, stdout, reportQueueLine: !draining);
+            Note(home, "finished", identity);
+
+            if (draining)
+            {
+                var servicedRoots = DrainOtherEnrolledRoots(
+                    connection, home, config, settings, report.Root, apply, sharedQueue!.WithoutPathless(), stdout);
+                var discarded = sharedQueue.DiscardExcept(servicedRoots);
+
+                // Pass-level, not per-repo (§6.3e detail 3): LeftBehind(root) would count entries
+                // this same pass is about to service under another root as if they were loss.
+                // Unreadable is the only population this line reports. A pathless entry has
+                // nothing to report here: in drain-all mode Pathless > 0 always forces the
+                // invoked root's own scan to full (CodeIndexer.cs:115) and that root always
+                // consumes it (:235), so by the time this line runs it is never actually
+                // outstanding — CodeIndexer.cs:118 already states the consequence at the root
+                // that acted, and a pass-level restatement here would be a second, looser
+                // description of the same fact.
+                stdout.WriteLine($"  drain-all: {CountEntries(discarded)} discarded "
+                    + "for unenrolled or absent repos, "
+                    + $"{CountEntries(sharedQueue.Unreadable)} left behind (unreadable)");
+            }
+
             return 0;
         }
         catch (SqliteException e) when (e.Message.Contains("no such table", StringComparison.OrdinalIgnoreCase))
         {
             stderr.WriteLine("error: this store predates the code index tables. Re-run with --apply,");
             stderr.WriteLine("which migrates after snapshotting, or run 'engram doctor' to see where it stands.");
-            Note(home, "failed");
+            Note(home, "failed", identity);
             return 1;
         }
+    }
+
+    /// <summary>
+    /// Step 2 of the <c>--drain-all</c> pass (§6.3e): every other enrolled repo whose last known
+    /// root still exists on disk drains against the same queue snapshot the invoked root's pass
+    /// captured — never a fresh <see cref="SpoolQueue.Peek"/> per repo, and never a full scan,
+    /// since a stale-cadence rescan of every enrolled repo at every session start is unbounded in
+    /// the number of repos enrolled (§7 Q2). <paramref name="queue"/> has already had its
+    /// pathless entry removed by the caller, so at most the invoked root's own pass can act on it
+    /// (D41).
+    /// </summary>
+    /// <returns>
+    /// The roots this pass actually drained, including <paramref name="invokedRoot"/> — passed to
+    /// <see cref="SpoolQueue.DiscardExcept"/> for step 3, so an entry is discarded only for a root
+    /// this pass did not service (an enrolled repo absent from disk is deliberately among those,
+    /// since it was never added here; §6.3e).
+    /// </returns>
+    private static HashSet<string> DrainOtherEnrolledRoots(
+        SqliteConnection connection,
+        EngramHome home,
+        ConfigFile config,
+        IndexingSettings settings,
+        string invokedRoot,
+        bool apply,
+        SpoolQueue queue,
+        TextWriter stdout)
+    {
+        var seen = new HashSet<string>(StringComparer.Ordinal) { PathCanonicalizer.Canonical(invokedRoot) };
+
+        foreach (var row in RepoEnrollment.ListAll(connection))
+        {
+            if (row.State != RepoEnrollmentState.Enrolled || row.LastRoot is not { } secondaryRoot)
+            {
+                continue;
+            }
+
+            if (!Directory.Exists(secondaryRoot) || !seen.Add(PathCanonicalizer.Canonical(secondaryRoot)))
+            {
+                continue;
+            }
+
+            var secondaryIdentity = CodeIndexer.ResolveIdentity(secondaryRoot);
+            Note(home, "started", secondaryIdentity);
+
+            var report = CodeIndexer.Index(
+                connection,
+                home,
+                config,
+                settings,
+                new IndexOptions(secondaryRoot, apply, Drain: true, Full: false, AllowFullScanDue: false, Queue: queue),
+                DateTimeOffset.UtcNow);
+
+            Print(report, stdout, reportQueueLine: false);
+            Note(home, "finished", secondaryIdentity);
+        }
+
+        return seen;
     }
 
     /// <summary>
@@ -126,8 +230,11 @@ internal static class IndexCommand
     /// value costs nothing and a borrowed one would invite exactly the arithmetic that went wrong
     /// before. A finished phase is what lets a reader stop saying "indexing"; without the pair,
     /// the only alternative is a timer, and a timer is a guess about how long a repo takes.
+    /// <paramref name="repo"/> is resolved once in <see cref="Run"/> so all three phases of one
+    /// invocation carry the same identity, computed the same way regardless of whether the run
+    /// ever reaches a registered <c>repo_path</c> (§6.9).
     /// </remarks>
-    private static void Note(EngramHome home, string phase)
+    private static void Note(EngramHome home, string phase, string repo)
     {
         if (File.Exists(home.ConfigPath))
         {
@@ -135,11 +242,12 @@ internal static class IndexCommand
                 Timestamp: DateTimeOffset.UtcNow.ToString("o"),
                 SessionId: "cli",
                 Kind: TelemetryEventKind.Index,
-                Phase: phase));
+                Phase: phase,
+                Repo: repo));
         }
     }
 
-    private static void Print(IndexReport report, TextWriter stdout)
+    private static void Print(IndexReport report, TextWriter stdout, bool reportQueueLine = true)
     {
         stdout.WriteLine($"{report.Root} -> {report.RepoPath}");
 
@@ -156,7 +264,7 @@ internal static class IndexCommand
                 ? $", {report.ProtectedSkipped} left alone (not the indexer's to supersede)"
                 : string.Empty));
 
-        if (report.QueueConsumed > 0 || report.QueueLeft > 0)
+        if (reportQueueLine && (report.QueueConsumed > 0 || report.QueueLeft > 0))
         {
             stdout.WriteLine($"  queue: {report.QueueConsumed} consumed, {report.QueueLeft} left for other repos");
         }
@@ -174,4 +282,6 @@ internal static class IndexCommand
     }
 
     private static string Count(int n, string noun) => n == 1 ? $"1 {noun}" : $"{n} {noun}s";
+
+    private static string CountEntries(int n) => n == 1 ? "1 entry" : $"{n} entries";
 }

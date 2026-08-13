@@ -43,7 +43,11 @@ namespace Engram.Core;
 /// </remarks>
 public static class MaintenanceLauncher
 {
-    public static void Spawn(string executablePath, string homeRoot, string? indexRoot = null)
+    public static void Spawn(
+        string executablePath,
+        string homeRoot,
+        string? indexRoot = null,
+        MaintenanceJobs jobs = MaintenanceJobs.SessionStart)
     {
         var startInfo = new ProcessStartInfo("/bin/sh")
         {
@@ -51,7 +55,7 @@ public static class MaintenanceLauncher
             CreateNoWindow = true,
         };
         startInfo.ArgumentList.Add("-c");
-        startInfo.ArgumentList.Add(BuildScript(executablePath, homeRoot, indexRoot));
+        startInfo.ArgumentList.Add(BuildScript(executablePath, homeRoot, indexRoot, jobs));
 
         using var process = Process.Start(startInfo);
     }
@@ -60,7 +64,11 @@ public static class MaintenanceLauncher
     /// The shell script the detached child runs. Separate from <see cref="Spawn"/> so the
     /// redirection can be asserted without starting a process.
     /// </summary>
-    internal static string BuildScript(string executablePath, string homeRoot, string? indexRoot)
+    internal static string BuildScript(
+        string executablePath,
+        string homeRoot,
+        string? indexRoot,
+        MaintenanceJobs jobs = MaintenanceJobs.SessionStart)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(executablePath);
         ArgumentException.ThrowIfNullOrWhiteSpace(homeRoot);
@@ -68,18 +76,29 @@ public static class MaintenanceLauncher
         var engram = ShellQuote(executablePath);
         var home = " --home " + ShellQuote(homeRoot);
 
-        var command = new StringBuilder("{ ")
-            .Append(engram).Append(" backup take --if-due").Append(home).Append("; ")
-            .Append(engram).Append(" queue compact --apply --if-large").Append(home).Append("; ")
-            .Append(engram).Append(" repair --apply --tokens").Append(home).Append("; ");
+        var command = new StringBuilder("{ ");
 
-        // After the compaction on purpose: folding the queue first makes the drain read
-        // fewer entries and lose nothing. --auto carries the whole policy — config gate,
-        // git-checkout check, store existence — because the child deciding for itself is
-        // what lets this stay unconditional, exactly like --if-due and --if-large.
+        // --auto gates ambient work; it may not gate commanded work (spec §6.9). An enrollment
+        // index is someone typing `engram repo enroll` and is never ambient, so it runs none of
+        // the idle-guarded housekeeping below and never carries --auto on the index job itself.
+        if (jobs == MaintenanceJobs.SessionStart)
+        {
+            command
+                .Append(engram).Append(" backup take --if-due").Append(home).Append("; ")
+                .Append(engram).Append(" queue compact --apply --if-large").Append(home).Append("; ")
+                .Append(engram).Append(" repair --apply --tokens").Append(home).Append("; ");
+        }
+
         if (indexRoot is not null)
         {
-            command.Append(engram).Append(" index --drain --apply --auto ")
+            // The enrollment job passes neither --auto (see above) nor --full: the first index
+            // is full because last_full_scan_at is NULL (§6.3a), and an explicit flag here would
+            // permanently disarm guard 1's falsification of that mechanism.
+            var indexInvocation = jobs == MaintenanceJobs.EnrollmentIndex
+                ? " index --drain --apply "
+                : " index --drain-all --apply --auto ";
+
+            command.Append(engram).Append(indexInvocation)
                 .Append(ShellQuote(indexRoot)).Append(home).Append("; ");
         }
 
@@ -89,6 +108,21 @@ public static class MaintenanceLauncher
         // redirection exists to prevent. `exec` with no command replaces sh's own descriptors,
         // so the inherited pipe has no writer left the moment the shell starts.
         return Redirect + command.Append("}").ToString();
+    }
+
+    /// <summary>
+    /// What to run in the detached child. <see cref="EnrollmentIndex"/> exists because
+    /// <c>auto_index_on_session_start</c> answers "may Engram index on its own", not "must Engram
+    /// obey an instruction" — so an explicit <c>repo enroll</c> must not be silenced by a setting
+    /// that only governs ambient work (spec §6.9).
+    /// </summary>
+    public enum MaintenanceJobs
+    {
+        /// <summary>Housekeeping plus an --auto, --drain-all index of indexRoot: the ambient session-start fork.</summary>
+        SessionStart,
+
+        /// <summary>The index of indexRoot alone, --drain --apply, with no --auto and no --full.</summary>
+        EnrollmentIndex,
     }
 
     /// <summary>

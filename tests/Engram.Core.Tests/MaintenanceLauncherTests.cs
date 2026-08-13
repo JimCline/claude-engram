@@ -71,7 +71,7 @@ public class MaintenanceLauncherTests
             MaintenanceLauncher.BuildScript(Executable, Home, indexRoot: null),
             StringComparison.Ordinal);
         Assert.Contains(
-            "index --drain --apply --auto '/repo'",
+            "index --drain-all --apply --auto '/repo'",
             MaintenanceLauncher.BuildScript(Executable, Home, "/repo"),
             StringComparison.Ordinal);
     }
@@ -85,5 +85,50 @@ public class MaintenanceLauncherTests
         var script = MaintenanceLauncher.BuildScript(Executable, "/home/o'brien/.engram", null);
 
         Assert.Contains(@"'/home/o'\''brien/.engram'", script, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// An explicit enroll indexes even with auto_index_on_session_start = false: --auto gates
+    /// ambient work and may not gate commanded work (spec §6.9, guard 16).
+    /// </summary>
+    [Fact]
+    public void EnrollmentIndex_ContainsTheIndexJob_WithNoAutoAndNoFull()
+    {
+        var script = MaintenanceLauncher.BuildScript(
+            Executable, Home, "/repo", MaintenanceLauncher.MaintenanceJobs.EnrollmentIndex);
+
+        Assert.Contains("index --drain --apply '/repo'", script, StringComparison.Ordinal);
+        Assert.DoesNotContain("--auto", script, StringComparison.Ordinal);
+        Assert.DoesNotContain("--full", script, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The enrollment job is the sole command spawned — none of the session-start housekeeping,
+    /// which is ambient and gated by its own idle guards, has anything to do with an explicit
+    /// enroll (spec §6.9).
+    /// </summary>
+    [Fact]
+    public void EnrollmentIndex_RunsNoSessionStartHousekeeping()
+    {
+        var script = MaintenanceLauncher.BuildScript(
+            Executable, Home, "/repo", MaintenanceLauncher.MaintenanceJobs.EnrollmentIndex);
+
+        Assert.DoesNotContain("backup take", script, StringComparison.Ordinal);
+        Assert.DoesNotContain("queue compact", script, StringComparison.Ordinal);
+        Assert.DoesNotContain("repair", script, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The one-descriptor-precedes-first-job property (D55/D56) must hold for both job lists —
+    /// a second kind that skipped this would reopen the pipe-vs-file latency bug it fixed.
+    /// </summary>
+    [Theory]
+    [InlineData(MaintenanceLauncher.MaintenanceJobs.SessionStart)]
+    [InlineData(MaintenanceLauncher.MaintenanceJobs.EnrollmentIndex)]
+    public void RedirectLeadsTheScript_ForEveryJobsValue(MaintenanceLauncher.MaintenanceJobs jobs)
+    {
+        var script = MaintenanceLauncher.BuildScript(Executable, Home, "/repo", jobs);
+
+        Assert.StartsWith(MaintenanceLauncher.Redirect, script, StringComparison.Ordinal);
     }
 }

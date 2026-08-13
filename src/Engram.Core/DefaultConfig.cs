@@ -55,7 +55,6 @@ public static class DefaultConfig
 
         [indexing]
         auto_index_on_session_start = true
-        max_sync_index_ms = 1500      # beyond this, indexing continues async
 
         # Where there is a git checkout, git decides what belongs to the repo:
         # tracked files plus untracked ones that are not ignored. That already
