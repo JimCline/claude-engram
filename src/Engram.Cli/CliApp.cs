@@ -53,6 +53,7 @@ public static class CliApp
             "index" => IndexCommand.Run(homePath, rest, stdout, stderr),
             "explain" => ExplainCommand.Run(homePath, rest, stdout, stderr),
             "backup" => BackupCommand.Run(homePath, rest, stdout, stderr),
+            "repo" => RepoCommand.Run(homePath, rest, stdout, stderr),
             "queue" => QueueCommand.Run(homePath, rest, stdout, stderr),
             "repair" => RepairCommand.Run(homePath, rest, stdout, stderr),
             "compact" => CompactCommand.Run(homePath, rest, stdout, stderr),
@@ -102,6 +103,7 @@ public static class CliApp
         writer.WriteLine("  index [path] [options]             turn a repo's files into code facts; incremental after the first run");
         writer.WriteLine("  explain <query> [options]          show why recall ranks what it ranks, and what it leaves out");
         writer.WriteLine("  backup <take|list|prune|restore|replay|import>  snapshot the store, or put the facts back");
+        writer.WriteLine("  repo <enroll|decline|later|reset|list> [path]  record or inspect the decision to keep a checkout indexed");
         writer.WriteLine("  queue <status|compact>             report the file-touched edit queue, or fold it down");
         writer.WriteLine("  repair [--apply]                   rebuild derived state — the lexical index, denormalized paths — never facts");
         writer.WriteLine("  compact [--path <prefix>] [--apply]  prune regenerable code facts: closed ones, or a whole subtree with --path");
@@ -118,6 +120,13 @@ public static class CliApp
         writer.WriteLine("  restore [name] [--apply]           put a snapshot back, keeping the current store as a new snapshot");
         writer.WriteLine("  replay [file] [--apply]            read facts.jsonl into the store, adding what it does not have");
         writer.WriteLine("  import [dir] [--apply]             bring in user facts from the old user-facts/ JSON directory");
+        writer.WriteLine();
+        writer.WriteLine("repo options:");
+        writer.WriteLine("  enroll [path]                       index this checkout now and keep it current as files change");
+        writer.WriteLine("  decline [path]                      never offer to index this checkout again");
+        writer.WriteLine("  later [path]                        ask again in a week instead of now");
+        writer.WriteLine("  reset [path] [--apply]               forget the recorded decision, returning it to never-asked");
+        writer.WriteLine("  list                                 every checkout with a recorded decision, and its indexing progress");
         writer.WriteLine();
         writer.WriteLine("doctor options (read-only; exit 1 only when something is broken):");
         writer.WriteLine("  --json                             emit the checks as JSON, for pasting into a bug report");

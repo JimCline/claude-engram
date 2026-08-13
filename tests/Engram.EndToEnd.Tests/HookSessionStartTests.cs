@@ -161,4 +161,45 @@ public class HookSessionStartTests
 
         Assert.Equal(JsonValueKind.Null, record.GetProperty("fact_count").ValueKind);
     }
+
+    // §6.13's cwd fallback (payload?.Cwd ?? Directory.GetCurrentDirectory()) only matters when
+    // the two disagree, so this drives the real binary with a process working directory that is
+    // deliberately not a checkout — the primer can only find one by reading the stdin payload.
+    // If it read the process cwd instead, FindCheckoutRoot(workingDirectory) resolves null and
+    // there is no enrollment line at all, so this cannot pass for the wrong reason. Store state
+    // (e.g. last_root) is not asserted here: the hook spawns a detached maintenance child, and
+    // while stdout cannot race that child, store writes can.
+    [Fact]
+    public void SessionStart_OffersEnrollment_ForTheCheckoutNamedInStdin_NotTheProcessCwd()
+    {
+        Assert.SkipUnless(EndToEndBinary.Path is not null, EndToEndBinary.SkipReason);
+
+        using var home = new TestHome();
+
+        var notACheckout = Path.Combine(Path.GetTempPath(), "engram-e2e-notacheckout-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(notACheckout);
+
+        var checkoutPath = Path.Combine(Path.GetTempPath(), "engram-e2e-checkout-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(Path.Combine(checkoutPath, ".git"));
+
+        try
+        {
+            var stdin = JsonSerializer.Serialize(new { cwd = checkoutPath });
+            var (exitCode, stdout, stderr) = EngramProcess.RunWithStdinFromDirectory(
+                home.Root, notACheckout, stdin, "hook", "session-start");
+
+            Assert.Equal(0, exitCode);
+            Assert.Equal(string.Empty, stderr);
+
+            var primer = JsonDocument.Parse(stdout).RootElement
+                .GetProperty("hookSpecificOutput").GetProperty("additionalContext").GetString();
+
+            Assert.Contains("not enrolled for Engram code indexing", primer, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Directory.Delete(notACheckout, recursive: true);
+            Directory.Delete(checkoutPath, recursive: true);
+        }
+    }
 }

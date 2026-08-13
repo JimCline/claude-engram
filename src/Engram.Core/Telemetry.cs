@@ -81,6 +81,17 @@ public static class TelemetryEventKind
     public const string Embedding = "embedding";
 
     /// <summary>
+    /// A <c>repo enroll</c>/<c>decline</c>/<c>later</c>/<c>reset</c> decision, from either
+    /// <c>engram repo</c> or <c>engram_index_repo</c>.
+    /// </summary>
+    /// <remarks>
+    /// A kind declared but never emitted reads as a feature switched off (D56), so this exists
+    /// only alongside <see cref="Engram.Cli.RepoCommand.ApplyDecision"/>, its one emission site —
+    /// both the CLI verb group and the MCP tool call through it rather than emitting separately.
+    /// </remarks>
+    public const string Enrollment = "enrollment";
+
+    /// <summary>
     /// Every kind Engram emits.
     /// </summary>
     /// <remarks>
@@ -92,7 +103,7 @@ public static class TelemetryEventKind
     [
         Recall, Remember, Digest, Browse, Expand, Revise,
         SessionStart, ServerStart, ServerStop, SessionOpen, SubagentStart, PreCompact, PostCompact,
-        FileTouched, UserPrompt, MemoryGuard, Index, Embedding,
+        FileTouched, UserPrompt, MemoryGuard, Index, Embedding, Enrollment,
     ];
 }
 
@@ -127,7 +138,33 @@ public sealed record TelemetryRecord(
     /// timestamps answers one bit no matter how long it gets, and a feed of bare edit pings is that
     /// same queue rendered on a screen.
     /// </remarks>
-    [property: JsonPropertyName("path")] string? Path = null);
+    [property: JsonPropertyName("path")] string? Path = null,
+
+    /// <summary>
+    /// The repository an event is about. Only <c>index</c> sets it today.
+    /// </summary>
+    /// <remarks>
+    /// It is the event's subject, not a count, so D56's no-counts rule does not bar it — without
+    /// it, <c>repo list</c> cannot show which run belongs to which repo. Carries
+    /// <see cref="CodeIndexer.ResolveIdentity"/>'s identity, the same key <see cref="RepoEnrollment"/>
+    /// and <c>repo list</c> already address a repo by — not the registry's shortened
+    /// <c>repo_path</c>, which is a different, later-assigned name for the same repo.
+    /// </remarks>
+    [property: JsonPropertyName("repo")] string? Repo = null,
+
+    /// <summary>
+    /// The enrollment verb this event records: <c>enroll</c>, <c>decline</c>, <c>later</c>, or
+    /// <c>reset</c>. Only <see cref="TelemetryEventKind.Enrollment"/> sets it.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately not <see cref="Phase"/> — a nearby number in a field meaning something else is
+    /// how D43 happened, and reusing that field for a different four-value vocabulary is the same
+    /// trap. And deliberately not the three <c>repo_enrollment.state</c> values (<c>enrolled</c>,
+    /// <c>declined</c>, <c>deferred</c>): this records the action taken, not the state that
+    /// resulted, and <c>reset</c> produces no resulting state at all — it deletes the row.
+    /// Harmonizing the two vocabularies would make <c>reset</c> unrepresentable, so do not.
+    /// </remarks>
+    [property: JsonPropertyName("decision")] string? Decision = null);
 
 [JsonSerializable(typeof(TelemetryRecord))]
 internal sealed partial class TelemetryJsonContext : JsonSerializerContext;

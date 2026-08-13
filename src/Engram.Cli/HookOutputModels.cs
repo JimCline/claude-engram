@@ -27,7 +27,12 @@ internal sealed record HookStdinInput(
     // Common to every hook event per Claude Code's own docs, unlike promptSource/origin —
     // those live only on the transcript record this path is used to read. See
     // docs/session-capture-design.md, "The transcript".
-    [property: JsonPropertyName("transcript_path")] string? TranscriptPath = null);
+    [property: JsonPropertyName("transcript_path")] string? TranscriptPath = null,
+    // §6.13: the session-start path prefers this over Directory.GetCurrentDirectory() so the
+    // enrollment lookup answers for the directory the session actually started in rather than
+    // the hook process's own cwd. Absent on older payloads, which is why RunSessionStart falls
+    // back rather than requiring it.
+    [property: JsonPropertyName("cwd")] string? Cwd = null);
 
 // PostToolUse puts the edited file here, for the four tools file-touched matches on. Only
 // file_path is modelled: MultiEdit still names one file, and the rest of tool_input is that

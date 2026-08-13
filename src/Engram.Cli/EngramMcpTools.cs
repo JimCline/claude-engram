@@ -385,6 +385,51 @@ public sealed class EngramMcpTools
             + moved;
     }
 
+    [McpServerTool(Name = "engram_index_repo")]
+    // The primer can name the *condition* for offering enrollment but not the mechanism (D51) —
+    // that split is why this description states the verbs outright, as tightly as it can while
+    // keeping "declining is a valid answer" explicit: a model that reads this as enroll-only
+    // never records a "no", and the prompt returns every session.
+    [Description(
+        "Record the user's answer on indexing this checkout: enroll, decline (stop asking), or " +
+        "later (ask in a week). Call as soon as they answer — decline is as valid an answer as enroll.")]
+    public static string IndexRepo(
+        EngramHome home,
+        McpSessionId session,
+        [Description("Git checkout path.")] string path,
+        [Description("enroll, decline, or later.")] string decision)
+    {
+        var root = RepoCommand.ResolveCheckoutRoot(path);
+        if (root is null)
+        {
+            return $"'{path}' is not inside a git checkout; engram_index_repo only tracks enrollment for git checkouts.";
+        }
+
+        var normalized = decision.Trim().ToLowerInvariant();
+        if (normalized is not ("enroll" or "decline" or "later"))
+        {
+            return $"'{decision}' is not a recognized decision; expected enroll, decline, or later. Nothing was recorded.";
+        }
+
+        RepoCommand.RepoDecisionResult result;
+        using (var connection = EngramDatabase.OpenInitialized(home))
+        {
+            result = RepoCommand.ApplyDecision(home, connection, root, normalized, session.Value, DateTimeOffset.UtcNow);
+        }
+
+        return normalized switch
+        {
+            "enroll" => $"Enrolled {root} ({result.Identity}). " + (result.IndexSpawned
+                ? "The first index is running in the background."
+                : $"warning: could not start the first index automatically ({result.SpawnError}); "
+                    + $"run 'engram index --apply --full {root}' by hand."),
+            "decline" => $"Declined {root} ({result.Identity}). It will not be offered again unless the "
+                + "decision is reset with 'engram repo reset'.",
+            _ => $"Deferred {root} ({result.Identity}). It will be offered again in "
+                + $"{(int)RepoEnrollment.DeferralCooldown.TotalDays} days.",
+        };
+    }
+
     private static void AppendChildren(System.Text.StringBuilder builder, BrowseNode node, string indent)
     {
         foreach (var child in node.Children)

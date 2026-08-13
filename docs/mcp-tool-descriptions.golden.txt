@@ -21,6 +21,13 @@ Retract a stored fact by its bracketed id (e.g. "f42"). Use it whenever the user
   param: id
   The bracketed id of the fact to retract, e.g. "f42".
 
+tool: engram_index_repo
+Record the user's answer on indexing this checkout: enroll, decline (stop asking), or later (ask in a week). Call as soon as they answer — decline is as valid an answer as enroll.
+  param: path
+  Git checkout path.
+  param: decision
+  enroll, decline, or later.
+
 tool: engram_recall
 Check memory BEFORE reading files or exploring the repo. Searches Engram's stored facts (decisions, conventions, gotchas, contracts) and returns a token-budgeted, ranked digest with fact handles and a coverage estimate. Call this first for any question about how this project works, what was decided, or why something is the way it is — it is far cheaper than rediscovering the answer by reading source.
   param: query

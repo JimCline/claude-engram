@@ -12,14 +12,20 @@ namespace Engram.Integration.Tests;
 /// </summary>
 public class McpToolSurfaceBudgetTests
 {
-    // Measured 3,663 characters across seven tools on 2026-08-07, when browse, expand and
-    // revise joined (spec §9) at a deliberately lean 1,088 combined — the situational
-    // tools must not dilute recall's pitch, which is the funnel that matters. The headroom
-    // is for ordinary wording changes; raising this number is a deliberate edit that needs
-    // a reason in the commit message, not a knob to turn when a description outgrows it.
-    private const int MaxDefinitionChars = 3800;
+    // Measured 3,964 characters across the seven tools in EngramMcpTools on 2026-08-13, when
+    // engram_index_repo joined (spec §6.6a-b) — the situational tools must not dilute
+    // recall's pitch, which is the funnel that matters. EngramServerTools's three tools
+    // (start/status/stop) are argued as cost in D17 but are not reflected over by
+    // ToolMethods() and are not counted in this figure — a separate, unmeasured gap. The
+    // +137 headroom is carried over from the previous ceiling's stated purpose of "ordinary
+    // wording changes"; raising this number is a deliberate edit that needs a reason in the
+    // commit message, not a knob to turn when a description outgrows it.
+    private const int MaxDefinitionChars = 4101;
 
-    private const int ExpectedToolCount = 6;
+    // 6 -> 7 when engram_index_repo joined: it addresses a filesystem path and spawns a
+    // background process, which no existing tool can take as a parameter without changing
+    // that tool's addressing model (spec §6.6a-b).
+    private const int ExpectedToolCount = 7;
 
     [Fact]
     public void ToolDefinitions_StayUnderCharacterCeiling()

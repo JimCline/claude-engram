@@ -39,6 +39,7 @@ public class PrimerBuilderTests
     [InlineData("engram_recall")]
     [InlineData("engram_remember")]
     [InlineData("engram_digest")]
+    [InlineData("engram_index_repo")]
     public void Build_GuidanceLines_DoNotRestateToolDescriptions(string toolName)
     {
         var primer = PrimerBuilder.Build(CannedFacts.All, Shipped);
@@ -234,5 +235,37 @@ public class PrimerBuilderTests
         var coverageLine = primer.Split('\n').Single(line => line.StartsWith("Memory holds", StringComparison.Ordinal));
 
         Assert.Contains("+3 more", coverageLine);
+    }
+
+    /// <summary>
+    /// offerEnrollment defaults to false and every other test here uses the 2-arg call, so
+    /// nothing had exercised the line Build emits when a caller actually asks for it.
+    /// </summary>
+    [Fact]
+    public void Build_OfferEnrollmentTrue_IncludesTheEnrollmentLine()
+    {
+        var primer = PrimerBuilder.Build(CannedFacts.All, Shipped, offerEnrollment: true);
+
+        Assert.Contains("enroll it", primer, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Build_OfferEnrollmentFalse_OmitsTheEnrollmentLine()
+    {
+        var primer = PrimerBuilder.Build(CannedFacts.All, Shipped, offerEnrollment: false);
+
+        Assert.DoesNotContain("enroll it", primer, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// BuildForSubagent takes no offerEnrollment parameter at all — SessionStart, not a
+    /// subagent, is what runs inside the checkout the offer would apply to.
+    /// </summary>
+    [Fact]
+    public void BuildForSubagent_NeverIncludesTheEnrollmentLine()
+    {
+        var primer = PrimerBuilder.BuildForSubagent(CannedFacts.All, Shipped);
+
+        Assert.DoesNotContain("enroll it", primer, StringComparison.Ordinal);
     }
 }

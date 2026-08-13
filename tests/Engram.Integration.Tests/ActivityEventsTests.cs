@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Engram.Cli;
 using Engram.Core;
 
@@ -178,5 +179,65 @@ public class ActivityEventsTests
         await run;
 
         Assert.Empty(Events(sandbox.Home, TelemetryEventKind.Embedding));
+    }
+
+    /// <summary>
+    /// TelemetryEventKind.Enrollment is declared and listed in TelemetryEventKind.All but had no
+    /// direct test anywhere in the tree — the class of gap D56 named for other kinds, where a
+    /// declared-but-unverified kind reads as switched off.
+    /// </summary>
+    [Fact]
+    public void AnEnrollmentDecision_RecordsRepoAndDecision()
+    {
+        using var sandbox = new SandboxHome();
+        var root = Path.Combine(sandbox.Home.Root, "checkout");
+        Directory.CreateDirectory(root);
+        if (!GitInit(root))
+        {
+            return;
+        }
+
+        var exit = RepoCommand.Run(sandbox.Home.Root, ["enroll", root], TextWriter.Null, TextWriter.Null);
+        Assert.Equal(0, exit);
+
+        // Read the identity back from what was actually enrolled rather than recomputing it
+        // independently — CodeIndexer.ResolveIdentity(root) can disagree with the enrolled
+        // identity here because the enroll path resolves the checkout root (and so its
+        // identity) from git's own canonicalized toplevel, not from this test's raw path.
+        using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
+        var enrolled = Assert.Single(RepoEnrollment.ListAll(connection));
+
+        var record = Assert.Single(Events(sandbox.Home, TelemetryEventKind.Enrollment));
+        Assert.Equal(enrolled.Identity, record.Repo);
+        Assert.Equal("enroll", record.Decision);
+    }
+
+    private static bool GitInit(string directory)
+    {
+        try
+        {
+            var info = new ProcessStartInfo("git")
+            {
+                WorkingDirectory = directory,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+            };
+            info.ArgumentList.Add("init");
+            info.ArgumentList.Add("-q");
+
+            using var process = Process.Start(info);
+            if (process is null)
+            {
+                return false;
+            }
+
+            process.WaitForExit(10_000);
+            return process.HasExited && process.ExitCode == 0;
+        }
+        catch (Exception e) when (e is System.ComponentModel.Win32Exception or InvalidOperationException)
+        {
+            return false;
+        }
     }
 }

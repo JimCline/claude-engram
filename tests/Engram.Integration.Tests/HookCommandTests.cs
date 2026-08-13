@@ -186,4 +186,17 @@ public class HookCommandTests
 
         Assert.Equal(0, exitCode);
     }
+
+    // §6.13's fallback (payload?.Cwd ?? Directory.GetCurrentDirectory()) means a misspelled
+    // JsonPropertyName on Cwd fails silently in production — the process cwd is usually right
+    // anyway, so nothing would surface it outside the one case §6.13 exists to handle.
+    [Fact]
+    public void HookStdinInput_DeserializesCwd_FromThePayload()
+    {
+        var payload = JsonSerializer.Deserialize(
+            """{"session_id":"s","cwd":"/x"}""",
+            HookJsonContext.Default.HookStdinInput);
+
+        Assert.Equal("/x", payload?.Cwd);
+    }
 }

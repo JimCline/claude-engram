@@ -10,7 +10,14 @@ internal static class EngramProcess
     public static (int ExitCode, string Stdout, string Stderr) RunWithStdin(string home, string? stdin, params string[] args) =>
         Execute(EndToEndBinary.Path!, home, stdin, args);
 
-    internal static (int ExitCode, string Stdout, string Stderr) Execute(string binary, string home, string? stdin, string[] args)
+    // Distinct name rather than an inserted optional parameter: RunWithStdin's params array
+    // means a positional insertion would silently swallow the first arg of every existing call.
+    public static (int ExitCode, string Stdout, string Stderr) RunWithStdinFromDirectory(
+        string home, string workingDirectory, string? stdin, params string[] args) =>
+        Execute(EndToEndBinary.Path!, home, stdin, args, workingDirectory);
+
+    internal static (int ExitCode, string Stdout, string Stderr) Execute(
+        string binary, string home, string? stdin, string[] args, string? workingDirectory = null)
     {
         var startInfo = new ProcessStartInfo(binary)
         {
@@ -19,6 +26,11 @@ internal static class EngramProcess
             RedirectStandardInput = true,
             UseShellExecute = false,
         };
+
+        if (workingDirectory is not null)
+        {
+            startInfo.WorkingDirectory = workingDirectory;
+        }
 
         foreach (var arg in args)
         {

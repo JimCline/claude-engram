@@ -504,4 +504,77 @@ public class EngramMcpToolsTests
         Assert.True(response.StartsWith('[') && close > 1, $"expected a bracketed handle, got: {response}");
         return response[1..close];
     }
+
+    /// <summary>
+    /// engram_index_repo had no test driving it through the MCP surface at all — every existing
+    /// assertion about enrollment rode through the CLI's RepoCommand instead, even though the two
+    /// share ApplyDecision (D1) and nothing had confirmed the MCP entry point actually reaches it.
+    /// </summary>
+    [Fact]
+    public void IndexRepo_EnrollDecision_RecordsEnrolledAndReportsSuccess()
+    {
+        using var sandbox = new SandboxHome();
+        var session = new McpSessionId("session-index-repo");
+        var root = Path.Combine(sandbox.Home.Root, "checkout");
+        Directory.CreateDirectory(root);
+        if (!GitInit(root))
+        {
+            return;
+        }
+
+        var response = EngramMcpTools.IndexRepo(sandbox.Home, session, root, "enroll");
+
+        Assert.Contains("Enrolled", response, StringComparison.Ordinal);
+
+        using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
+        var row = Assert.Single(RepoEnrollment.ListAll(connection));
+        Assert.Equal(RepoEnrollmentState.Enrolled, row.State);
+    }
+
+    [Fact]
+    public void IndexRepo_APathWithNoEnclosingCheckout_RefusesWithoutRecording()
+    {
+        using var sandbox = new SandboxHome();
+        var session = new McpSessionId("session-index-repo-refuse");
+        var bare = Path.Combine(sandbox.Home.Root, "not-a-checkout");
+        Directory.CreateDirectory(bare);
+
+        var response = EngramMcpTools.IndexRepo(sandbox.Home, session, bare, "enroll");
+
+        Assert.Contains("not inside a git checkout", response, StringComparison.Ordinal);
+
+        using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT COUNT(*) FROM repo_enrollment;";
+        Assert.Equal(0L, command.ExecuteScalar());
+    }
+
+    private static bool GitInit(string directory)
+    {
+        try
+        {
+            var info = new System.Diagnostics.ProcessStartInfo("git")
+            {
+                WorkingDirectory = directory,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+            };
+            info.ArgumentList.Add("init");
+            info.ArgumentList.Add("-q");
+
+            using var process = System.Diagnostics.Process.Start(info);
+            if (process is null)
+            {
+                return false;
+            }
+
+            process.WaitForExit(10_000);
+            return process.HasExited && process.ExitCode == 0;
+        }
+        catch (Exception e) when (e is System.ComponentModel.Win32Exception or InvalidOperationException)
+        {
+            return false;
+        }
+    }
 }

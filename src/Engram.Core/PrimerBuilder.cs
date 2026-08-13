@@ -14,6 +14,15 @@ public static class PrimerBuilder
         "durable you learn with engram_remember before you report back: your report is a summary, " +
         "and summaries lose the details the next agent needs.";
 
+    // spec §4.5: tells the model to ask, not to act — what enrolling/declining/deferring
+    // actually does lives in the engram_index_repo tool description instead (D51). Emitted
+    // only when the caller has already resolved the checkout to "no row" or "deferred past
+    // its cooldown" (RepoEnrollment.ShouldOfferEnrollment); PrimerBuilder takes that answer
+    // as a value rather than resolving it itself, so it opens nothing.
+    private const string EnrollmentLine =
+        "This git checkout is not enrolled for Engram code indexing. Ask the user whether to " +
+        "enroll it, and record their answer — a no as well as a yes.";
+
     private const string ExamplesHeader = "Examples:";
     private const int MaxClusters = 5;
 
@@ -34,18 +43,25 @@ public static class PrimerBuilder
     /// </summary>
     /// <remarks>
     /// The precedence line goes first because <see cref="TryAppendLine"/> drops whatever does
-    /// not fit the budget, and of the three things here it is the only one whose absence
-    /// changes what the agent does. It is also why an empty store no longer produces an empty
+    /// not fit the budget, and of the things here it is the one whose absence changes what the
+    /// agent does most broadly. It is also why an empty store no longer produces an empty
     /// primer: a fresh install with nothing recorded is precisely the session where a
     /// competing memory system wins by default, so it is the session that most needs telling.
-    /// Returns an empty string only when there is nothing stored and precedence is off.
+    /// Returns an empty string only when there is nothing stored, precedence is off, and
+    /// enrollment is not being offered.
     /// </remarks>
-    public static string Build(PrimerSummary summary, MemoryPrecedence precedence)
+    public static string Build(PrimerSummary summary, MemoryPrecedence precedence, bool offerEnrollment = false)
     {
         var lines = new List<string>();
         var tokens = 0;
 
         TryAppendLine(lines, ref tokens, MemorySettings.PrimerLine(precedence));
+
+        if (offerEnrollment)
+        {
+            TryAppendLine(lines, ref tokens, EnrollmentLine);
+        }
+
         TryAppendLine(lines, ref tokens, CoverageLine(summary.FactCount, summary.TopicCounts));
 
         AppendExamples(lines, ref tokens, TopFacts(summary.ExampleCandidates, MaxExampleFacts));
@@ -53,9 +69,9 @@ public static class PrimerBuilder
         return string.Join('\n', lines);
     }
 
-    /// <inheritdoc cref="Build(PrimerSummary, MemoryPrecedence)"/>
-    public static string Build(IReadOnlyList<CannedFact> facts, MemoryPrecedence precedence) =>
-        Build(PrimerSummary.From(facts), precedence);
+    /// <inheritdoc cref="Build(PrimerSummary, MemoryPrecedence, bool)"/>
+    public static string Build(IReadOnlyList<CannedFact> facts, MemoryPrecedence precedence, bool offerEnrollment = false) =>
+        Build(PrimerSummary.From(facts), precedence, offerEnrollment);
 
     /// <summary>
     /// The primer delivered at every subagent spawn. Carries no examples: a subagent's

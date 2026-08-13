@@ -56,6 +56,12 @@ public static class ClaudePermissions
         // both close a belief, and closing one should cost a confirmation prompt.
         "mcp__plugin_engram_engram__engram_browse",
         "mcp__plugin_engram_engram__engram_expand",
+
+        // enroll, decline and later create a row and close no belief, so this sits beside
+        // remember rather than beside forget/revise. The user's spoken answer is already the
+        // consent; a permission dialog on top of it would double-prompt, worst on decline,
+        // which is the answer that must not cost the user a dialog (§6.6b.3, §6.6d).
+        "mcp__plugin_engram_engram__engram_index_repo",
     ];
 
     public static PermissionGrantPlan PlanGrant(string settingsPath)

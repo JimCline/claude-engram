@@ -50,15 +50,16 @@ public class PermissionsCommandTests
             home.Root, "permissions", "--settings", settings, "--apply");
 
         Assert.Equal(0, exitCode);
-        Assert.Contains("Granted 5 tool(s).", stdout);
+        Assert.Contains("Granted 6 tool(s).", stdout);
 
         var allowed = AllowListOf(settings);
-        Assert.Equal(5, allowed.Count);
+        Assert.Equal(6, allowed.Count);
         Assert.Contains("mcp__plugin_engram_engram__engram_recall", allowed);
         Assert.Contains("mcp__plugin_engram_engram__engram_remember", allowed);
         Assert.Contains("mcp__plugin_engram_engram__engram_status", allowed);
         Assert.Contains("mcp__plugin_engram_engram__engram_browse", allowed);
         Assert.Contains("mcp__plugin_engram_engram__engram_expand", allowed);
+        Assert.Contains("mcp__plugin_engram_engram__engram_index_repo", allowed);
 
         // Closing a belief costs a confirmation prompt, so neither retraction nor
         // revision may ride the unprompted grant.
@@ -87,7 +88,7 @@ public class PermissionsCommandTests
         // The user's two entries plus the grant, minus the tool they already had.
         var (grantExit, _, _) = EngramProcess.Run(home.Root, "permissions", "--settings", settings, "--apply");
         Assert.Equal(0, grantExit);
-        Assert.Equal(6, AllowListOf(settings).Count);
+        Assert.Equal(7, AllowListOf(settings).Count);
 
         var (revokeExit, revokeOut, _) = EngramProcess.Run(
             home.Root, "permissions", "--settings", settings, "--remove", "--apply");

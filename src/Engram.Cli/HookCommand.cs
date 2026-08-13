@@ -2,6 +2,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Engram.Core;
+using Microsoft.Data.Sqlite;
 
 namespace Engram.Cli;
 
@@ -259,6 +260,78 @@ internal static class HookCommand
     }
 
     /// <summary>
+    /// The primer summary and whether to offer enrollment, read off one connection. Session
+    /// start is on the hook's own latency clock (D4), so the enrollment lookup rides the same
+    /// open <see cref="PrimerSummary.Read"/> already pays for rather than opening a second
+    /// connection beside it.
+    /// </summary>
+    private static (PrimerSummary Summary, bool OfferEnrollment) SessionStartPrimerInputs(
+        EngramHome home, ConfigFile? config, string startDirectory)
+    {
+        try
+        {
+            using var connection = EngramDatabase.OpenInitialized(home);
+            var now = DateTimeOffset.UtcNow;
+            var summary = PrimerSummary.Read(connection, now);
+            var offerEnrollment = ShouldOfferEnrollment(connection, config, now, startDirectory);
+            return (summary, offerEnrollment);
+        }
+        catch
+        {
+            return (PrimerSummary.From([]), false);
+        }
+    }
+
+    /// <summary>
+    /// Whether the primer's enrollment line should appear: config allows it, the session
+    /// started inside a git checkout, and that checkout's enrollment state (never-asked, or a
+    /// deferral whose cooldown elapsed) calls for asking. Filesystem-only lookup — no git
+    /// subprocess on the hook's own clock (D4), which is why this reads <see cref="RepoEnrollment.ByRoot"/>
+    /// off the checkout root rather than <see cref="RepoEnrollment.IsEnrolled"/>'s two-step resolution.
+    /// <paramref name="startDirectory"/> comes from the hook's stdin payload rather than the
+    /// ambient process directory (§6.13) — internal, rather than private, so a fixture can drive
+    /// it with an explicit moved-checkout root instead of mutating process-wide cwd.
+    /// </summary>
+    internal static bool ShouldOfferEnrollment(
+        SqliteConnection connection, ConfigFile? config, DateTimeOffset now, string startDirectory)
+    {
+        if (!AutoIndexOnSessionStart(config))
+        {
+            return false;
+        }
+
+        if (RepoEnrollment.FindCheckoutRoot(startDirectory) is not { } checkoutRoot)
+        {
+            return false;
+        }
+
+        var row = RepoEnrollment.ByRoot(connection, checkoutRoot);
+        return RepoEnrollment.ShouldOfferEnrollment(row, now);
+    }
+
+    /// <summary>
+    /// A misconfigured value must not cost a session its primer, so a config that will not
+    /// parse falls back to the feature's default rather than throwing — the same rule
+    /// <see cref="Precedence(ConfigFile?)"/> follows for memory precedence. Takes the config
+    /// already loaded by <see cref="RunSessionStart"/> rather than loading it again — this hook
+    /// is on its own latency clock and re-parsing the same file a second time per session start
+    /// was measured overhead for nothing (D4).
+    /// </summary>
+    private static bool AutoIndexOnSessionStart(ConfigFile? config)
+    {
+        try
+        {
+            return config is null
+                ? IndexingSettings.DefaultAutoIndexOnSessionStart
+                : IndexingSettings.Read(config).AutoIndexOnSessionStart;
+        }
+        catch
+        {
+            return IndexingSettings.DefaultAutoIndexOnSessionStart;
+        }
+    }
+
+    /// <summary>
     /// A telemetry record for a primer hook, saying what the primer actually delivered.
     /// </summary>
     /// <remarks>
@@ -295,15 +368,39 @@ internal static class HookCommand
     /// falls back to the default rather than throwing — <see cref="MemorySettings.Read"/> already
     /// reports the problem through <c>doctor</c>, which is where a person will look for it.
     /// </remarks>
-    private static MemoryPrecedence Precedence(EngramHome home)
+    private static MemoryPrecedence Precedence(EngramHome home) => Precedence(TryLoadConfig(home));
+
+    /// <summary>
+    /// For a caller that already holds a loaded config — <see cref="RunSessionStart"/> — so the
+    /// same bytes are not parsed a second time on the hook's own clock (D4).
+    /// </summary>
+    private static MemoryPrecedence Precedence(ConfigFile? config)
     {
         try
         {
-            return MemorySettings.Read(ConfigFile.Load(home.ConfigPath)).Precedence;
+            return config is null
+                ? MemorySettings.DefaultPrecedence
+                : MemorySettings.Read(config).Precedence;
         }
         catch
         {
             return MemorySettings.DefaultPrecedence;
+        }
+    }
+
+    /// <summary>
+    /// Loaded once per hook invocation and threaded to whichever readers need it that same run,
+    /// rather than each one re-parsing <c>config.toml</c> off disk independently.
+    /// </summary>
+    private static ConfigFile? TryLoadConfig(EngramHome home)
+    {
+        try
+        {
+            return ConfigFile.Load(home.ConfigPath);
+        }
+        catch
+        {
+            return null;
         }
     }
 
@@ -324,19 +421,22 @@ internal static class HookCommand
         // shell's own descriptors and nothing waits on the child at all; measured either side,
         // the spawn costs 1.6-3.4 ms and the ordering is worth no part of it. It stays here
         // because a fork is never more expensive for happening while the parent is small.
+        var startDirectory = payload?.Cwd ?? Directory.GetCurrentDirectory();
+
         try
         {
             if (Environment.ProcessPath is { Length: > 0 } executable)
             {
-                MaintenanceLauncher.Spawn(executable, home.Root, Directory.GetCurrentDirectory());
+                MaintenanceLauncher.Spawn(executable, home.Root, startDirectory);
             }
         }
         catch
         {
         }
 
-        var summary = LongTermFacts(home);
-        var primer = PrimerBuilder.Build(summary, Precedence(home));
+        var config = TryLoadConfig(home);
+        var (summary, offerEnrollment) = SessionStartPrimerInputs(home, config, startDirectory);
+        var primer = PrimerBuilder.Build(summary, Precedence(config), offerEnrollment);
 
         try
         {
