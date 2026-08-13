@@ -125,7 +125,6 @@ recency_half_life_days = 45
 
 [indexing]
 auto_index_on_session_start = true
-max_sync_index_ms = 1500      # beyond this, indexing continues async
 ignore = ["**/bin/**", "**/obj/**", "**/node_modules/**", "**/.git/**"]
 
 [impressions]
@@ -372,7 +371,7 @@ trigger ─► enumerate (git ls-files + status) ─► diff blob_sha vs file_st
         ─► (if embeddings on) queue new/changed fact bodies for batch embed
 ```
 
-- **Triggers:** `SessionStart` hook (bounded to `max_sync_index_ms` synchronous, remainder continues in a detached child process); `PostToolUse` hook on Edit/Write (queues just the touched files — reindexed on next recall touching that file, or immediately if the queue is small); manual `engram index`.
+- **Triggers:** `SessionStart` hook (runs fully detached — nothing bounds it to a synchronous window; the hook returns without waiting on it); `PostToolUse` hook on Edit/Write (queues just the touched files — reindexed on next recall touching that file, or immediately if the queue is small); manual `engram index`.
 - First index of a large repo runs fully detached; `engram status` and the MCP `engram_status` tool report progress so the agent knows freshness.
 
 ---
@@ -485,7 +484,7 @@ Design notes: `remember` on a live-fact collision *without* `reason` returns a s
 
 | Hook event | Command | Behavior |
 |---|---|---|
-| `SessionStart` | `engram hook session-start` | Open session row; incremental index (≤ `max_sync_index_ms` sync, rest detached); emit primer (§6.3) as `additionalContext` |
+| `SessionStart` | `engram hook session-start` | Open session row; incremental index runs detached (no synchronous bound); emit primer (§6.3) as `additionalContext` |
 | `PostToolUse` (Edit\|Write\|MultiEdit\|NotebookEdit) | `engram hook file-touched` | Queue touched files for reindex; O(ms), never blocks |
 | `PreCompact` | `engram hook pre-compact` | Write a digest instruction on bare stdout asking the compaction summarizer to append a delimited block of durable facts to its own summary (D62); a harvester reads it back into memory |
 | `SessionEnd` / `Stop` | `engram hook session-end` | Close session row; if no digest was written, log it (visible in `engram doctor`) |

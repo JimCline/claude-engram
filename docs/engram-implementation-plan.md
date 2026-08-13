@@ -4783,3 +4783,227 @@ side-effect-free checks cannot fail a test by construction. What replaced the fa
 `NonMatchingPath_LeavesNoTrace`: a non-matching path against an initialized home must leave no
 state file and no telemetry record, which does red when the state append moves above the path
 check.
+
+## D67 — A repo is indexed because someone said so, and the decision outlives everything derived from it
+
+**D67. A repo is indexed because someone said so, and the decision outlives everything derived from
+it.**
+
+Two defects, one root. Nothing triggered a reindex on out-of-band change — the spool queue is written
+only by the `PostToolUse` edit hook, so a `git pull`, a rebase or a branch switch never entered it —
+and a never-indexed repo was never indexed automatically, because session start passes `--drain` and
+an empty queue did not escalate. Measured on this repository before the repair: a full dry run
+reported 42 facts to write, 695 to close and 3 files deleted, against 504 recorded index events and
+`auto_index_on_session_start = true`. A keyhole index reads exactly like a working one.
+
+The fix is that enrollment becomes a thing a user decides, `repo_enrollment` records it, and freshness
+follows from the record rather than from whichever files an editor happened to touch.
+
+**It is a table of its own, and `repo_registry` was the wrong home for a specific and verifiable
+reason.** `StoreCompactor` counts `repo_registry` rows under a path prefix and then `DELETE`s them
+(`StoreCompactor.cs:110`, `:168`). That table is already treated as derived state compaction may
+destroy — correctly, since it is the residue of an index pass. Putting a decline there means
+`engram compact` silently un-declines a repo and the user is asked again, which is D8's line with a
+live `DELETE` on the wrong side of it. Two further reasons close it: a declined repo is by definition
+never indexed, so it never acquires a registry row at all, and it would need a row in a table meaning
+*this repo has been indexed* to record *this repo has explicitly not been*; and `detached_at` is a
+filesystem observation cleared on every re-home (`CodeIndexer.cs:667`), so a decision stored beside it
+is erased the first time the checkout is seen again. `repo_enrollment` is excluded from
+`StoreCompactor` explicitly rather than by absence from a list, and a test enrolls, compacts, and
+asserts the enrollment row survives while the registry row does not.
+
+**Keyed on `identity`, because the registry already is.** Re-homing looks up by identity alone
+(`CodeIndexer.cs:657`) and `disk_path` is never a lookup key, so this inherits re-homing rather than
+reworking it — and inherits its known limitation, that two clones of one remote on one machine share
+an identity, which is pre-existing and not widened. `last_root` is a lookup *cache*, never the key: a
+stale one falls back to resolving identity. Keying enrollment differently from the registry would give
+one repo two keys that can answer differently, and the first divergence is a repo that reads as
+enrolled to one caller and unknown to another.
+
+**A NULL scan stamp is what makes the first index full, and that must stay a consequence rather than a
+flag.** `last_full_scan_at IS NULL` means due, so a newly enrolled repo full-scans on its first run
+with no special case anywhere. This is load-bearing well beyond convenience: the global drain
+*discards* queued entries for repos it cannot service, and that is lossless only because any such repo
+is full-scanned before its next drain — which lifts D41's fold argument from path granularity to repo
+granularity (a full scan re-reads every file, so it carries whatever the discarded entries carried).
+The guard for it stamps `last_full_scan_at` at enrollment time and asserts the first index then
+*fails* to see an untouched file. Passing `--full` explicitly at the enrollment spawn would produce
+the same scan today and permanently disarm that falsification, so the enrollment job deliberately does
+not carry the flag. A truncated scan never stamps, for the mirror reason: stamping one means a large
+repo is scanned once, marked fresh, and never fully scanned again.
+
+**The prompt and the mechanism live in different channels, which is D51 applied rather than excepted.**
+D51's capture trigger is unconditional, so it fits a compile-time `[Description]`. This trigger is
+conditional on the state of the working directory, which a `[Description]` cannot express — so the
+*condition* rides the primer and the *mechanism* stays in the tool description. Inverting either half
+breaks something nameable: a condition in the description fires in every enrolled session, and a
+mechanism in the primer needs a second D15 exemption. There is exactly one such exemption and it stays
+at one.
+
+**The session-start hook decides "is this a checkout" from the filesystem, and the CLI asks git.** They
+are different questions asked under different budgets. The hook may not spawn `git rev-parse` on its
+own clock (D4), and it needs the *checkout root* rather than the working directory, because `last_root`
+stores the root — a lookup keyed on cwd misses for every session started in a subdirectory, which
+presents as an enrolled repo that re-prompts forever and is indistinguishable from a user who never
+answered. So the hook walks up testing for `.git` as **either a file or a directory** (a linked worktree
+and a submodule have it as a file holding `gitdir:`). D53's scan budget does not reach this: D53 bounds
+tree *enumeration*, and a walk-up visits one directory per path component and enumerates none. The two
+answers diverge on an ambient `GIT_DIR`, on a `.git` file pointing at a deleted gitdir, and on a bare
+repo; each divergence costs at most one wasted prompt, and the hand-typed verb still asks git before
+writing anything.
+
+**`--auto` gates ambient work and may not gate commanded work.** This was got wrong first and is worth
+recording as a rule rather than as a fix. `auto_index_on_session_start` answers *may Engram index on
+its own*, and the enrollment spawn reused the session-start job list, which carries `--auto` — so with
+the setting off, `engram repo enroll` announced a background index and performed none. The setting
+suppresses everything unsolicited (the primer line, the session-start scan) and nothing commanded;
+with it off the model never offers enrollment, so the only route to the verb is a human typing it. The
+launcher now takes a jobs discriminator, and the enrollment job is the index alone with neither
+`--auto` nor `--full`. Dropping `--auto` loses nothing else, and that was checked rather than assumed:
+its three other conjuncts are already satisfied at that call site by construction — the checkout was
+verified before anything was written, the database obviously exists because a row was just written to
+it, and the enrollment check is true *because* of that write. None of them may be re-added "for
+safety"; the last would be a race against the write that makes it pass.
+
+**The `last_root` repair for a moved checkout is not the only stamp on that column, and neither
+stamp may be deleted as a duplicate of the other.** At the top of `CodeIndexer.Index`, after
+resolving identity, an enrollment row whose `last_root` disagrees with the resolved root gets it
+rewritten (`CodeIndexer.cs:88-92`) — but `RepoEnrollment.IsEnrolled` also stamps `last_root`
+(`RepoEnrollment.cs:101`), and on the detached maintenance child's `--auto` pass that one runs
+*first*, before `Index()` is ever entered, so on an ordinary session start it is the stamp that
+actually heals a moved repo, not `CodeIndexer`'s own. `CodeIndexer`'s stamp is the only one
+reachable on a commanded pass, where the `--auto` gate never runs. The pair is what lets
+`IsEnrolled`'s `git remote get-url origin` subprocess stay off the session-start hook's own clock
+(D4): cut both and a moved repo either mis-prompts forever or that subprocess goes back onto the
+hook's budget. Guards 12b and 12c hold this, and 12c is the one that falsifies `CodeIndexer`'s
+stamp alone.
+
+**The `--auto` gate's enrollment conjunct resolves in two steps, and only the first may run on the
+hook's own clock.** `RepoEnrollment.IsEnrolled` tries the cache-only `ByRoot` lookup first — a
+`last_root` match, no subprocess — and only on a miss falls back to `CodeIndexer.ResolveIdentity`
+(one `git remote get-url origin`) and a lookup by identity, stamping `last_root` on a hit. The
+session-start hook computes the primer from step one alone; a miss there reports the repo as not
+enrolled to the primer, and step two runs only inside the detached maintenance child, off the
+hook's latency budget entirely (D4). Guard 12a holds the hook side of this: the hook stays
+cache-only across two session starts with no index pass between them, and the enrollment line
+keeps appearing rather than disappearing on a coincidental hit.
+
+**A repo moved on disk produces one wrong prompt, not zero.** The repair is asynchronous — it
+rides the detached maintenance child, so sessions started faster than that child completes each
+get their own wrong prompt. In practice that is one; two panes opened at once against a checkout
+that just moved is the case where it is two. Not worth fixing: the alternative puts a git
+subprocess back on the session-start hook's own clock, which is exactly what D4 refuses. A repo
+that moved and whose remote also changed is a new identity, and is asked again.
+
+**The queue is scoped by view, not by flag, and the abstraction that forced this is the general
+lesson.** `SpoolQueue.Consume` deletes files and never mutates its own captured list, while `Pathless`
+counts that whole list with no root parameter — where `Under`, `LeftBehind` and `Consume` all take a
+root. Under one-root invocations those two scopes are indistinguishable, so the type was
+correct-by-coincidence for its entire life. The first pass covering several roots pulls them apart:
+one bare timestamp would escalate *every* enrolled repo to a full scan, which is unbounded in the
+number enrolled. The fix is a derived view with the rescan signals filtered out, so the escalation
+condition reads false **by construction** for secondary roots and the line that tests it is unchanged.
+Two alternatives were rejected: making `Consume` shrink its list turns a snapshot into a stateful
+object whose readings depend on call order, and works only because the invoked root happens to run
+first — a fix whose correctness depends on iteration order breaks silently when the loop is reordered;
+and a suppression flag is the right semantics expressed as a boolean a call site can pass wrong.
+Nothing tested `SpoolQueue` directly before this, so neither wrong fix would have reddened anything —
+absence of tests is not absence of dependents, and a contract change on an untested type is the worst
+quadrant. The type now has its own tests, and the non-mutation is pinned as *deliberate* with the
+reason, so the next person meeting the symptom does not "fix" it by making `Consume` stateful.
+Generally: **a type whose methods mostly take a scope parameter, with one that does not, is a
+conflated abstraction waiting for its second caller.**
+
+**The queue's only bound is the drainer discarding what it cannot service, and leaving it alone was
+tried on paper and refused.** `file-touched` may not open the database (D4), so it cannot know which
+repos are enrolled and spools for all of them forever; `SpoolCompactor` **folds** rather than prunes,
+bounding the residue by *distinct path count* and never to zero. So "harmless until that repo enrolls"
+has no discharge condition — a **declined** repo never enrolls — and the residue grows monotonically
+with every distinct file ever edited in any repo Engram was told not to index, read by every `Peek` in
+every repo. That residue is the measured symptom this change exists to remove: 272 entries across five
+repos on the instance where it was found. `DiscardExcept(servicedRoots)` deletes exactly the complement
+of what the pass serviced, and *serviced* means accumulated as the loop drained — never re-derived from
+the enrolled set, since an enrolled repo whose checkout is absent is deliberately not serviced and its
+entries are discarded. Two skips inside it are load-bearing in opposite directions. Pathless entries are
+skipped unconditionally, and the reason for that had to be corrected during review: a bare timestamp
+*is* discharged, by the invoked root's own escalation (`CodeIndexer.cs:115`, `:235`), so the skip is
+not what keeps a watermark alive on an ordinary pass. It is what stops `DiscardExcept` from ever being
+the thing that destroys one — on a pass where no root escalates, which the deferred server-side
+freshness service produces on every tick that finds no repo due, an unskipped watermark would be
+deleted with nothing having scanned for it. It is also what makes the call safe on the full snapshot,
+since `Consume` deletes the file and leaves the entry in the list. And `Kind.Unreadable` is skipped
+because an unreadable entry has no trustworthy path, so *under none of these roots* is trivially true
+for it and the naive implementation destroys a possibly-good edit record on a **transient**
+`FileShare.None` collision. D41 already says bytes that could not be obtained are left alone; this is
+the first caller that could have broken that rule by accident. Rejected shapes, each for a reason worth
+keeping: a `RootsOfRemaining()` accessor would make the type walk the filesystem per entry to answer a
+question about itself; a bare rootless `Consume` overload reads as *consume everything* on a delete
+method; and `Consume(root: "/")` is not merely fragile — it deletes the wrong set, every path-bearing
+entry including repos the pass has not reached.
+
+**Telemetry records the action, not the state, and the two vocabularies are allowed to differ.**
+`enrollment` events carry a `Decision` of `enroll`, `decline`, `later` or `reset` — four verbs against
+the table's three states, because `reset` deletes the row and produces no state at all. The reason is
+written beside the field, or someone harmonizes them and `reset` becomes unrecordable. It is not
+folded into `Phase`, which D55 gives a durational meaning that an instantaneous decision has no second
+half for — that reuse is precisely the shape D43 traced a wrong published conclusion to. It is not
+folded into the `index` kind either, since D18 and D43 read kinds to answer how memory is used and an
+enrollment decision is not an indexing run. The migration's backfill emits **nothing**: one event per
+pre-existing repo would put a burst into the log at the exact moment the feature ships, inflating
+every count over the kind on its first day, so the absence is commented as decided. Emission sits at
+one point below both the CLI verb and the MCP tool; there was no such point before, and creating it is
+part of the change, because per-surface emission is how a kind ends up recorded from one surface and
+silently not from the other.
+
+**The migration backfills to enrolled, which narrows nothing.** Before this, `--auto` indexed *any* git
+checkout when the setting was on, gated on nothing else — strictly broader than "every registry row".
+Backfilling every row with a non-NULL `disk_path` to `enrolled` therefore switches nothing off, while
+requiring re-consent would silently disable a working setup nobody asked to change. `source`
+distinguishes the inference from a real answer, so "why are forty repos being scanned" stays
+answerable. Rows with a NULL `disk_path` are skipped and asked about if the checkout returns, and
+every backfilled row gets a NULL scan stamp — which is the one-shot repair of the original defect.
+
+**Freshness rides the session-start child rather than the server, and the acceptance property is that
+the feature works with the server never started.** The server can be down, wedged or
+version-mismatched — D42 exists because callers kept enumerating those states wrong — and indexing
+freshness must not inherit that vocabulary. A server-side service is a genuine improvement for
+mid-session freshness and for repos where no session ever starts, and it is deferred rather than
+declined; the end-to-end guard that enrolls, edits a file out of band, starts a session and asserts
+the change is indexed **with no server at any point** is what stops it from quietly becoming the only
+path.
+
+**One retired key, on D33's pattern, and a second instance is not a reason to abstract.**
+`max_sync_index_ms` was parsed into a field nothing read, and `DefaultConfig`'s comment described
+behaviour that does not exist; the specification still claimed session-start indexing was bounded to
+it synchronously, which this change makes doubly false by spawning *more* work on that path. Wiring it
+up was rejected — a synchronous index in a hook walks back D4 — so it joins `EmbeddingSettings.Retired`
+as a warning on `Ignored`, never on `Problems`, because `Problems` clears `IsUsable` and folding a
+retired key in would switch off indexing for every config old enough to contain it. That is the same
+trap D33 recorded for the vector lane. `IndexingSettings.Retired` is the pattern's second instance and
+deliberately shares no code with the first: two lists of key-and-note pairs are not a duplication worth
+a base class, and what is actually shared is the rule, which belongs here rather than in an
+inheritance hierarchy.
+
+**Five process lessons, all paid for during this change.** A guard must fail for the feature's
+*absence*, not merely for its misbehaviour: the first version of the primer test asserted the policy
+function and the formatter separately and would have passed while nothing wired them together — it is
+now two tests, and the falsification of the delivery half must **not** redden the policy half, or the
+policy has been copied into the caller instead of called. *Falsify against a committed tree* extends
+one step earlier, to investigation: a claim in the design that a field already existed was checked
+against the working tree while it was being edited, so another author's addition read as pre-existing
+state. Answer "does X already exist?" against `HEAD`, never against a working copy someone else is in.
+And a design constraint must be stated as its reason rather than as its arithmetic: "this type gains
+exactly one member" blocked a later fix that never threatened the property the constraint existed to
+protect, which was "no second scoping mechanism". A count is not a reason, and the next person hits it
+as a wall. Fourth: a guard asserting that a late stage *preserves* something cannot be written when an
+earlier stage of the same pass legitimately removes it. The drain guard asserted that pathless queue
+entries survive the discard step, which they cannot, because the invoked root consumes them two calls
+earlier; the property is real and is guarded one tier down, where it is observable. Before writing an
+integration assertion about what a stage leaves behind, read what the stages ahead of it already did to
+that thing. A falsification must be checked against everything else on the path that produces the same
+effect. Guard 12 deleted the `last_root` repair above and stayed green, because `IsEnrolled` stamps the
+same column earlier in the same pass — so the arm proved nothing while reading as proof. Deleting the
+line under test is necessary and not sufficient: the question is whether anything *else* still delivers
+the outcome being asserted. Where two call sites both deliver it, either split the guard so each is
+reachable alone (12c) or name both deletions in the arm (12b) — but say which, because a one-line
+falsification against a two-stamp property is the failure that looks most like success.
