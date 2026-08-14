@@ -17,10 +17,13 @@ internal static class IndexCommand
         var drainAll = false;
         var full = false;
         var auto = false;
+        var freshen = false;
+        var skip = new List<string>();
         string? target = null;
 
-        foreach (var argument in rest)
+        for (var i = 0; i < rest.Length; i++)
         {
+            var argument = rest[i];
             switch (argument)
             {
                 case "--apply":
@@ -39,6 +42,18 @@ internal static class IndexCommand
                 case "--auto":
                     auto = true;
                     break;
+                case "--freshen":
+                    freshen = true;
+                    break;
+                case "--skip":
+                    if (i + 1 >= rest.Length)
+                    {
+                        stderr.WriteLine("error: --skip requires a directory argument");
+                        return 1;
+                    }
+
+                    skip.Add(rest[++i]);
+                    break;
                 default:
                     if (argument.StartsWith('-') || target is not null)
                     {
@@ -49,6 +64,18 @@ internal static class IndexCommand
                     target = argument;
                     break;
             }
+        }
+
+        if (freshen)
+        {
+            if (drain || drainAll || full || target is not null)
+            {
+                stderr.WriteLine(
+                    "error: --freshen is mutually exclusive with --drain, --drain-all, --full, and a target directory");
+                return 1;
+            }
+
+            return RunFreshen(homePath, skip, apply, stdout, stderr);
         }
 
         var root = Path.GetFullPath(target ?? Directory.GetCurrentDirectory());
@@ -153,6 +180,67 @@ internal static class IndexCommand
                     + $"{CountEntries(sharedQueue.Unreadable)} left behind (unreadable)");
             }
 
+            return 0;
+        }
+        catch (SqliteException e) when (e.Message.Contains("no such table", StringComparison.OrdinalIgnoreCase))
+        {
+            stderr.WriteLine("error: this store predates the code index tables. Re-run with --apply,");
+            stderr.WriteLine("which migrates after snapshotting, or run 'engram doctor' to see where it stands.");
+            IndexTelemetry.Note(home, "cli", "failed", identity);
+            return 1;
+        }
+    }
+
+    /// <summary>
+    /// The bounded self-heal pass (spec §5.2): at most one repo, chosen by
+    /// <see cref="RepoFreshness.NextDue"/>, freshened per invocation. Silent refusal throughout —
+    /// this runs from the detached session-start child, where nobody can see an error.
+    /// </summary>
+    private static int RunFreshen(
+        string? homePath, IReadOnlyList<string> skip, bool apply, TextWriter stdout, TextWriter stderr)
+    {
+        var home = EngramHome.ResolveFromProcess(homePath);
+
+        if (!File.Exists(home.DatabasePath) || !File.Exists(home.ConfigPath))
+        {
+            return 0;
+        }
+
+        var config = ConfigFile.Load(home.ConfigPath);
+        var settings = IndexingSettings.Read(config);
+
+        foreach (var problem in settings.Problems)
+        {
+            stderr.WriteLine($"warning: {problem}");
+        }
+
+        var exclude = skip
+            .Select(s => PathCanonicalizer.Canonical(Path.GetFullPath(s)))
+            .ToHashSet(StringComparer.Ordinal);
+
+        using var connection = EngramDatabase.OpenInitialized(home);
+
+        var candidate = RepoFreshness.NextDue(
+            connection,
+            IndexingSettings.FullScanIntervalMinutes,
+            DateTimeOffset.UtcNow,
+            includeAmbient: settings.AutoIndexOnSessionStart,
+            exclude);
+
+        if (candidate is null)
+        {
+            return 0;
+        }
+
+        var identity = candidate.Row.Identity;
+        IndexTelemetry.Note(home, "cli", "started", identity);
+
+        try
+        {
+            var report = RepoIndexRun.Freshen(
+                connection, home, config, settings, candidate.Root, apply, budget: null, DateTimeOffset.UtcNow);
+            Print(report, stdout);
+            IndexTelemetry.Note(home, "cli", "finished", identity);
             return 0;
         }
         catch (SqliteException e) when (e.Message.Contains("no such table", StringComparison.OrdinalIgnoreCase))

@@ -77,6 +77,29 @@ public class MaintenanceLauncherTests
     }
 
     /// <summary>
+    /// --skip &lt;indexRoot&gt; must follow the drain-all job, not precede or replace it: the stamp
+    /// that would exclude the invoked root from --freshen's own selection only lands once the
+    /// drain-all job has run and completed (spec §5.4).
+    /// </summary>
+    [Fact]
+    public void TheFreshenSelfHealFollowsTheDrainAllJob_ForSessionStartOnly()
+    {
+        var script = MaintenanceLauncher.BuildScript(Executable, Home, "/repo");
+
+        var drainAllAt = script.IndexOf("index --drain-all --apply --auto '/repo'", StringComparison.Ordinal);
+        var freshenAt = script.IndexOf("index --freshen --apply --skip '/repo'", StringComparison.Ordinal);
+
+        Assert.True(drainAllAt >= 0, $"expected the drain-all job: {script}");
+        Assert.True(freshenAt > drainAllAt, $"expected --freshen to follow --drain-all: {script}");
+
+        Assert.DoesNotContain(
+            "--freshen",
+            MaintenanceLauncher.BuildScript(
+                Executable, Home, "/repo", MaintenanceLauncher.MaintenanceJobs.EnrollmentIndex),
+            StringComparison.Ordinal);
+    }
+
+    /// <summary>
     /// A path with a quote in it must not end the quoting and become further shell words.
     /// </summary>
     [Fact]

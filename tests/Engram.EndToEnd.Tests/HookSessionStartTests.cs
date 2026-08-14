@@ -1,5 +1,7 @@
 using System.Text.Json;
 
+using Microsoft.Data.Sqlite;
+
 namespace Engram.EndToEnd.Tests;
 
 public class HookSessionStartTests
@@ -200,6 +202,123 @@ public class HookSessionStartTests
         {
             Directory.Delete(notACheckout, recursive: true);
             Directory.Delete(checkoutPath, recursive: true);
+        }
+    }
+
+    /// <summary>
+    /// The guard for §5.1's structural gap: a session-start maintenance spawn that dies before it
+    /// stamps <c>last_full_scan_at</c> leaves a repo neglected forever after, because every later
+    /// session's own <c>--drain-all --auto</c> only ever touches the invoking root. <c>--freshen</c>
+    /// exists to self-heal exactly this, from a session that starts somewhere else entirely — so
+    /// this drives the published binary end to end rather than asserting through the code under
+    /// test, and polls for the detached child's result rather than racing it.
+    /// </summary>
+    [Fact]
+    public void SessionStart_SelfHeals_ANeglectedRepo_StartedFromADifferentCheckout()
+    {
+        Assert.SkipUnless(EndToEndBinary.Path is not null, EndToEndBinary.SkipReason);
+
+        using var home = new TestHome();
+
+        var neglectedRepo = Path.Combine(home.Root, "neglected");
+        Directory.CreateDirectory(neglectedRepo);
+        File.WriteAllText(Path.Combine(neglectedRepo, "a.cs"), "class A {}\n");
+        if (!GitInit(neglectedRepo))
+        {
+            return;
+        }
+
+        var otherCheckout = Path.Combine(
+            Path.GetTempPath(), "engram-e2e-other-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(Path.Combine(otherCheckout, ".git"));
+
+        try
+        {
+            var (enrollExit, enrollOut, _) = EngramProcess.Run(home.Root, "repo", "enroll", neglectedRepo);
+            Assert.Equal(0, enrollExit);
+            Assert.Contains("first index is running in the background", enrollOut, StringComparison.Ordinal);
+
+            var indexDeadline = DateTime.UtcNow.AddSeconds(30);
+            var listOutput = string.Empty;
+            while (!listOutput.Contains("file(s) indexed", StringComparison.Ordinal)
+                   || listOutput.Contains("0 file(s) indexed", StringComparison.Ordinal))
+            {
+                if (DateTime.UtcNow >= indexDeadline)
+                {
+                    break;
+                }
+
+                Thread.Sleep(200);
+                (_, listOutput, _) = EngramProcess.Run(home.Root, "repo", "list");
+            }
+
+            Assert.Contains("1 file(s) indexed", listOutput, StringComparison.Ordinal);
+
+            // Simulate the dead spawn: the enrollment survives, but the scan that would have
+            // stamped completion never landed.
+            var databasePath = Path.Combine(home.Root, "engram.db");
+            using (var connection = new SqliteConnection($"Data Source={databasePath}"))
+            {
+                connection.Open();
+                using var command = connection.CreateCommand();
+                command.CommandText = "UPDATE repo_enrollment SET last_full_scan_at = NULL;";
+                Assert.Equal(1, command.ExecuteNonQuery());
+            }
+
+            var stdin = JsonSerializer.Serialize(new { cwd = otherCheckout });
+            var (exitCode, _, stderr) = EngramProcess.RunWithStdinFromDirectory(
+                home.Root, otherCheckout, stdin, "hook", "session-start");
+
+            Assert.Equal(0, exitCode);
+            Assert.Equal(string.Empty, stderr);
+
+            var healDeadline = DateTime.UtcNow.AddSeconds(30);
+            long? stampAfter = null;
+            while (stampAfter is null && DateTime.UtcNow < healDeadline)
+            {
+                Thread.Sleep(200);
+                using var connection = new SqliteConnection($"Data Source={databasePath}");
+                connection.Open();
+                using var command = connection.CreateCommand();
+                command.CommandText = "SELECT last_full_scan_at FROM repo_enrollment;";
+                var result = command.ExecuteScalar();
+                stampAfter = result is null or DBNull ? null : Convert.ToInt64(result);
+            }
+
+            Assert.NotNull(stampAfter);
+        }
+        finally
+        {
+            Directory.Delete(otherCheckout, recursive: true);
+        }
+    }
+
+    private static bool GitInit(string directory)
+    {
+        try
+        {
+            var info = new System.Diagnostics.ProcessStartInfo("git")
+            {
+                WorkingDirectory = directory,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+            };
+            info.ArgumentList.Add("init");
+            info.ArgumentList.Add("-q");
+
+            using var process = System.Diagnostics.Process.Start(info);
+            if (process is null)
+            {
+                return false;
+            }
+
+            process.WaitForExit(10_000);
+            return process.HasExited && process.ExitCode == 0;
+        }
+        catch (Exception e) when (e is System.ComponentModel.Win32Exception or InvalidOperationException)
+        {
+            return false;
         }
     }
 }

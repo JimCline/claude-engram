@@ -1,5 +1,6 @@
 using Engram.Cli;
 using Engram.Core;
+using Microsoft.Data.Sqlite;
 
 namespace Engram.Integration.Tests;
 
@@ -539,6 +540,285 @@ public class IndexCommandTests
         Assert.Equal(0, exitCode);
         Assert.Equal(before, Directory.GetFiles(queueDir, "*.spool").Length);
         Assert.Contains("Dry run only", stdout.ToString(), StringComparison.Ordinal);
+    }
+
+    // --freshen is the bounded self-heal pass (spec §5.2): at most one enrolled repo per
+    // invocation, chosen by RepoFreshness.NextDue and scanned through RepoIndexRun.Freshen.
+
+    [Theory]
+    [InlineData("--drain")]
+    [InlineData("--drain-all")]
+    [InlineData("--full")]
+    public void Freshen_CombinedWithAnotherWorkFlag_IsAnError(string conflictingFlag)
+    {
+        using var sandbox = new SandboxHome();
+        var stderr = new StringWriter();
+
+        var exitCode = CliApp.Run(
+            ["--home", sandbox.Home.Root, "index", "--freshen", conflictingFlag, "--apply"],
+            new StringWriter(),
+            stderr);
+
+        Assert.Equal(1, exitCode);
+        Assert.NotEqual(string.Empty, stderr.ToString());
+    }
+
+    [Fact]
+    public void Freshen_CombinedWithATarget_IsAnError()
+    {
+        using var sandbox = new SandboxHome();
+        var stderr = new StringWriter();
+
+        var exitCode = CliApp.Run(
+            ["--home", sandbox.Home.Root, "index", sandbox.Home.Root, "--freshen", "--apply"],
+            new StringWriter(),
+            stderr);
+
+        Assert.Equal(1, exitCode);
+        Assert.NotEqual(string.Empty, stderr.ToString());
+    }
+
+    [Fact]
+    public void Freshen_WithoutApply_PrintsTheCandidateButWritesNothing()
+    {
+        using var sandbox = new SandboxHome();
+        var repo = Path.Combine(sandbox.Home.Root, "checkout");
+        Directory.CreateDirectory(repo);
+        File.WriteAllText(Path.Combine(repo, "a.cs"), "class A {}\n");
+
+        using (var connection = EngramDatabase.OpenInitialized(sandbox.Home))
+        {
+            RepoEnrollment.Enroll(
+                connection,
+                CodeIndexer.ResolveIdentity(CodeIndexer.ResolveRoot(repo)),
+                repo,
+                DateTimeOffset.UtcNow.AddDays(-1));
+        }
+
+        var stdout = new StringWriter();
+        var exitCode = CliApp.Run(["--home", sandbox.Home.Root, "index", "--freshen"], stdout, new StringWriter());
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains(repo, stdout.ToString(), StringComparison.Ordinal);
+        Assert.Contains("Dry run only", stdout.ToString(), StringComparison.Ordinal);
+
+        using var connectionAfter = EngramDatabase.OpenInitialized(sandbox.Home);
+        Assert.Null(RepoEnrollment.ByRoot(connectionAfter, repo)!.LastFullScanAt);
+    }
+
+    [Fact]
+    public void Freshen_WithNoDueRepos_ExitsZeroSilently()
+    {
+        using var sandbox = new SandboxHome();
+        var stdout = new StringWriter();
+        var stderr = new StringWriter();
+
+        var exitCode = CliApp.Run(["--home", sandbox.Home.Root, "index", "--freshen", "--apply"], stdout, stderr);
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(string.Empty, stdout.ToString());
+        Assert.Equal(string.Empty, stderr.ToString());
+    }
+
+    [Fact]
+    public void Freshen_ANonStoreHome_DeclinesSilently()
+    {
+        using var sandbox = new SandboxHome(initialize: false);
+        var stdout = new StringWriter();
+        var stderr = new StringWriter();
+
+        var exitCode = CliApp.Run(["--home", sandbox.Home.Root, "index", "--freshen", "--apply"], stdout, stderr);
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(string.Empty, stdout.ToString());
+        Assert.Equal(string.Empty, stderr.ToString());
+    }
+
+    /// <summary>
+    /// The truth table from spec §5.3: <c>UnfulfilledEnrollment</c> (unstamped, source='user')
+    /// is scanned regardless of the setting; <c>NeverScanned</c> (unstamped, source='backfill')
+    /// and <c>Stale</c> (stamped, either source) are scanned only when the setting is on.
+    /// Falsifiable in two independent directions: deleting the <c>UnfulfilledEnrollment</c>
+    /// bypass reddens only the setting-off/unstamped/user row; deleting the
+    /// <c>source == 'user'</c> filter reddens only the setting-off/unstamped/backfill row.
+    /// </summary>
+    [Theory]
+    [InlineData(true, false, "user", true)]
+    [InlineData(true, false, "backfill", true)]
+    [InlineData(true, true, "user", true)]
+    [InlineData(false, false, "user", true)]
+    [InlineData(false, false, "backfill", false)]
+    [InlineData(false, true, "user", false)]
+    public void Freshen_ScansExactlyWhenAutoOrTheEnrollmentBypassAllows(
+        bool autoIndexOnSessionStart, bool stamped, string source, bool expectScanned)
+    {
+        using var sandbox = new SandboxHome();
+        var repo = Path.Combine(sandbox.Home.Root, "checkout");
+        Directory.CreateDirectory(repo);
+        File.WriteAllText(Path.Combine(repo, "a.cs"), "class A {}\n");
+
+        var now = DateTimeOffset.UtcNow;
+        long? seededStamp = stamped ? now.AddDays(-2).ToUnixTimeSeconds() : null;
+
+        using (var connection = EngramDatabase.OpenInitialized(sandbox.Home))
+        {
+            var identity = CodeIndexer.ResolveIdentity(CodeIndexer.ResolveRoot(PathCanonicalizer.Canonical(repo)));
+            RepoEnrollment.Enroll(connection, identity, repo, now.AddDays(-3));
+            SetSourceAndStamp(connection, identity, source, seededStamp);
+        }
+
+        if (!autoIndexOnSessionStart)
+        {
+            var config = File.ReadAllText(sandbox.Home.ConfigPath);
+            File.WriteAllText(
+                sandbox.Home.ConfigPath,
+                config.Replace("auto_index_on_session_start = true", "auto_index_on_session_start = false"));
+        }
+
+        var exitCode = CliApp.Run(
+            ["--home", sandbox.Home.Root, "index", "--freshen", "--apply"], new StringWriter(), new StringWriter());
+        Assert.Equal(0, exitCode);
+
+        using var connectionAfter = EngramDatabase.OpenInitialized(sandbox.Home);
+        var after = RepoEnrollment.ByRoot(connectionAfter, repo)!;
+
+        if (expectScanned)
+        {
+            Assert.NotEqual(seededStamp, after.LastFullScanAt);
+        }
+        else
+        {
+            Assert.Equal(seededStamp, after.LastFullScanAt);
+        }
+    }
+
+    [Fact]
+    public void Freshen_WithTheSettingOff_RetriesAnUnfulfilledEnrollmentOnlyOnce()
+    {
+        using var sandbox = new SandboxHome();
+        var repo = Path.Combine(sandbox.Home.Root, "checkout");
+        Directory.CreateDirectory(repo);
+        File.WriteAllText(Path.Combine(repo, "a.cs"), "class A {}\n");
+
+        using (var connection = EngramDatabase.OpenInitialized(sandbox.Home))
+        {
+            RepoEnrollment.Enroll(
+                connection,
+                CodeIndexer.ResolveIdentity(CodeIndexer.ResolveRoot(PathCanonicalizer.Canonical(repo))),
+                repo,
+                DateTimeOffset.UtcNow.AddDays(-2));
+        }
+
+        var config = File.ReadAllText(sandbox.Home.ConfigPath);
+        File.WriteAllText(
+            sandbox.Home.ConfigPath,
+            config.Replace("auto_index_on_session_start = true", "auto_index_on_session_start = false"));
+
+        Assert.Equal(0, CliApp.Run(
+            ["--home", sandbox.Home.Root, "index", "--freshen", "--apply"], new StringWriter(), new StringWriter()));
+
+        long? stampAfterFirstRun;
+        using (var connection = EngramDatabase.OpenInitialized(sandbox.Home))
+        {
+            stampAfterFirstRun = RepoEnrollment.ByRoot(connection, repo)!.LastFullScanAt;
+        }
+
+        Assert.NotNull(stampAfterFirstRun);
+
+        Assert.Equal(0, CliApp.Run(
+            ["--home", sandbox.Home.Root, "index", "--freshen", "--apply"], new StringWriter(), new StringWriter()));
+
+        using var connectionAfter = EngramDatabase.OpenInitialized(sandbox.Home);
+        Assert.Equal(stampAfterFirstRun, RepoEnrollment.ByRoot(connectionAfter, repo)!.LastFullScanAt);
+    }
+
+    [Fact]
+    public void Freshen_Skip_ExcludesTheInvokedRoot_SelectingADifferentRepo()
+    {
+        using var sandbox = new SandboxHome();
+        var invokedRoot = Path.Combine(sandbox.Home.Root, "invoked");
+        var otherRoot = Path.Combine(sandbox.Home.Root, "other");
+        Directory.CreateDirectory(invokedRoot);
+        Directory.CreateDirectory(otherRoot);
+        File.WriteAllText(Path.Combine(invokedRoot, "a.cs"), "class A {}\n");
+        File.WriteAllText(Path.Combine(otherRoot, "b.cs"), "class B {}\n");
+
+        var now = DateTimeOffset.UtcNow;
+        using (var connection = EngramDatabase.OpenInitialized(sandbox.Home))
+        {
+            // The invoked root is decided first, so DueOrder would pick it first among two
+            // equally-unstamped rows if --skip did not remove it from consideration.
+            RepoEnrollment.Enroll(
+                connection,
+                CodeIndexer.ResolveIdentity(CodeIndexer.ResolveRoot(PathCanonicalizer.Canonical(invokedRoot))),
+                invokedRoot,
+                now.AddDays(-3));
+            RepoEnrollment.Enroll(
+                connection,
+                CodeIndexer.ResolveIdentity(CodeIndexer.ResolveRoot(PathCanonicalizer.Canonical(otherRoot))),
+                otherRoot,
+                now.AddDays(-2));
+        }
+
+        var exitCode = CliApp.Run(
+            ["--home", sandbox.Home.Root, "index", "--freshen", "--apply", "--skip", invokedRoot],
+            new StringWriter(),
+            new StringWriter());
+        Assert.Equal(0, exitCode);
+
+        using var connectionAfter = EngramDatabase.OpenInitialized(sandbox.Home);
+        Assert.Null(RepoEnrollment.ByRoot(connectionAfter, invokedRoot)!.LastFullScanAt);
+        Assert.NotNull(RepoEnrollment.ByRoot(connectionAfter, otherRoot)!.LastFullScanAt);
+    }
+
+    /// <summary>
+    /// Seeds three due repos, not one — a single due repo would pass even with the "at most
+    /// one per invocation" bound (spec §5.2) deleted entirely.
+    /// </summary>
+    [Fact]
+    public void Freshen_WithThreeDueRepos_ScansExactlyOne()
+    {
+        using var sandbox = new SandboxHome();
+        var roots = new List<string>();
+        for (var i = 0; i < 3; i++)
+        {
+            var root = Path.Combine(sandbox.Home.Root, $"repo-{i}");
+            Directory.CreateDirectory(root);
+            File.WriteAllText(Path.Combine(root, "x.cs"), "class X {}\n");
+            roots.Add(root);
+        }
+
+        using (var connection = EngramDatabase.OpenInitialized(sandbox.Home))
+        {
+            var now = DateTimeOffset.UtcNow;
+            for (var i = 0; i < roots.Count; i++)
+            {
+                RepoEnrollment.Enroll(
+                    connection,
+                    CodeIndexer.ResolveIdentity(CodeIndexer.ResolveRoot(PathCanonicalizer.Canonical(roots[i]))),
+                    roots[i],
+                    now.AddDays(-1 - i));
+            }
+        }
+
+        var exitCode = CliApp.Run(
+            ["--home", sandbox.Home.Root, "index", "--freshen", "--apply"], new StringWriter(), new StringWriter());
+        Assert.Equal(0, exitCode);
+
+        using var connectionAfter = EngramDatabase.OpenInitialized(sandbox.Home);
+        var scanned = roots.Count(root => RepoEnrollment.ByRoot(connectionAfter, root)!.LastFullScanAt is not null);
+        Assert.Equal(1, scanned);
+    }
+
+    private static void SetSourceAndStamp(SqliteConnection connection, string identity, string source, long? stamp)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = "UPDATE repo_enrollment SET source = $source, last_full_scan_at = $stamp "
+            + "WHERE identity = $identity;";
+        command.Parameters.AddWithValue("$source", source);
+        command.Parameters.AddWithValue("$stamp", stamp is null ? DBNull.Value : stamp.Value);
+        command.Parameters.AddWithValue("$identity", identity);
+        command.ExecuteNonQuery();
     }
 
     private static void Spool(string queueDir, DateTimeOffset at, string? path)

@@ -100,6 +100,17 @@ public static class MaintenanceLauncher
 
             command.Append(engram).Append(indexInvocation)
                 .Append(ShellQuote(indexRoot)).Append(home).Append("; ");
+
+            // --skip <indexRoot> is not redundant with running this after the drain-all job:
+            // the stamp that would make the invoked root ineligible only lands when the setting
+            // is on and the scan completes, so with the setting off, or after a truncated scan,
+            // the invoked root is still a candidate and would otherwise be freshened twice in
+            // the same session start (spec §5.4).
+            if (jobs == MaintenanceJobs.SessionStart)
+            {
+                command.Append(engram).Append(" index --freshen --apply --skip ")
+                    .Append(ShellQuote(indexRoot)).Append(home).Append("; ");
+            }
         }
 
         // `exec` before the group, not a redirection after it. Redirecting the group covers the
@@ -118,7 +129,12 @@ public static class MaintenanceLauncher
     /// </summary>
     public enum MaintenanceJobs
     {
-        /// <summary>Housekeeping plus an --auto, --drain-all index of indexRoot: the ambient session-start fork.</summary>
+        /// <summary>
+        /// Housekeeping, an --auto --drain-all index of indexRoot, and an --freshen self-heal of one
+        /// other neglected repo. The fork itself is never gated — only the jobs inside it are:
+        /// --freshen's UnfulfilledEnrollment bypass (spec §5.3) can run one non-ambient scan even
+        /// with auto_index_on_session_start off, alongside the otherwise-ambient work around it.
+        /// </summary>
         SessionStart,
 
         /// <summary>The index of indexRoot alone, --drain --apply, with no --auto and no --full.</summary>
