@@ -104,7 +104,7 @@ internal static class IndexCommand
         // Emitted for a dry run too. The scan is the slow half and it happens either way, so
         // "is Engram busy with the repo" is answered the same for both; what differs is whether
         // anything is written, which the report says.
-        Note(home, "started", identity);
+        IndexTelemetry.Note(home, "cli", "started", identity);
 
         try
         {
@@ -131,7 +131,7 @@ internal static class IndexCommand
             var draining = drainAll && apply && sharedQueue is not null;
 
             Print(report, stdout, reportQueueLine: !draining);
-            Note(home, "finished", identity);
+            IndexTelemetry.Note(home, "cli", "finished", identity);
 
             if (draining)
             {
@@ -159,7 +159,7 @@ internal static class IndexCommand
         {
             stderr.WriteLine("error: this store predates the code index tables. Re-run with --apply,");
             stderr.WriteLine("which migrates after snapshotting, or run 'engram doctor' to see where it stands.");
-            Note(home, "failed", identity);
+            IndexTelemetry.Note(home, "cli", "failed", identity);
             return 1;
         }
     }
@@ -204,7 +204,7 @@ internal static class IndexCommand
             }
 
             var secondaryIdentity = CodeIndexer.ResolveIdentity(secondaryRoot);
-            Note(home, "started", secondaryIdentity);
+            IndexTelemetry.Note(home, "cli", "started", secondaryIdentity);
 
             var report = CodeIndexer.Index(
                 connection,
@@ -215,36 +215,10 @@ internal static class IndexCommand
                 DateTimeOffset.UtcNow);
 
             Print(report, stdout, reportQueueLine: false);
-            Note(home, "finished", secondaryIdentity);
+            IndexTelemetry.Note(home, "cli", "finished", secondaryIdentity);
         }
 
         return seen;
-    }
-
-    /// <summary>
-    /// Records that indexing is under way, so something watching the event stream can say so.
-    /// </summary>
-    /// <remarks>
-    /// The session id is the literal "cli" because this command has no session — D43 already
-    /// established that the id spaces here are disjoint and do not combine, so a third honest
-    /// value costs nothing and a borrowed one would invite exactly the arithmetic that went wrong
-    /// before. A finished phase is what lets a reader stop saying "indexing"; without the pair,
-    /// the only alternative is a timer, and a timer is a guess about how long a repo takes.
-    /// <paramref name="repo"/> is resolved once in <see cref="Run"/> so all three phases of one
-    /// invocation carry the same identity, computed the same way regardless of whether the run
-    /// ever reaches a registered <c>repo_path</c> (§6.9).
-    /// </remarks>
-    private static void Note(EngramHome home, string phase, string repo)
-    {
-        if (File.Exists(home.ConfigPath))
-        {
-            Telemetry.Append(home, new TelemetryRecord(
-                Timestamp: DateTimeOffset.UtcNow.ToString("o"),
-                SessionId: "cli",
-                Kind: TelemetryEventKind.Index,
-                Phase: phase,
-                Repo: repo));
-        }
     }
 
     private static void Print(IndexReport report, TextWriter stdout, bool reportQueueLine = true)
