@@ -614,4 +614,75 @@ public class RepoScannerTests
         Assert.True(ScanBudget.Diagnostic.Time < ScanBudget.Default.Time);
         Assert.Equal(GitFileLister.Timeout, ScanBudget.Default.Time);
     }
+
+    // ---- an unreadable directory is skipped and reported, never treated as empty (commit E2) ----
+
+    /// <summary>
+    /// A moved, unmounted, or deleted checkout reaches this the same way: GitFileLister.List
+    /// returns null for an absent root, so Scan falls through to Walk, whose very first
+    /// enumeration throws. Needs no permissions to stage. §13.3's trap is that if Summary()'s
+    /// stop switch carries a `_` default, a new ScanStop value renders as nothing — falsify by
+    /// deleting the new arm from the switch, or by reverting the catch's write to `stop`.
+    /// </summary>
+    [Fact]
+    public void Summary_NamesTheUnreadableDirectoryAndItsCount()
+    {
+        using var repo = new TempRepo();
+        var missing = Path.Combine(repo.Root, "gone");
+
+        var scan = RepoScanner.Scan(missing, Settings, new NotACheckout());
+
+        Assert.Equal(ScanStop.Unreadable, scan.Stop);
+        Assert.True(scan.Truncated);
+        Assert.Equal(1, scan.Skipped[SkipReason.UnreadableDirectory]);
+        Assert.Contains(missing, scan.Summary(), StringComparison.Ordinal);
+        Assert.Contains("could not read a directory", scan.Summary(), StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The only test here needing permissions. Root, and some filesystems, ignore the mode bits,
+    /// which would silently stop this from exercising anything — checked from the scan's own
+    /// <see cref="ScanStop"/> rather than assumed, and skipped rather than asserting a false pass.
+    /// </summary>
+    [Fact]
+    public void Walk_AnUnreadableSubdirectory_IsSkippedAndReportedRatherThanTreatedAsEmpty()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            Assert.Skip("Needs POSIX permission bits, which Windows file systems don't have.");
+            return;
+        }
+
+        using var repo = new TempRepo();
+        repo.Write("src/app.cs", "class A;\n");
+        var blocked = Path.Combine(repo.Root, "blocked");
+        Directory.CreateDirectory(blocked);
+        File.WriteAllText(Path.Combine(blocked, "secret.cs"), "class Secret;\n");
+
+        File.SetUnixFileMode(blocked, UnixFileMode.None);
+        try
+        {
+            var scan = RepoScanner.Scan(repo.Root, Settings, new NotACheckout());
+
+            if (scan.Files.Contains("blocked/secret.cs"))
+            {
+                // chmod 000 did not block enumeration — running as root, or a filesystem that
+                // ignores permission bits. Checked this way rather than via scan.Stop, because
+                // scan.Stop is exactly what this test exists to prove: a build with the fix
+                // reverted still excludes the blocked file (the catch's `continue` alone does
+                // that) but would silently pass a guard keyed on Stop.
+                Assert.Skip("chmod 000 did not block enumeration -- running as root, or a filesystem that ignores permission bits.");
+            }
+
+            Assert.Equal(ScanStop.Unreadable, scan.Stop);
+            Assert.True(scan.Truncated);
+            Assert.Contains("src/app.cs", scan.Files);
+            Assert.Equal(1, scan.Skipped[SkipReason.UnreadableDirectory]);
+            Assert.Contains(blocked, scan.Summary(), StringComparison.Ordinal);
+        }
+        finally
+        {
+            File.SetUnixFileMode(blocked, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        }
+    }
 }

@@ -137,6 +137,113 @@ public class CodeIndexerTests
         Assert.Contains(report.Notes, note => note.Contains("partial", StringComparison.Ordinal));
     }
 
+    /// <summary>
+    /// commit E2, layer 1: a moved, unmounted, or deleted checkout falls through to Walk the same
+    /// way a non-git directory does (GitFileLister.List returns null for an absent root), and its
+    /// very first enumeration throws. Before the fix, Walk's catch swallowed that failure and
+    /// reported a Complete scan with zero files — licensing D53's guard to close every fact as
+    /// deleted and stamp the repo freshly scanned. Falsify by reverting the catch's write to
+    /// `stop` in RepoScanner.Walk.
+    /// </summary>
+    [Fact]
+    public void DeletedRoot_AppliesNoDeletions_AndDoesNotStampFullScan()
+    {
+        using var sandbox = new SandboxHome();
+        var repo = CreateFixture(sandbox);
+        using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
+        Index(connection, sandbox, repo, apply: true);
+
+        var identity = CodeIndexer.ResolveIdentity(CodeIndexer.ResolveRoot(repo));
+        RepoEnrollment.Enroll(connection, identity, repo, DateTimeOffset.UtcNow);
+
+        var before = CodeFacts(connection).Count;
+        Assert.True(before > 0, "the fixture has to be indexed for this to prove anything");
+
+        Directory.Delete(repo, recursive: true);
+
+        var report = CodeIndexer.Index(
+            connection,
+            sandbox.Home,
+            ConfigFile.Empty,
+            IndexingSettings.Default,
+            new IndexOptions(repo, Apply: true, Drain: false, Full: true),
+            DateTimeOffset.UtcNow);
+
+        Assert.Equal(0, report.Deleted);
+        Assert.Equal(before, CodeFacts(connection).Count);
+        Assert.Null(RepoEnrollment.Get(connection, identity)!.LastFullScanAt);
+
+        // Layer 2's guard (onDisk empty against prior state) would also produce the assertions
+        // above on its own, since a deleted root scans back with zero files either way — these
+        // pin the note to the Truncated branch specifically, so reverting only the Walk catch
+        // fix (leaving Layer 2 intact) still reddens this test rather than passing on Layer 2's
+        // unrelated coverage of the same outward effect.
+        Assert.Contains(report.Notes, note => note.Contains("partial", StringComparison.Ordinal));
+        Assert.DoesNotContain(report.Notes, note => note.Contains("already indexed", StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// commit E2, layer 2 (§13.5): D53's guard only arms when Truncated is true, but an unmounted
+    /// volume's mountpoint is an existing, empty, cleanly enumerable root — Truncated stays false
+    /// and D53 does nothing. Falsify by removing the `else if` in CodeIndexer.
+    /// </summary>
+    [Fact]
+    public void EmptyScanAgainstPriorState_SkipsDeletions_AndDoesNotStampFullScan()
+    {
+        using var sandbox = new SandboxHome();
+        var repo = CreateFixture(sandbox);
+        using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
+        Index(connection, sandbox, repo, apply: true);
+
+        var identity = CodeIndexer.ResolveIdentity(CodeIndexer.ResolveRoot(repo));
+        RepoEnrollment.Enroll(connection, identity, repo, DateTimeOffset.UtcNow);
+
+        var before = CodeFacts(connection).Count;
+        Assert.True(before > 0, "the fixture has to be indexed for this to prove anything");
+
+        File.Delete(Path.Combine(repo, "Program.cs"));
+        File.Delete(Path.Combine(repo, "README.md"));
+
+        var report = CodeIndexer.Index(
+            connection,
+            sandbox.Home,
+            ConfigFile.Empty,
+            IndexingSettings.Default,
+            new IndexOptions(repo, Apply: true, Drain: false, Full: true),
+            DateTimeOffset.UtcNow);
+
+        Assert.Equal(0, report.Deleted);
+        Assert.Equal(before, CodeFacts(connection).Count);
+        Assert.Contains(report.Notes, note => note.Contains("0 files", StringComparison.Ordinal));
+        Assert.Null(RepoEnrollment.Get(connection, identity)!.LastFullScanAt);
+    }
+
+    /// <summary>
+    /// commit E2, layer 2's negative case: a brand-new repo with nothing indexed yet must not
+    /// warn on its first, entirely ordinary empty scan. Falsify by dropping the `states.Count > 0`
+    /// clause from the guard.
+    /// </summary>
+    [Fact]
+    public void EmptyRoot_WithNothingPreviouslyIndexed_ProducesNoNote()
+    {
+        using var sandbox = new SandboxHome();
+        var repo = Path.Combine(sandbox.Home.Root, "empty-repo");
+        Directory.CreateDirectory(repo);
+        using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
+
+        var report = CodeIndexer.Index(
+            connection,
+            sandbox.Home,
+            ConfigFile.Empty,
+            IndexingSettings.Default,
+            new IndexOptions(repo, Apply: true, Drain: false, Full: true),
+            DateTimeOffset.UtcNow);
+
+        Assert.Equal(0, report.Deleted);
+        Assert.Empty(CodeFacts(connection));
+        Assert.DoesNotContain(report.Notes, note => note.Contains("already indexed", StringComparison.Ordinal));
+    }
+
     [Fact]
     public void RenamedFile_KeepsItsEntityIds_AndFilesTheOldPathAsAnAlias()
     {

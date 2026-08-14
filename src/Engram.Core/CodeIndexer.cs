@@ -142,6 +142,15 @@ public static class CodeIndexer
                 deletions = [];
                 notes.Add($"{scan.Summary()}; skipped deletions, because a partial scan cannot show a file is gone");
             }
+            else if (onDisk.Count == 0 && states.Count > 0)
+            {
+                // A completed scan that found nothing against a repo that was previously indexed is
+                // more likely an unmounted volume or an excluded-everything filter change than a
+                // truly emptied repository — either way, closing every fact at once is the wrong
+                // default, and the scan not having failed means D53's Truncated guard never arms.
+                deletions = [];
+                notes.Add($"scan found 0 files against {states.Count} already indexed; skipped deletions rather than closing every fact in the repo");
+            }
             else
             {
                 deletions = states.Keys.Where(rel => !onDisk.Contains(rel)).ToList();

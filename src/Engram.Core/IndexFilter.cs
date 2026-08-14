@@ -21,6 +21,13 @@ public enum SkipReason
     Unreadable,
 
     /// <summary>
+    /// A directory could not be enumerated — permission denied, or gone between listing and
+    /// entering it. Distinct from <see cref="Unreadable"/>, which is a single file's race; this
+    /// closes off everything beneath the directory at once.
+    /// </summary>
+    UnreadableDirectory,
+
+    /// <summary>
     /// Another repository's tree — an embedded clone, a submodule, a worktree. Indexed as
     /// its own repo with its own identity, never as this one's files.
     /// </summary>

@@ -25,6 +25,7 @@ public enum ScanStop
     Complete,
     TimeBudget,
     FileCeiling,
+    Unreadable,
 }
 
 /// <summary>What a scan is allowed to spend before it gives up and says so.</summary>
@@ -60,7 +61,8 @@ public sealed record RepoScan(
     ScanSource Source,
     IReadOnlyList<string> Files,
     IReadOnlyDictionary<SkipReason, int> Skipped,
-    ScanStop Stop = ScanStop.Complete)
+    ScanStop Stop = ScanStop.Complete,
+    string? UnreadablePath = null)
 {
     public int SkippedTotal => Skipped.Values.Sum();
 
@@ -73,7 +75,9 @@ public sealed record RepoScan(
         var detail = Skipped
             .Where(pair => pair.Value > 0)
             .OrderByDescending(pair => pair.Value)
-            .Select(pair => $"{pair.Value} {pair.Key.ToString().ToLowerInvariant()}");
+            .Select(pair => pair.Key == SkipReason.UnreadableDirectory && UnreadablePath is not null
+                ? $"{pair.Value} unreadable directory ({UnreadablePath})"
+                : $"{pair.Value} {pair.Key.ToString().ToLowerInvariant()}");
 
         var source = Source == ScanSource.Git ? "git" : "directory walk";
         var skipped = string.Join(", ", detail);
@@ -81,6 +85,7 @@ public sealed record RepoScan(
         {
             ScanStop.TimeBudget => ", partial: the walk ran out of time",
             ScanStop.FileCeiling => ", partial: the walk hit its file ceiling",
+            ScanStop.Unreadable => ", partial: the walk could not read a directory",
             _ => string.Empty,
         };
 
@@ -134,7 +139,8 @@ public static class RepoScanner
         var files = new List<string>();
         var skipped = new Dictionary<SkipReason, int>();
         var stop = ScanStop.Complete;
-        var candidates = listed ?? Walk(full, filter, skipped, allowance, clock, out stop);
+        string? unreadablePath = null;
+        var candidates = listed ?? Walk(full, filter, skipped, allowance, clock, out stop, out unreadablePath);
 
         // One clock across both halves, because finding a candidate is the cheaper half.
         // Classifying one reads its head to tell source from binary from generated, and the run
@@ -169,7 +175,7 @@ public static class RepoScanner
 
         files.Sort(StringComparer.Ordinal);
 
-        return new RepoScan(source, files, skipped, stop);
+        return new RepoScan(source, files, skipped, stop, unreadablePath);
     }
 
     /// <summary>
@@ -201,13 +207,15 @@ public static class RepoScanner
         Dictionary<SkipReason, int> skipped,
         ScanBudget budget,
         Stopwatch clock,
-        out ScanStop stop)
+        out ScanStop stop,
+        out string? unreadablePath)
     {
         var found = new List<string>();
         var pending = new Stack<string>();
         var inspected = 0;
 
         stop = ScanStop.Complete;
+        unreadablePath = null;
         pending.Push(root);
 
         while (pending.Count > 0)
@@ -227,6 +235,15 @@ public static class RepoScanner
             }
             catch (Exception e) when (e is IOException or UnauthorizedAccessException)
             {
+                skipped[SkipReason.UnreadableDirectory] =
+                    skipped.GetValueOrDefault(SkipReason.UnreadableDirectory) + 1;
+                unreadablePath ??= directory;
+
+                // Every other stop reason returns out of Walk entirely, so nothing can have set
+                // `stop` before this branch except this same branch on an earlier iteration,
+                // writing the same value.
+                stop = ScanStop.Unreadable;
+
                 continue;
             }
 
