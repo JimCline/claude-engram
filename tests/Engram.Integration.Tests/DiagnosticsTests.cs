@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Net;
 using System.Net.Sockets;
+using Engram.Cli;
 using Engram.Core;
 using Microsoft.Data.Sqlite;
 
@@ -1190,5 +1191,264 @@ public sealed class DiagnosticsTests : IDisposable
 
         Assert.Equal(DiagnosisState.Ok, row.State);
         Assert.DoesNotContain("skipped", row.Detail, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void EnrolledMinutesAgo_NeverScanned_IsOkWithinEnrollmentGrace()
+    {
+        using var sandbox = new SandboxHome();
+        var directory = Path.Combine(sandbox.Home.Root, "project");
+        Directory.CreateDirectory(directory);
+        using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
+
+        var now = DateTimeOffset.UtcNow;
+        var identity = CodeIndexer.ResolveIdentity(directory);
+        RepoEnrollment.Enroll(connection, identity, directory, now - TimeSpan.FromMinutes(5));
+
+        var rows = Diagnostics.CheckEnrolledRepos(sandbox.Home, connection, now, ConfigFile.Empty);
+
+        var row = Assert.Single(rows);
+        Assert.Equal(DiagnosisState.Ok, row.State);
+    }
+
+    [Fact]
+    public void EnrolledHoursAgo_NeverScanned_WarnsPastEnrollmentGrace()
+    {
+        using var sandbox = new SandboxHome();
+        var directory = Path.Combine(sandbox.Home.Root, "project");
+        Directory.CreateDirectory(directory);
+        using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
+
+        var now = DateTimeOffset.UtcNow;
+        var identity = CodeIndexer.ResolveIdentity(directory);
+        RepoEnrollment.Enroll(connection, identity, directory, now - TimeSpan.FromHours(2));
+
+        var rows = Diagnostics.CheckEnrolledRepos(sandbox.Home, connection, now, ConfigFile.Empty);
+
+        var row = Assert.Single(rows);
+        Assert.Equal(DiagnosisState.Warn, row.State);
+        Assert.StartsWith($"{identity} — never scanned (enrolled 2h ago)", row.Detail, StringComparison.Ordinal);
+        Assert.Equal("engram repo index --all --apply", row.Fix);
+    }
+
+    [Fact]
+    public void ScannedRecently_NotYetPastNeglectedAfter_IsOk()
+    {
+        using var sandbox = new SandboxHome();
+        var directory = Path.Combine(sandbox.Home.Root, "project");
+        Directory.CreateDirectory(directory);
+        using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
+
+        var now = DateTimeOffset.UtcNow;
+        var identity = CodeIndexer.ResolveIdentity(directory);
+        RepoEnrollment.Enroll(connection, identity, directory, now - TimeSpan.FromDays(30));
+
+        using (var transaction = connection.BeginTransaction())
+        {
+            RepoEnrollment.StampFullScan(connection, transaction, identity, now - TimeSpan.FromMinutes(90));
+            transaction.Commit();
+        }
+
+        var rows = Diagnostics.CheckEnrolledRepos(sandbox.Home, connection, now, ConfigFile.Empty);
+
+        var row = Assert.Single(rows);
+        Assert.Equal(DiagnosisState.Ok, row.State);
+    }
+
+    [Fact]
+    public void FixCommands_ParseAgainstTheRealArgParser()
+    {
+        using var sandbox = new SandboxHome();
+        var directory = Path.Combine(sandbox.Home.Root, "project");
+        Directory.CreateDirectory(directory);
+        using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
+
+        var now = DateTimeOffset.UtcNow;
+        var identity = CodeIndexer.ResolveIdentity(directory);
+        RepoEnrollment.Enroll(connection, identity, directory, now - TimeSpan.FromHours(2));
+
+        var rows = Diagnostics.CheckEnrolledRepos(sandbox.Home, connection, now, ConfigFile.Empty);
+        var fixes = rows.Select(row => row.Fix).Where(fix => fix is not null).Distinct().ToList();
+
+        Assert.NotEmpty(fixes);
+
+        foreach (var fix in fixes)
+        {
+            var args = fix!.Split(' ');
+            Assert.Equal("engram", args[0]);
+            Assert.Equal("repo", args[1]);
+
+            var stdout = new StringWriter();
+            var stderr = new StringWriter();
+            var exitCode = RepoCommand.Run(sandbox.Home.Root, args[2..], stdout, stderr);
+
+            Assert.NotEqual(2, exitCode);
+        }
+    }
+
+    /// <summary>Doctor's cwd points at a different repo than the neglected one, proving this check
+    /// is store-wide rather than scoped like <see cref="Diagnostics.CheckRepo"/>.</summary>
+    [Fact]
+    public void SuppressedAndNeglectedRepo_WarnsWithSuppressionReason_RegardlessOfCwd()
+    {
+        using var sandbox = new SandboxHome();
+
+        var subject = Path.Combine(sandbox.Home.Root, "subject");
+        Directory.CreateDirectory(subject);
+        File.WriteAllText(Path.Combine(subject, "a.cs"), "class A;\n");
+
+        var other = Path.Combine(sandbox.Home.Root, "other");
+        Directory.CreateDirectory(other);
+
+        var eightDaysAgo = DateTimeOffset.UtcNow - TimeSpan.FromDays(8);
+
+        using (var connection = EngramDatabase.OpenInitialized(sandbox.Home))
+        {
+            var identity = CodeIndexer.ResolveIdentity(subject);
+            RepoEnrollment.Enroll(connection, identity, subject, eightDaysAgo);
+
+            CodeIndexer.Index(
+                connection,
+                sandbox.Home,
+                ConfigFile.Empty,
+                IndexingSettings.Default,
+                new IndexOptions(subject, Apply: true, Drain: false, Full: true),
+                eightDaysAgo);
+
+            File.Delete(Path.Combine(subject, "a.cs"));
+
+            CodeIndexer.Index(
+                connection,
+                sandbox.Home,
+                ConfigFile.Empty,
+                IndexingSettings.Default,
+                new IndexOptions(subject, Apply: true, Drain: false, Full: true),
+                DateTimeOffset.UtcNow);
+        }
+
+        var report = Run(sandbox, repoRoot: other);
+        var rows = report.Checks.Where(check => check.Name == "indexing/enrollment").ToList();
+
+        var row = Assert.Single(rows);
+        Assert.Equal(DiagnosisState.Warn, row.State);
+        Assert.Null(row.Fix);
+        Assert.Contains(
+            "the last full scan found no files against an already-indexed repo, so its deletions were skipped",
+            row.Detail,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void RegisteredButNeverEnrolledRepo_ProducesNoNeglectRow()
+    {
+        using var sandbox = new SandboxHome();
+        var directory = Path.Combine(sandbox.Home.Root, "project");
+        Directory.CreateDirectory(directory);
+        File.WriteAllText(Path.Combine(directory, "a.cs"), "class A;\n");
+        using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
+
+        CodeIndexer.Index(
+            connection,
+            sandbox.Home,
+            ConfigFile.Empty,
+            IndexingSettings.Default,
+            new IndexOptions(directory, Apply: true, Drain: false, Full: true),
+            DateTimeOffset.UtcNow - TimeSpan.FromDays(8));
+
+        var rows = Diagnostics.CheckEnrolledRepos(sandbox.Home, connection, DateTimeOffset.UtcNow, ConfigFile.Empty);
+
+        var row = Assert.Single(rows);
+        Assert.Equal(DiagnosisState.Ok, row.State);
+    }
+
+    /// <summary>The declined case is the one with teeth: <see cref="RepoFreshness.Neglected"/> reads
+    /// every enrollment row regardless of state, so only this check's own filtering keeps a declined
+    /// repo out of the report.</summary>
+    [Fact]
+    public void DeclinedEnrollment_ProducesNoNeglectRowEvenWhenAged()
+    {
+        using var sandbox = new SandboxHome();
+        var directory = Path.Combine(sandbox.Home.Root, "project");
+        Directory.CreateDirectory(directory);
+        using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
+
+        var now = DateTimeOffset.UtcNow;
+        var identity = CodeIndexer.ResolveIdentity(directory);
+        RepoEnrollment.Enroll(connection, identity, directory, now - TimeSpan.FromDays(8));
+
+        using (var command = connection.CreateCommand())
+        {
+            command.CommandText = "UPDATE repo_enrollment SET state = 'declined' WHERE identity = $identity;";
+            command.Parameters.AddWithValue("$identity", identity);
+            command.ExecuteNonQuery();
+        }
+
+        var rows = Diagnostics.CheckEnrolledRepos(sandbox.Home, connection, now, ConfigFile.Empty);
+
+        var row = Assert.Single(rows);
+        Assert.Equal(DiagnosisState.Ok, row.State);
+    }
+
+    [Fact]
+    public void StoreMissingRepoRegistryTable_EnrollmentCheckExplainsWhyItDidNotRun()
+    {
+        using var sandbox = new SandboxHome();
+
+        using (var connection = EngramDatabase.OpenInitialized(sandbox.Home))
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = "DROP TABLE repo_registry;";
+            command.ExecuteNonQuery();
+        }
+
+        using var reopened = EngramDatabase.Open(sandbox.Home);
+        var rows = Diagnostics.CheckEnrolledRepos(sandbox.Home, reopened, DateTimeOffset.UtcNow, ConfigFile.Empty);
+
+        var row = Assert.Single(rows);
+        Assert.Equal(DiagnosisState.Ok, row.State);
+        Assert.Equal("enrollment check not applicable — store predates the repository index", row.Detail);
+        Assert.Null(row.Fix);
+    }
+
+    [Fact]
+    public void StoreMissingRepoEnrollmentTable_ExplainsWhyTheCheckDidNotRun()
+    {
+        using var sandbox = new SandboxHome();
+
+        using (var connection = EngramDatabase.OpenInitialized(sandbox.Home))
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = "DROP TABLE repo_enrollment;";
+            command.ExecuteNonQuery();
+        }
+
+        using var reopened = EngramDatabase.Open(sandbox.Home);
+        var rows = Diagnostics.CheckEnrolledRepos(sandbox.Home, reopened, DateTimeOffset.UtcNow, ConfigFile.Empty);
+
+        var row = Assert.Single(rows);
+        Assert.Equal(DiagnosisState.Ok, row.State);
+        Assert.Equal("enrollment check not applicable — store predates the repository index", row.Detail);
+        Assert.Null(row.Fix);
+    }
+
+    [Fact]
+    public void StoreMissingSuppressionColumn_EnrollmentCheckExplainsWhyItDidNotRun()
+    {
+        using var sandbox = new SandboxHome();
+
+        using (var connection = EngramDatabase.OpenInitialized(sandbox.Home))
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = "ALTER TABLE repo_registry DROP COLUMN last_scan_suppressed_reason;";
+            command.ExecuteNonQuery();
+        }
+
+        using var reopened = EngramDatabase.Open(sandbox.Home);
+        var rows = Diagnostics.CheckEnrolledRepos(sandbox.Home, reopened, DateTimeOffset.UtcNow, ConfigFile.Empty);
+
+        var row = Assert.Single(rows);
+        Assert.Equal(DiagnosisState.Ok, row.State);
+        Assert.Equal("enrollment check not applicable — store predates the repository index", row.Detail);
+        Assert.Null(row.Fix);
     }
 }

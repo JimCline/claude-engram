@@ -130,6 +130,7 @@ public static class Diagnostics
         Try(checks, "code analysis", list => list.Add(CheckRoslyn(environment)));
         Try(checks, "tree-sitter", list => list.Add(CheckTreeSitter(environment, home)));
         Try(checks, "indexing config", list => CheckIndexingConfig(IndexingSettings.Read(config), list));
+        Try(checks, "indexing/enrollment", list => list.AddRange(CheckEnrolledRepos(home, connection, DateTimeOffset.UtcNow, config)));
 
         if (repoRoot is not null)
         {
@@ -966,8 +967,7 @@ public static class Diagnostics
         {
             reader = command.ExecuteReader();
         }
-        catch (SqliteException e) when (e.Message.Contains("no such column", StringComparison.OrdinalIgnoreCase)
-            || e.Message.Contains("no such table", StringComparison.OrdinalIgnoreCase))
+        catch (SqliteException e) when (IsSchemaAbsence(e))
         {
             if (e.Message.Contains("no such table", StringComparison.OrdinalIgnoreCase))
             {
@@ -1075,6 +1075,131 @@ public static class Diagnostics
             DiagnosisState.Ok,
             $"{Plural((int)indexed, "file")} indexed into {repoPath}{age}; {scan.Summary()} on disk");
     }
+
+    /// <summary>
+    /// True for a <see cref="SqliteException"/> that means a table or column this store predates
+    /// is missing, never for any other failure. Shared by <see cref="CheckRepo"/> and
+    /// <see cref="CheckEnrolledRepos"/> so the two checks agree on what "this store is just old"
+    /// looks like (§3.1) — a second, separately worded version of this test is exactly the
+    /// divergence risk a shared predicate exists to remove.
+    /// </summary>
+    private static bool IsSchemaAbsence(SqliteException exception) =>
+        exception.Message.Contains("no such column", StringComparison.OrdinalIgnoreCase)
+        || exception.Message.Contains("no such table", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Warns about every enrolled repo whose checkout has gone quiet, spanning the whole store —
+    /// unlike <see cref="CheckRepo"/>, which only covers the repo doctor happens to be run inside.
+    /// </summary>
+    /// <remarks>
+    /// <para>Reuses <see cref="RepoFreshness.Neglected"/> for the predicate and the row order
+    /// rather than re-deriving either: a second implementation of "which repos are neglected" is
+    /// exactly the kind of duplication that has drifted before.</para>
+    ///
+    /// <para>A suppressed row is still reported — this check spans every enrollment, so silently
+    /// dropping it would hide the one row that explains why an index keeps not advancing — but it
+    /// carries no <c>Fix</c>: the command that would fix it is the one already declining to run
+    /// (§3.2's suppression amendment).</para>
+    ///
+    /// <para>Tolerates the same schema absences <see cref="CheckRepo"/> does — missing
+    /// <c>repo_registry</c>, missing <c>repo_enrollment</c>, or a pre-v8 store with no suppression
+    /// column — through the same <see cref="IsSchemaAbsence"/> predicate, collapsed to one
+    /// explanatory <see cref="DiagnosisState.Ok"/> row rather than <see cref="CheckRepo"/>'s more
+    /// differentiated handling, since none of the three changes what this check can say (§3.1).</para>
+    /// </remarks>
+    internal static IReadOnlyList<Diagnosis> CheckEnrolledRepos(
+        EngramHome home, SqliteConnection? connection, DateTimeOffset now, ConfigFile config)
+    {
+        _ = home;
+
+        if (connection is null)
+        {
+            return [new Diagnosis(
+                "indexing/enrollment", DiagnosisState.Off, "no store to hold enrollments yet", "engram init")];
+        }
+
+        IReadOnlyList<RepoEnrollmentRow> all;
+        IReadOnlyList<FreshnessCandidate> neglected;
+        Dictionary<string, string> suppressed;
+
+        try
+        {
+            all = RepoEnrollment.ListAll(connection);
+            neglected = RepoFreshness.Neglected(connection, now);
+            suppressed = ReadSuppressionReasons(connection);
+        }
+        catch (SqliteException e) when (IsSchemaAbsence(e))
+        {
+            return [new Diagnosis(
+                "indexing/enrollment",
+                DiagnosisState.Ok,
+                "enrollment check not applicable — store predates the repository index")];
+        }
+
+        if (neglected.Count == 0)
+        {
+            var enrolledCount = all.Count(row => row.State == RepoEnrollmentState.Enrolled);
+            return [new Diagnosis(
+                "indexing/enrollment", DiagnosisState.Ok, $"{Plural(enrolledCount, "enrolled repo")}, all scanned within the last 7 days")];
+        }
+
+        var rows = new List<Diagnosis>();
+        foreach (var candidate in neglected)
+        {
+            var identity = candidate.Row.Identity;
+            var detail = candidate.Reason == FreshnessReason.Stale
+                ? $"{identity} — last full scan {Age(now - DateTimeOffset.FromUnixTimeSeconds(candidate.Row.LastFullScanAt!.Value))} ago"
+                : $"{identity} — never scanned (enrolled {Age(now - DateTimeOffset.FromUnixTimeSeconds(candidate.Row.DecidedAt))} ago)";
+
+            rows.Add(suppressed.TryGetValue(identity, out var reason)
+                ? new Diagnosis("indexing/enrollment", DiagnosisState.Warn, $"{detail}; {SuppressionExplanation(reason)}")
+                : new Diagnosis("indexing/enrollment", DiagnosisState.Warn, detail, "engram repo index --all --apply"));
+        }
+
+        // §3.3's mitigation for §9 OQ-2 — a default-off background indexer nobody discovers. The
+        // key is introduced by a later commit, so there is no typed setting to read yet; the raw
+        // presence check is the same one EmbeddingSettings.Ignored uses for a retired key.
+        if (config.Raw("indexing", "auto_index_in_background") is null)
+        {
+            var last = rows[^1];
+            rows[^1] = last with
+            {
+                Detail = last.Detail
+                    + " engram can index enrolled repos in the background automatically — set "
+                    + "auto_index_in_background = true under [indexing] in config.toml.",
+            };
+        }
+
+        return rows;
+    }
+
+    private static Dictionary<string, string> ReadSuppressionReasons(SqliteConnection connection)
+    {
+        var result = new Dictionary<string, string>(StringComparer.Ordinal);
+
+        using var command = connection.CreateCommand();
+        command.CommandText =
+            """
+            SELECT identity, last_scan_suppressed_reason
+            FROM repo_registry
+            WHERE last_scan_suppressed_reason IS NOT NULL;
+            """;
+
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            result[reader.GetString(0)] = reader.GetString(1);
+        }
+
+        return result;
+    }
+
+    private static string SuppressionExplanation(string reason) => reason switch
+    {
+        "truncated" => "the last full scan could not read part of the repo, so its deletions were skipped",
+        "empty-scan" => "the last full scan found no files against an already-indexed repo, so its deletions were skipped",
+        _ => "the last full scan skipped its deletions",
+    };
 
     private static string Age(TimeSpan age)
     {

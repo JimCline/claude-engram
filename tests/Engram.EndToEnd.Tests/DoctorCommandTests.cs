@@ -95,11 +95,40 @@ public class DoctorCommandTests
 
         using var home = new TestHome();
 
+        var repo = Path.Combine(home.Root, "checkout");
+        Directory.CreateDirectory(repo);
+        File.WriteAllText(Path.Combine(repo, "a.cs"), "class A;\n");
+        var hasNeglectedRepo = GitInit(repo);
+        if (hasNeglectedRepo)
+        {
+            EnrollAndWaitForFirstIndex(home.Root, repo);
+
+            // Backdate past NeglectedAfter with no successful scan, so the store this test reads
+            // is exercising Diagnostics.CheckEnrolledRepos's Warn path rather than the Ok path a
+            // repo-less home always takes.
+            var eightDaysAgo = DateTimeOffset.UtcNow.AddDays(-8).ToUnixTimeSeconds();
+            var databasePath = Path.Combine(home.Root, "engram.db");
+            using (var connection = new SqliteConnection($"Data Source={databasePath}"))
+            {
+                connection.Open();
+
+                using var backdate = connection.CreateCommand();
+                backdate.CommandText = "UPDATE repo_enrollment SET decided_at = $stamp, last_full_scan_at = NULL;";
+                backdate.Parameters.AddWithValue("$stamp", eightDaysAgo);
+                backdate.ExecuteNonQuery();
+            }
+        }
+
         var before = Snapshot(home.Root);
-        var (exitCode, _, _) = EngramProcess.Run(home.Root, "doctor", "--offline", "--no-repo");
+        var (exitCode, doctorOut, _) = EngramProcess.Run(home.Root, "doctor", "--offline", "--no-repo");
         var after = Snapshot(home.Root);
 
         Assert.Equal(0, exitCode);
+
+        if (hasNeglectedRepo)
+        {
+            Assert.Contains("never scanned", doctorOut, StringComparison.Ordinal);
+        }
 
         var moved = before.Keys.Union(after.Keys)
             .Where(path => before.GetValueOrDefault(path) != after.GetValueOrDefault(path))
