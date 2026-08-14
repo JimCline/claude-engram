@@ -911,14 +911,44 @@ uncommitted change under test, and a pattern spelling `·` as a bare `.` silentl
 - **Tier 2** (`Engram.Integration.Tests/RepoCommandTests.cs`, extending the existing file):
   - selection: three enrolled repos, stamps NULL / 2 h old / 5 min old → exactly the first two are
     serviced, in that order.
-  - a repo whose `last_root` is deleted from disk → skipped, counted, and the run still exits 0.
+  - a repo whose `last_root` is deleted from disk → the row is never selected:
+    `RepoFreshness.IsSelectable` excludes it before `Due()` returns, so the candidate list comes
+    back without it and the run exits 0 having serviced the rest. Assert *that*, not the
+    `skipped-absent` counter, which this setup cannot reach.
+    **`IndexAll`'s own `Directory.Exists` check is not thereby redundant and must not be removed as
+    dead code.** `Due()` snapshots the candidate list once, and the loop then runs a full scan per
+    repo — so for the Kth candidate the gap between being judged selectable and having its root
+    used is the sum of the scan times of every candidate ahead of it, bounded only by how long
+    those take (§10, NE-3). `IsSelectable` guards selection; `Directory.Exists` guards use; a batch
+    loop is precisely the shape that pulls the two apart. `skipped-absent` (§4.3 step 6) therefore
+    reads zero on every ordinary run without being dead — it counts the repos that vanish *during*
+    one.
+    Once commit E2 (§13) lands, this same vanish-during-run window produces a **truncated scan** rather
+    than a wholesale deletion, so the two guards are layered rather than alternative: `Directory.Exists`
+    keeps the repo out of the loop when it can, and a truthful `Truncated` makes the outcome harmless
+    when it cannot. Neither makes the other removable.
   - one repo throwing → `failed` telemetry for it, the others still serviced, exit 1.
+    **Ships uncovered, deliberately.** `RepoIndexRun.Freshen` cannot be made to throw from outside:
+    every filesystem boundary beneath it degrades rather than raising — `GitFileLister.List`
+    returns `null` for a directory that is not a checkout or has vanished, `RepoScanner.Walk`
+    catches `IOException`/`UnauthorizedAccessException` per directory and continues, and
+    `PathCanonicalizer.Canonical` returns rather than throwing at its depth bound. A corrupted
+    `.git`, a `chmod 000` subtree and a NUL byte in a path were each tried, and each degraded well
+    before reaching the call. This is not a testability problem to engineer around: the `catch` in
+    `RepoCommand.IndexAll` is a backstop for *unanticipated* failures, and a backstop for the
+    unanticipated cannot be exercised by anything anticipated.
+    **Do not open a production seam to reach it.** An injection point existing only so five lines
+    of control flow can be asserted buys a property that is already fully visible on inspection,
+    and pays permanent indirection on the batch path for it.
   - **truncated scan**: with a `ScanBudget` forced tiny, assert `last_full_scan_at` is **still NULL**
     afterwards and no deletions were applied. *This is the D53 guard and it is the most important
     test in the commit.* Falsify by removing the `if (scan.Truncated)` branch in `CodeIndexer`.
-  - **exit codes, both arms**: a missing `--all` exits **2**, an indexing failure exits **1**. The
-    file's existing split between the two (`:23`, `:44`, `:226`, `:317`) is easy to break by
-    accident, and a test that asserts only "non-zero" cannot catch it.
+  - **exit codes**: a missing `--all` exits **2**. **The exit-1 arm has no reachable trigger at
+    this commit** — the throw is unreachable (above) and lock skips do not exist until commit E,
+    which is where it should be asserted, on a skip that can actually be provoked. Do not
+    manufacture the 1 here: a test that reaches it by stubbing the only thing that produces it is
+    asserting the stub. The file's existing split between the two (`:23`, `:44`, `:226`, `:317`)
+    is easy to break by accident, and a test that asserts only "non-zero" cannot catch it.
 - **Tier 3** (`Engram.EndToEnd.Tests`): `engram repo index --all` with **no** `--apply` writes
   nothing — snapshot every file in the home by size and mtime around the run. Per D49 this is the
   load-bearing half. Also: bare `engram repo index` exits **2** with a usage line that lists `index`
@@ -999,6 +1029,32 @@ uncommitted change under test, and a pattern spelling `·` as a bare `.` silentl
 - **Regression sweep**: every existing index test must pass unmodified. NE-6 asks whether any of them
   index one repo concurrently.
 
+### Commit E2 — RepoScanner truncation on an unreadable directory
+
+- **Tier 2** (`Engram.Integration.Tests`, beside the existing scanner tests):
+  - **deleted root, git path**: an enrolled repo whose root is removed → `GitFileLister.List` returns
+    null, `Walk` runs, the scan comes back `Truncated`, **no deletions are applied**, and
+    `last_full_scan_at` is still NULL. This is the case that set the commit's priority and it needs no
+    permissions to stage. Falsify by reverting the catch's write to `stop`.
+  - **summary text, not just the flag**: assert the rendered summary **names** the unreadable
+    directory and its count. Falsify by deleting the new arm from `Summary()`'s stop switch — if that
+    switch has a `_` default, this is the only assertion in the commit that reddens (§13.3).
+  - **stop precedence**: a walk that skips an unreadable directory *and then* exhausts the time budget
+    reports the time budget as its stop while still naming the skipped directory in the summary
+    (ruling C). Falsify by making the new branch's assignment unconditional.
+  - **layer 2**: an existing, empty, readable root with facts already indexed → deletions skipped, the
+    note names the condition, and `last_full_scan_at` is **not** stamped (ruling D). Fully portable —
+    no permissions needed, which is the point of staging the mountpoint case this way. Falsify by
+    removing the `else if`.
+  - **layer 2 negative**: empty root, nothing previously indexed → no note, ordinary empty result. This
+    is the `states is non-empty` clause and it is the half that stops the guard firing on every new repo.
+  - **mid-walk unreadable subdirectory** (`chmod 000`): the only test here needing permissions. **Skip
+    explicitly on Windows and when running as root** — root ignores permission bits, so the test does
+    not fail, it silently stops exercising anything, which is the tier-3 skip trap in a different
+    costume. Assert inside the test that the enumeration actually failed, or skip.
+- **Tier 3**: none required. Every behaviour here is reachable at tier 2 and the published-binary
+  surface is unchanged.
+
 ### Commit F — `IndexFreshnessService`
 
 - **Tier 2**: the loop's selection and its one-repo-per-tick bound, with ≥2 due repos (same sizing
@@ -1024,7 +1080,7 @@ published binary while the summary still reads `Passed!`.
 > run and the ruling (§11) leaves `IndexLock` at E, so the order below is final and the conditional is
 > removed.
 
-Six commits. The order is chosen so that (a) no commit names a command that does not yet exist,
+Seven commits. The order is chosen so that (a) no commit names a command that does not yet exist,
 (b) the two commits touching already-shipped hot paths land alone and are bisectable, and (c) the
 riskiest change is not entangled with the newest feature.
 
@@ -1035,6 +1091,7 @@ riskiest change is not entangled with the newest feature.
 | **C** | `doctor` warns | **After B**, so the `Fix` string names a command that exists. Read-only, zero behaviour change. |
 | **D** | `index --freshen` + `--skip` + launcher job | Touches the session-start path. Lands **alone** so a bisect on a hook-latency regression finds it unambiguously — this repo's history says that class of regression is only visible at tier 3. |
 | **E** | `IndexLock` | Touches the hot path of *everything already shipped*. Lands alone, and **before** F, so if it breaks something the bisect is not confused by a new background service. Its own tier-3 assertion extends A's guard. |
+| **E2** | RepoScanner truncation on an unreadable directory (§13) | Must precede F: F is what runs `--all` unattended on a timer, which is what turns this from a hazard needing a coincidence into one sampled continuously. It does **not** need to block commit B — B only widens a window that already exists — though landing it first is cheap if B has not merged. |
 | **F** | `IndexFreshnessService` + `auto_index_in_background` + `indexing.json` | Purely additive behind a default-off flag. Last, because it is the only item that can be shipped disabled and enabled later. |
 
 B and C could be one commit; keeping them apart means a `doctor` regression is never bisected into an
@@ -1256,6 +1313,35 @@ gets. Measure a real multi-repo `--all --apply` and report how many repos trunca
 
 Grep the suites; if ambiguous, run the full suite with `IndexLock` in place and report failures.
 *Decides:* the blast radius of commit E.
+
+### NE-7 — Has the scanner deletion hazard already fired? — ANSWERED for the transient case
+
+**Result**: no evidence of it. On the real instance, 121 of 9,676 code-fact threads exceed version
+count 2 (max 13), and **all are markdown or JSON documents with no source file above 2**.
+
+**What settles it**: the defect is *directory-scoped* — an unreadable or vanished directory takes
+down every indexed file beneath it — so it cannot selectively churn documentation while leaving
+source files under the same tree untouched. The high-count threads (`STATUS.md`,
+`engram-progress.md`, spec variants, `plugin.json`) are living documents revised over hours and days.
+
+**A discriminator that was proposed and must not be reused as stated.** Inter-revision gap was
+checked against *zero*, on the reasoning that a scanner double-firing would produce near-zero-second
+gaps. It would not. `ProcessDeletion` closes in one scan and `ProcessFile` rewrites only on a later
+one, so churned threads show revisions separated by roughly `FullScanIntervalMinutes`. The gap test
+is sound but the comparison is against that interval, not against zero — and the observed 15–60
+minute increments are ambiguous rather than exculpatory unless the configured interval is known to
+sit well outside that band. Argument 1 above is what carries the conclusion; this paragraph exists so
+the inverted version is not rediscovered.
+
+**Not established: the persistent case.** A version-count query can only see a thread that was closed
+*and then rewritten*. Persistent unreadability leaves facts closed and never rewritten — an absence,
+which this query is structurally unable to detect.
+
+### NE-8 — Open, and not a gate on E2
+
+Whether any facts were closed and never rewritten: indexed paths in the store that no longer resolve
+on disk, which a dry-run index already computes. Decides only whether E2 carries a repair question
+alongside prevention. Both layers are preventive regardless, so this does not block the commit.
 
 ---
 
@@ -1488,3 +1574,135 @@ there because a compile dependency would have failed the build and no commit-A t
 `repo index --all`. It stops being adequate once commits acquire behavioural coupling to earlier ones,
 which is the whole reason this is written down rather than re-decided per commit: *builds in isolation,
 tested in aggregate* is what lets a commit go out green and bisect red later.
+
+---
+
+## 13. Item 5 — RepoScanner reports a scan complete that it could not perform (commit E2)
+
+### 13.1 The defect
+
+`RepoScanner.Walk` sets `stop = ScanStop.Complete` before its loop (`:210`) and revises it only in the
+time and ceiling branches. Its `catch (Exception e) when (e is IOException or
+UnauthorizedAccessException) { continue; }` (`:224-231`) writes to neither `skipped` nor `stop`. A
+directory that fails to enumerate is therefore treated as containing nothing while the scan still
+reports `Truncated == false`, which licenses `CodeIndexer` (`:140-151`) to compute
+`deletions = states.Keys.Where(rel => !onDisk.Contains(rel))` and to stamp `last_full_scan_at`.
+
+Every code fact beneath an unreadable directory is closed because the scanner could not see it. This
+is precisely the outcome D53's guard exists to prevent. The guard is correct and correctly placed; it
+is simply never armed, because the only thing that arms it is a truthful `Truncated`.
+
+### 13.2 Exposure
+
+Not confined to the non-git path. `GitFileLister.List` returns **null**, not an exception, when the
+root is absent (`:295-298`), and `RepoScanner.Scan` is `candidates = listed ?? Walk(...)` (`:131-137`).
+A git repo whose root has been deleted, moved, or unmounted therefore falls *through* to `Walk`;
+`Walk` pushes `root` onto `pending` before the loop and the first iteration enumerates it inside the
+same try/catch as every other directory, so `DirectoryNotFoundException` — an `IOException` — is
+caught rather than thrown. The scan returns an empty candidate set marked `Complete` and the repo's
+entire fact set is closed. A moved checkout and an unmounted volume both land here.
+
+Severity is a function of how long the condition lasts, not a constant. Transient unreadability
+self-heals on the next full scan: `ProcessDeletion` drops the `file_state` rows as well as closing
+the facts, so the files read as new and `ProcessFile` writes fresh ones. Persistent unreadability
+never heals through ordinary operation. Everything closed is D8-regenerable, so this is silent
+wrongful closure and history pollution rather than unrecoverable loss — but the transient case is not
+free either: each cycle closes a whole generation of facts and writes another, against `fact`,
+`fact_fts` and `fact_token`, for no semantic change.
+
+**Why this blocks commit F specifically.** Today the defect needs someone to run an index while
+something is unreadable. Commit F runs `--all` unattended on a timer across every enrolled repo,
+which converts a hazard requiring a coincidence into one that is sampled continuously.
+
+No evidence this has fired on the real instance (§10, NE-7), though only the transient case has been
+checked. Both layers are preventive either way.
+
+### 13.3 Layer 1 — `Walk` records what it could not read
+
+This is a bug fix against an existing decision, not a new design: D53 already rules what a partial
+scan may do, and that ruling is already implemented one layer up in `CodeIndexer`.
+
+- The catch records the failure into `skipped` under a new `SkipReason` — a count plus the first
+  failing path. `ScanResult.Summary()` already renders the `skipped` dictionary, so the count reaches
+  every existing caller with no change at those call sites.
+- The catch sets `stop` to a new `ScanStop` value **only if `stop` is currently `Complete`** (ruling C).
+- `Summary()`'s stop switch gains an arm for the new value.
+- `Truncated` (`:59-68`) is `Stop != ScanStop.Complete` and needs no change; D53's guard in
+  `CodeIndexer` then does the rest with no edit.
+- `doctor` already branches on `Truncated` (`Diagnostics.cs:965`), so the warning surface exists.
+  `Warn`, never `Broken` — an unreadable directory is a state, not corruption, and D37's exit code
+  must stay intact.
+
+**The trap, and it is silent.** If `Summary()`'s stop switch carries a `_` default, a new enum value
+renders as *nothing* and the fix ships with its only observable missing. The test must therefore
+assert the summary **text** names the unreadable directory, not merely that `Truncated == true`, and
+must be proven to fail with the new arm removed.
+
+### 13.4 Layer 1's accepted cost, and the alternative rejected
+
+A repo containing one permanently unreadable directory will never again stamp `last_full_scan_at` and
+will never again apply deletions. That is correct under D53 **once it is observable**, and silent it
+would trade a data-loss bug for a deletions-quietly-stopped-forever bug, which is harder to find and
+stays wrong longer. The observability in §13.3 is not decoration; it is the condition on which this
+cost is acceptable.
+
+**Prefix-scoped suppression — suppressing deletions only beneath the unreadable subtree and applying
+them elsewhere — is rejected for now.** It is more code on the destructive path, defending a state
+nobody has yet observed. Reassess only if the doctor warning is seen firing persistently in practice.
+
+**A narrower fix is also rejected: returning a failed scan from `Scan` when `listed is null` and the
+root is absent.** It covers only the deleted-root case and not the ordinary mid-walk one, and it would
+be the fourth pre-check of the same shape — `RepoFreshness.IsSelectable` and `RepoCommand.IndexAll:308`
+already check root existence and both are TOCTOU. The scan's own report is the thing that lies; the fix
+belongs there.
+
+### 13.5 Layer 2 — a zero-judgment guard on wholesale deletion
+
+In `CodeIndexer`, as a new arm on the existing branch:
+
+    stop == ScanStop.Complete && onDisk is empty && states is non-empty
+      -> skip deletions, add a note naming the condition, do not stamp last_full_scan_at
+
+**No threshold, and that is the whole point** — a threshold is the judgment cost and nothing derives
+one. Warn and skip; never a silent clamp.
+
+**Why this is not redundant with layer 1.** It names a case layer 1 structurally cannot catch: an
+unmounted volume whose mountpoint directory *remains* is an existing, empty, cleanly enumerable root.
+`GitFileLister` declines, `Walk` completes raising nothing, `Truncated` stays false. Under commit F's
+timer each mount flap becomes close-everything-then-rewrite-everything. The asymmetry decides it — the
+misfire cost is a legitimately emptied repo keeping stale facts plus a visible warning, which is small
+and self-explaining; the miss cost is total silent closure per flap.
+
+**Two shapes that will trip this deliberately, and are not bugs.** A repo whose files were genuinely
+all removed, and a repo where a filter or ignore-glob change now excludes everything it previously
+indexed. Both warn and skip. That is the accepted misfire; do not "fix" a test that exhibits it.
+
+The `states is non-empty` clause is what keeps a brand-new repo with nothing indexed yet from warning.
+
+### 13.6 What must not change
+
+- D53's guard in `CodeIndexer` (`:140-151`) is correct. Do not rewrite it; layer 1 exists to arm it.
+- `Truncated`'s definition (`RepoScanner.cs:59-68`).
+- The time and ceiling branches' existing unconditional assignment to `stop`. They `break`; only the
+  new branch is conditional (ruling C).
+- `doctor` stays `Warn` for every state introduced here. Nothing here may set exit 1.
+- `RepoCommand.IndexAll:308`'s existence check stays — see the note at §7's commit B block. It guards
+  *use* where `IsSelectable` guards *selection*, and this commit does not close that window.
+
+### 13.7 Assumptions the Architect could not verify
+
+Stated so the Implementor checks rather than trusts. None of the following was read by me directly;
+all reached this spec through a source-verified review relayed second-hand, and any of them may be
+named differently in the tree:
+
+- That `ScanResult.Summary()` renders the `skipped` dictionary, and the exact form of that rendering.
+- That `Summary()`'s stop handling is a switch, and whether it carries a `_` default (§13.3's trap
+  turns on this).
+- The existing member names of `ScanStop` and `SkipReason`. **Match the existing convention rather
+  than any name suggested here.**
+- That `Diagnostics.cs:965` is the `Truncated` branch.
+- That `ProcessDeletion` drops `file_state` rows as well as closing facts (§13.2's transient-recovery
+  claim rests on this).
+
+If any is wrong, the design in §13.3 and §13.5 still holds — only the implementation shape moves.
+Report the gap rather than adapting the design.
