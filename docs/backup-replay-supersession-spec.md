@@ -119,14 +119,40 @@ predicate and pass under provenance.
 
 ### 3.3 What happens on a decline
 
-Do **not** add a counter. Re-read the row's current `superseded_by` and classify into the two buckets that
-already exist:
+Do **not** add a counter, and do **not** count an idempotent link at all. Re-read the row's current
+`superseded_by`:
 
-- already equals the resolved `newTarget` → **`present`** (`AlreadyPresent`). An idempotent no-op; the target
-  already records exactly what the journal claims.
-- anything else — still live, NULL, or pointing elsewhere → **`conflicted`**.
+- anything other than the resolved `newTarget` — still live, NULL, or pointing elsewhere → **`conflicted`**.
+- already equal to `newTarget` → **count nothing**.
 
-The documented meaning of that split is *"already there"* versus *"not recovered"*, and a declined link is
+*(Amended after implementation. This section first ruled the idempotent case `present`, which double-counts:
+the pre-existing `FactJournalTests.Replay_Twice_WritesNothingTheSecondTime` went 2 → 3 on a 2-fact journal.
+The reasoning below replaces it, and §5.3's code changed with it.)*
+
+The two cases are not symmetric, and counting them alike is what makes the number unreadable. **Every fact
+that reaches this branch was already counted `present` in pass 1** — by construction, since the only `idMap`
+entries pass 2 can resolve come from an `Existing()` match (`present++`) or from `Insert` (`inserted`, which
+takes the `Link` branch instead). The idempotent increment therefore never occurs on its own; it is one
+journal record counted twice in every reachable case, and a counter whose increment cannot occur
+independently of another is not measuring a distinct thing. Nothing needs tracking to suppress it — the
+increment is unconditionally redundant, so it is deleted rather than guarded.
+
+The conflict increment is the opposite: it is the only place its information exists, because pass 1 saw a
+body that was present and could not see that the target disagrees about the edge. So a record counted
+`present` in pass 1 and `conflicted` in pass 2 is intended, and it is the honest report — the body was
+already there, the edge was not recovered. That shape is not new either: `unresolved` has always been a
+per-edge count riding beside a per-fact one, and nothing decrements. **Do not "fix" the asymmetry by
+decrementing `present`** — pass 1's `present` is a true statement about the body, and a report that withdraws
+it sends someone to restore a snapshot they do not need.
+
+The rule the counters obey, stated once so it is not rediscovered:
+
+> **No increment may restate what another increment for the same record already said.** Pass 1's `present`
+> says the target had this record; an idempotent edge says the same thing again and is silent. A refused edge
+> says part of the record was not recovered, which nothing else says. `unresolved` says an edge could not be
+> aimed anywhere, which nothing else says.
+
+The documented meaning of the split is *"already there"* versus *"not recovered"*, and a declined link is
 precisely **the journal held an edge, the target disagreed, and it was not recovered**. The meanings coincide,
 so this is not a second meaning riding an existing field. `ReplayResult` keeps its shape and no caller changes.
 
@@ -262,11 +288,7 @@ if (inserted.Contains(fact.Id))
 {
     Link(connection, transaction, newId, newTarget, fact);
 }
-else if (CurrentSupersededBy(connection, transaction, newId) == newTarget)
-{
-    present++;
-}
-else
+else if (CurrentSupersededBy(connection, transaction, newId) != newTarget)
 {
     conflicted++;
 }
@@ -289,6 +311,10 @@ private static long? CurrentSupersededBy(
 ```
 
 One scalar read per declined link, on a recovery path that is not latency-bound. Do not batch it.
+
+`CurrentSupersededBy` returns `long?` and `newTarget` is `long`, so the comparison lifts and a NULL
+`superseded_by` falls into `conflicted` — which is correct, and is the same classification §3.3's list gives
+it. Do not "tidy" it into `!CurrentSupersededBy(...).Equals(newTarget)`, which dereferences the null.
 
 ### 5.4 `Link` — add the assertion predicate
 
@@ -321,12 +347,15 @@ acceptable and deliberate, because a decline writes nothing and so cannot change
 - **`WouldDisplaceALiveBelief`** and the `claimed` set. Untouched. `claimed` remains dry-run-only.
 - **Replay stays additive.** No `valid_to` is written by this change, no fact body is altered, no row is deleted.
   D8 is not approached.
+- **`FactJournalTests.Replay_Twice_WritesNothingTheSecondTime`'s expectation.** It asserts a 2-fact journal
+  replayed twice reports `AlreadyPresent` 2. It predates this change and independently encodes the per-record
+  rule, so it is evidence about the invariant rather than a baseline to update. It must pass unmodified.
 
 ---
 
 ## 7. Tests
 
-Tier 2 (integration, real SQLite file) unless stated. All four are required; 3 and 4 are the ones that
+Tier 2 (integration, real SQLite file) unless stated. All five are required; 3 and 4 are the ones that
 discriminate between this design and the rejected ones, so neither may be dropped as redundant.
 
 **1 — planted duplicate pair, chain unchanged.** Seed a store with two rows sharing
@@ -355,7 +384,14 @@ member. Journal carries a supersession aimed at that belief. Assert: `unresolved
 gained a `superseded_by`, and no third copy of the fact was inserted. The last clause is the §4.1 half — run the
 replay twice and assert the fact's row count is unchanged both times.
 
-**Falsification discipline for all four**: falsify against a committed tree and run `git diff --quiet` to confirm
+**5 — the counts, both halves.** Two assertions the four above leave free, both cheap and both silent if they
+rot. (i) In test 3's scenario — the target holds the body and refuses the edge — assert `AlreadyPresent` is 1
+*as well as* `Conflicted` being 1. That pins §3.3's "do not decrement": without it, a later change could
+report the body as absent with every other assertion still green. (ii) The idempotent case is already
+covered — `FactJournalTests.Replay_Twice_WritesNothingTheSecondTime` replays a 2-record journal carrying a
+supersession twice and asserts `AlreadyPresent` 2. It must pass unmodified; do not re-baseline it.
+
+**Falsification discipline for all five**: falsify against a committed tree and run `git diff --quiet` to confirm
 the break actually landed before trusting a red arm. A harness that restores with `git checkout --` reverts an
 uncommitted change under test, and a no-op patch reports green while proving nothing.
 
@@ -436,10 +472,20 @@ theirs to assign; the text assumes D68.
 > because it reads as a decision. All-closed ambiguity withholds the `idMap` entry and comes out `unresolved`,
 > which already means the pointer was lost.
 >
-> A declined link is classified into the buckets that exist rather than a new counter: equal to the intended
-> target is `AlreadyPresent`, anything else is `Conflicted`. The documented split is "already there" versus
-> "not recovered", and a declined link is exactly not-recovered, so the meanings coincide rather than collide —
-> this is not a second meaning riding an existing field, and `ReplayResult` keeps its shape.
+> A declined link is classified into the buckets that exist rather than a new counter — anything other than
+> the intended target is `Conflicted` — and an idempotent one is **not counted at all**. Every fact reaching
+> that branch was already counted `AlreadyPresent` in pass 1, by construction, since pass 2's only resolvable
+> `idMap` entries come from an `Existing()` match or from `Insert`; so the increment could never occur on its
+> own, and a counter whose increment cannot occur independently of another is not measuring a distinct thing.
+> The conflict increment is kept precisely because it is not redundant: pass 1 saw a body that was present and
+> could not see that the target disagrees about the edge. A record counted `AlreadyPresent` and `Conflicted`
+> is therefore intended and honest — the body was already there, the edge was not recovered — and it is the
+> established shape, since `Unresolved` has always been a per-edge count riding beside a per-fact one. Pass
+> 1's `AlreadyPresent` is not decremented to compensate: it is a true statement about the body, and a report
+> that withdraws it sends someone to restore a snapshot they do not need. The rule is that **no increment may
+> restate what another increment for the same record already said**. The first version of this ruling counted
+> the idempotent link `AlreadyPresent`, and a pre-existing test caught it: a 2-record journal replayed twice
+> reported 3 already present, which the CLI prints as "leaving 3 already in the store".
 >
 > Duplicate tuples are `fact` rows, so by D8 `repair` may never delete one: the duplicates are permanent, and
 > this change makes replay survive them rather than removing them.

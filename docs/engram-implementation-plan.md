@@ -5047,10 +5047,20 @@ arbitrary-but-deterministic, which is still arbitrary, and a deterministic wrong
 because it reads as a decision. All-closed ambiguity withholds the `idMap` entry and comes out `unresolved`,
 which already means the pointer was lost.
 
-A declined link is classified into the buckets that exist rather than a new counter: equal to the intended
-target is `AlreadyPresent`, anything else is `Conflicted`. The documented split is "already there" versus
-"not recovered", and a declined link is exactly not-recovered, so the meanings coincide rather than collide —
-this is not a second meaning riding an existing field, and `ReplayResult` keeps its shape.
+A declined link is classified into the buckets that exist rather than a new counter — anything other than
+the intended target is `Conflicted` — and an idempotent one is **not counted at all**. Every fact reaching
+that branch was already counted `AlreadyPresent` in pass 1, by construction, since pass 2's only resolvable
+`idMap` entries come from an `Existing()` match or from `Insert`; so the increment could never occur on its
+own, and a counter whose increment cannot occur independently of another is not measuring a distinct thing.
+The conflict increment is kept precisely because it is not redundant: pass 1 saw a body that was present and
+could not see that the target disagrees about the edge. A record counted `AlreadyPresent` and `Conflicted`
+is therefore intended and honest — the body was already there, the edge was not recovered — and it is the
+established shape, since `Unresolved` has always been a per-edge count riding beside a per-fact one. Pass
+1's `AlreadyPresent` is not decremented to compensate: it is a true statement about the body, and a report
+that withdraws it sends someone to restore a snapshot they do not need. The rule is that **no increment may
+restate what another increment for the same record already said**. The first version of this ruling counted
+the idempotent link `AlreadyPresent`, and a pre-existing test caught it: a 2-record journal replayed twice
+reported 3 already present, which the CLI prints as "leaving 3 already in the store".
 
 Duplicate tuples are `fact` rows, so by D8 `repair` may never delete one: the duplicates are permanent, and
 this change makes replay survive them rather than removing them.

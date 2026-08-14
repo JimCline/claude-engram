@@ -609,4 +609,295 @@ public sealed class FactJournalTests
         Assert.Equal(1, applied.Conflicted);
         Assert.Equal(["the one that arrived first"], Bodies(rebuilt));
     }
+
+    // ---- D68: a supersession may only be written into a row this replay inserted ----
+
+    private static long SeedRawFact(
+        SqliteConnection connection,
+        string path,
+        string predicate,
+        string body,
+        DateTimeOffset validFrom,
+        DateTimeOffset? validTo = null,
+        long? supersededBy = null)
+    {
+        using var entity = connection.CreateCommand();
+        entity.CommandText =
+            """
+            INSERT INTO entity (path, kind, name, created_at) VALUES ($path, 'note', $name, $createdAt)
+            ON CONFLICT(path) DO UPDATE SET path = excluded.path
+            RETURNING id;
+            """;
+        entity.Parameters.AddWithValue("$path", path);
+        entity.Parameters.AddWithValue("$name", path);
+        entity.Parameters.AddWithValue("$createdAt", validFrom.ToUnixTimeSeconds());
+        var subjectId = (long)entity.ExecuteScalar()!;
+
+        using var fact = connection.CreateCommand();
+        fact.CommandText =
+            """
+            INSERT INTO fact (subject_id, predicate, body, path, scope, learned_via, regenerable,
+                              valid_from, valid_to, superseded_by, created_at)
+            VALUES ($subject, $predicate, $body, $path, 'project', 'stated', 0,
+                    $validFrom, $validTo, $supersededBy, $createdAt)
+            RETURNING id;
+            """;
+        fact.Parameters.AddWithValue("$subject", subjectId);
+        fact.Parameters.AddWithValue("$predicate", predicate);
+        fact.Parameters.AddWithValue("$body", body);
+        fact.Parameters.AddWithValue("$path", path);
+        fact.Parameters.AddWithValue("$validFrom", validFrom.ToUnixTimeSeconds());
+        fact.Parameters.AddWithValue("$validTo", (object?)validTo?.ToUnixTimeSeconds() ?? DBNull.Value);
+        fact.Parameters.AddWithValue("$supersededBy", (object?)supersededBy ?? DBNull.Value);
+        fact.Parameters.AddWithValue("$createdAt", validFrom.ToUnixTimeSeconds());
+        var factId = (long)fact.ExecuteScalar()!;
+
+        if (validTo is null)
+        {
+            FactTokenIndex.Add(connection, null!, factId);
+        }
+
+        return factId;
+    }
+
+    private static void SeedSupersession(
+        SqliteConnection connection, long oldFactId, long newFactId, DateTimeOffset at, string reason = "test fixture")
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText =
+            """
+            INSERT INTO supersession (old_fact_id, new_fact_id, reason, created_at)
+            VALUES ($old, $new, $reason, $createdAt);
+            """;
+        command.Parameters.AddWithValue("$old", oldFactId);
+        command.Parameters.AddWithValue("$new", newFactId);
+        command.Parameters.AddWithValue("$reason", reason);
+        command.Parameters.AddWithValue("$createdAt", at.ToUnixTimeSeconds());
+        command.ExecuteNonQuery();
+    }
+
+    private static long? SupersededByOf(SqliteConnection connection, long factId)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT superseded_by FROM fact WHERE id = $id;";
+        command.Parameters.AddWithValue("$id", factId);
+        return command.ExecuteScalar() as long?;
+    }
+
+    private static long? ValidToOf(SqliteConnection connection, long factId)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT valid_to FROM fact WHERE id = $id;";
+        command.Parameters.AddWithValue("$id", factId);
+        return command.ExecuteScalar() as long?;
+    }
+
+    private static int SupersessionRowCount(SqliteConnection connection)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT COUNT(*) FROM supersession;";
+        return (int)(long)command.ExecuteScalar()!;
+    }
+
+    private static int FactRowCount(SqliteConnection connection)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT COUNT(*) FROM fact;";
+        return (int)(long)command.ExecuteScalar()!;
+    }
+
+    private static int FactRowCountFor(SqliteConnection connection, string path, string body)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText =
+            """
+            SELECT COUNT(*) FROM fact f JOIN entity e ON e.id = f.subject_id
+            WHERE e.path = $path AND f.body = $body;
+            """;
+        command.Parameters.AddWithValue("$path", path);
+        command.Parameters.AddWithValue("$body", body);
+        return (int)(long)command.ExecuteScalar()!;
+    }
+
+    private static bool HasTokenRow(SqliteConnection connection, long factId)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT 1 FROM fact_token WHERE fact_id = $id LIMIT 1;";
+        command.Parameters.AddWithValue("$id", factId);
+        return command.ExecuteScalar() is not null;
+    }
+
+    /// <summary>
+    /// Test 1 of D68 §7: a planted duplicate pair, one closed-and-superseded, one live, sharing
+    /// (subject, predicate, body, valid_from). The address resolves to the live row (the only
+    /// basis D68 §4.2 permits), and the target already disagrees with what the journal claims
+    /// about it, so the outcome is a decline — nothing about either row's chain moves.
+    /// </summary>
+    [Fact]
+    public void Replay_ADuplicatePairWithOneLiveOneClosed_LeavesTheChainAndTheLiveRowUnchanged()
+    {
+        using var target = new SandboxHome(initialize: false);
+        using var rebuilt = EngramDatabase.OpenInitialized(target.Home);
+
+        var supersederId = SeedRawFact(rebuilt, "/project/other", "states", "the original superseder", T0);
+        var closedId = SeedRawFact(
+            rebuilt, "/project/dup", "states", "a duplicated belief", T0,
+            validTo: T0.AddHours(1), supersededBy: supersederId);
+        SeedSupersession(rebuilt, closedId, supersederId, T0.AddHours(1));
+        var liveId = SeedRawFact(rebuilt, "/project/dup", "states", "a duplicated belief", T0);
+
+        var factRowsBefore = FactRowCount(rebuilt);
+        var supersessionRowsBefore = SupersessionRowCount(rebuilt);
+
+        var facts = new List<JournalFact>
+        {
+            new(1, "/project/dup", "note", "states", "a duplicated belief", null, null, "project", "stated",
+                false, null, T0.ToUnixTimeSeconds(), T0.AddHours(1).ToUnixTimeSeconds(), 2, "revised",
+                T0.ToUnixTimeSeconds()),
+            new(2, "/project/fresh", "note", "states", "a fact only the journal has", null, null, "project",
+                "stated", false, null, T0.AddMinutes(5).ToUnixTimeSeconds(), null, null, null,
+                T0.AddMinutes(5).ToUnixTimeSeconds()),
+        };
+
+        var result = FactJournal.Replay(rebuilt, facts, apply: true);
+
+        Assert.Equal(1, result.Conflicted);
+        Assert.Equal(supersederId, SupersededByOf(rebuilt, closedId));
+        Assert.Null(SupersededByOf(rebuilt, liveId));
+        Assert.Null(ValidToOf(rebuilt, liveId));
+        Assert.Equal(supersessionRowsBefore, SupersessionRowCount(rebuilt));
+        Assert.True(HasTokenRow(rebuilt, liveId));
+
+        // Only the fresh fact was written; the ambiguous pair was left exactly as seeded.
+        Assert.Equal(factRowsBefore + 1, FactRowCount(rebuilt));
+    }
+
+    /// <summary>
+    /// Test 2 of D68 §7: replaying into a store that already fully agrees with the journal — its
+    /// fact rows and its supersession row already match — is a genuine fixed point. Two separate
+    /// <see cref="FactJournal.Replay"/> invocations (not one transaction reused: <c>claimed</c> is
+    /// dry-run-only, per the existing "two live facts" test) must return byte-for-byte identical
+    /// results, and change no row.
+    /// </summary>
+    [Fact]
+    public void Replay_TwiceAgainstAnAlreadyLinkedStore_ReturnsIdenticalCountsBothTimes()
+    {
+        using var target = new SandboxHome(initialize: false);
+        using var rebuilt = EngramDatabase.OpenInitialized(target.Home);
+
+        var newId = SeedRawFact(rebuilt, "/project/a", "states", "the new belief", T0.AddHours(1));
+        var oldId = SeedRawFact(
+            rebuilt, "/project/a", "states", "the old belief", T0,
+            validTo: T0.AddHours(1), supersededBy: newId);
+        SeedSupersession(rebuilt, oldId, newId, T0.AddHours(1));
+
+        var facts = new List<JournalFact>
+        {
+            new(1, "/project/a", "note", "states", "the old belief", null, null, "project", "stated",
+                false, null, T0.ToUnixTimeSeconds(), T0.AddHours(1).ToUnixTimeSeconds(), 2, "revised",
+                T0.ToUnixTimeSeconds()),
+            new(2, "/project/a", "note", "states", "the new belief", null, null, "project", "stated",
+                false, null, T0.AddHours(1).ToUnixTimeSeconds(), null, null, null,
+                T0.AddHours(1).ToUnixTimeSeconds()),
+        };
+
+        var factRowsBefore = FactRowCount(rebuilt);
+        var supersessionRowsBefore = SupersessionRowCount(rebuilt);
+
+        var first = FactJournal.Replay(rebuilt, facts, apply: true);
+        var second = FactJournal.Replay(rebuilt, facts, apply: true);
+
+        Assert.Equal(first, second);
+        Assert.Equal(0, second.Written);
+        Assert.Equal(factRowsBefore, FactRowCount(rebuilt));
+        Assert.Equal(supersessionRowsBefore, SupersessionRowCount(rebuilt));
+        Assert.Equal(newId, SupersededByOf(rebuilt, oldId));
+    }
+
+    /// <summary>
+    /// Test 3 of D68 §7 — the falsification for the rejected row-state guard (§3.1). A fact closed
+    /// with <c>superseded_by</c> NULL and no <c>supersession</c> row is exactly the shape
+    /// <c>Forget</c> leaves, and is structurally identical to a row this replay just inserted — only
+    /// provenance tells them apart. Proved to fail under the rejected guard: temporarily replacing
+    /// the <c>inserted.Contains(fact.Id)</c> provenance check in <c>FactJournal.Replay</c> with an
+    /// unconditional <c>Link(...)</c> call (relying solely on <c>Link</c>'s SQL assertion predicate,
+    /// which this forgotten row also satisfies) reddens this test — confirming the provenance check,
+    /// not the SQL predicate, is what this guards. Restored after confirming.
+    /// </summary>
+    /// <remarks>
+    /// Also test 5 of D68 §7 (post-architect-ruling): the same declined link counts both
+    /// <c>AlreadyPresent</c> (the body matched in pass 1) and <c>Conflicted</c> (the edge did not,
+    /// in pass 2) — the two counters describe different statements about the same record and are
+    /// not mutually exclusive.
+    /// </remarks>
+    [Fact]
+    public void Replay_OfASupersessionTargetingAForgottenRow_DeclinesRatherThanFabricatingOne()
+    {
+        using var target = new SandboxHome(initialize: false);
+        using var rebuilt = EngramDatabase.OpenInitialized(target.Home);
+
+        var forgottenId = SeedRawFact(
+            rebuilt, "/project/gone", "states", "a forgotten belief", T0, validTo: T0.AddHours(1));
+
+        var facts = new List<JournalFact>
+        {
+            new(1, "/project/gone", "note", "states", "a forgotten belief", null, null, "project", "stated",
+                false, null, T0.ToUnixTimeSeconds(), T0.AddHours(1).ToUnixTimeSeconds(), 2, "revised",
+                T0.ToUnixTimeSeconds()),
+            new(2, "/project/replacement", "note", "states", "what allegedly replaced it", null, null,
+                "project", "stated", false, null, T0.AddMinutes(30).ToUnixTimeSeconds(), null, null, null,
+                T0.AddMinutes(30).ToUnixTimeSeconds()),
+        };
+
+        var result = FactJournal.Replay(rebuilt, facts, apply: true);
+
+        Assert.Equal(1, result.AlreadyPresent);
+        Assert.Equal(1, result.Conflicted);
+        Assert.Null(SupersededByOf(rebuilt, forgottenId));
+        Assert.Equal(0, SupersessionRowCount(rebuilt));
+    }
+
+    /// <summary>
+    /// Test 4 of D68 §7 — the falsification for the ambiguous-address case (§4.2). Two closed rows
+    /// share the tuple with no live member, so no basis exists to prefer either as the address a
+    /// supersession would point at. Proved to fail: temporarily forcing <c>Existing()</c>'s
+    /// <c>AddressUsable</c> to always be true (the pre-fix <c>LIMIT 1</c>, no-<c>ORDER BY</c>
+    /// behaviour) flips the outcome from <c>Unresolved</c> to <c>Conflicted</c>, reddening this
+    /// test. Restored after confirming. Replayed twice to prove §4.1's other half: ambiguity never
+    /// suppresses presence, so no third copy is ever inserted.
+    /// </summary>
+    [Fact]
+    public void Replay_OfASupersessionTargetingAnAllClosedAmbiguousPair_ReportsUnresolvedAndInsertsNoThirdCopy()
+    {
+        using var target = new SandboxHome(initialize: false);
+        using var rebuilt = EngramDatabase.OpenInitialized(target.Home);
+
+        var firstClosed = SeedRawFact(
+            rebuilt, "/project/dup2", "states", "an ambiguous closed belief", T0, validTo: T0.AddHours(1));
+        var secondClosed = SeedRawFact(
+            rebuilt, "/project/dup2", "states", "an ambiguous closed belief", T0, validTo: T0.AddHours(2));
+
+        var facts = new List<JournalFact>
+        {
+            new(1, "/project/dup2", "note", "states", "an ambiguous closed belief", null, null, "project",
+                "stated", false, null, T0.ToUnixTimeSeconds(), T0.AddHours(1).ToUnixTimeSeconds(), 2, "revised",
+                T0.ToUnixTimeSeconds()),
+            new(2, "/project/other2", "note", "states", "an unrelated replacement", null, null, "project",
+                "stated", false, null, T0.AddMinutes(10).ToUnixTimeSeconds(), null, null, null,
+                T0.AddMinutes(10).ToUnixTimeSeconds()),
+        };
+
+        var first = FactJournal.Replay(rebuilt, facts, apply: true);
+
+        Assert.Equal(1, first.Unresolved);
+        Assert.Null(SupersededByOf(rebuilt, firstClosed));
+        Assert.Null(SupersededByOf(rebuilt, secondClosed));
+        Assert.Equal(2, FactRowCountFor(rebuilt, "/project/dup2", "an ambiguous closed belief"));
+
+        var second = FactJournal.Replay(rebuilt, facts, apply: true);
+
+        Assert.Equal(1, second.Unresolved);
+        Assert.Equal(0, second.Written);
+        Assert.Equal(2, FactRowCountFor(rebuilt, "/project/dup2", "an ambiguous closed belief"));
+    }
 }

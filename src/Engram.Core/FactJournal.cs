@@ -26,9 +26,15 @@ public sealed record JournalFact(
     string? Details = null);
 
 /// <summary>What a replay did, or would do.</summary>
+/// <param name="AlreadyPresent">
+/// Journal records the target already held. Counted once per record, in pass 1 only — an idempotent
+/// supersession edge adds nothing, because every record reaching that branch was already counted here (D68).
+/// </param>
 /// <param name="Conflicted">
-/// Live facts left out because the target already believes something else about that subject and
-/// predicate. Distinct from <paramref name="AlreadyPresent"/>: nothing was recovered for these.
+/// Records nothing was recovered for. Two shapes: a fact left out because the target already believes
+/// something else about that subject and predicate, and a fact whose body was already present but whose
+/// supersession edge the target disagreed with (D68) — the second also counts
+/// <paramref name="AlreadyPresent"/>, since both statements are true of it.
 /// </param>
 public sealed record ReplayResult(int Written, int AlreadyPresent, int Unresolved, int Conflicted);
 
@@ -310,6 +316,11 @@ public static class FactJournal
         var conflicted = 0;
         var idMap = new Dictionary<long, long>();
 
+        // Journal ids whose target row this replay inserted. Link may write superseded_by into
+        // those rows and no others: a row that was already here carries the target's own account
+        // of how the belief closed, and replay does not rewrite that (D68).
+        var inserted = new HashSet<long>();
+
         // Subject+predicate pairs this replay has already claimed a live fact for. This is what the
         // dry run has instead of a transaction: an apply sees its own inserts through the store
         // query, so a journal holding two live facts for one subject — which only a merged bundle
@@ -343,9 +354,20 @@ public static class FactJournal
         foreach (var fact in facts)
         {
             var existing = Existing(connection, transaction, fact);
-            if (existing is { } id)
+            if (existing is { } match)
             {
-                idMap[fact.Id] = id;
+                if (match.AddressUsable)
+                {
+                    idMap[fact.Id] = match.Id;
+                }
+                else if (fact.SupersededBy is not null)
+                {
+                    // Several closed duplicates and no live one: no basis to prefer any row as the
+                    // address a supersession would point at (D68). The pointer is lost the same way
+                    // a missing superseder is — see the unresolved branch below.
+                    unresolved++;
+                }
+
                 present++;
                 continue;
             }
@@ -359,6 +381,7 @@ public static class FactJournal
             }
 
             idMap[fact.Id] = Insert(connection, transaction, fact);
+            inserted.Add(fact.Id);
             written++;
         }
 
@@ -378,7 +401,19 @@ public static class FactJournal
                 continue;
             }
 
-            Link(connection, transaction, newId, newTarget, fact);
+            if (inserted.Contains(fact.Id))
+            {
+                Link(connection, transaction, newId, newTarget, fact);
+            }
+            else if (CurrentSupersededBy(connection, transaction, newId) != newTarget)
+            {
+                // Still live, NULL, or pointing elsewhere — the journal held an edge the target
+                // disagreed with, and D68 forbids writing into a row this replay did not insert.
+                // The matching case counts nothing: every record reaching here was counted
+                // AlreadyPresent in pass 1, so an idempotent edge restates that rather than adding
+                // to it (D68).
+                conflicted++;
+            }
         }
 
         transaction.Commit();
@@ -425,24 +460,57 @@ public static class FactJournal
         return command.ExecuteScalar() is not null;
     }
 
-    private static long? Existing(SqliteConnection connection, SqliteTransaction? transaction, JournalFact fact)
+    /// <summary>Whether a match exists, and — separately — whether it names a usable address.</summary>
+    /// <param name="AddressUsable">
+    /// False only for several closed matches with no live one: no basis exists to prefer any of
+    /// them as the row a supersession would point at (D68 §4.2).
+    /// </param>
+    private readonly record struct ExistingMatch(long Id, bool AddressUsable);
+
+    private static ExistingMatch? Existing(SqliteConnection connection, SqliteTransaction? transaction, JournalFact fact)
     {
         using var command = connection.CreateCommand();
         command.Transaction = transaction;
+        // Two rows, not one: the second says only "there is more than one", which is what decides
+        // whether an address exists. Live first, so row 0 is the live one when any match is live —
+        // ux_fact_live guarantees at most one is.
         command.CommandText =
             """
-            SELECT f.id FROM fact f
+            SELECT f.id, f.valid_to IS NULL AS is_live FROM fact f
             JOIN entity e ON e.id = f.subject_id
             WHERE e.path = $path AND f.predicate = $predicate AND f.body = $body
               AND f.valid_from = $validFrom
-            LIMIT 1;
+            ORDER BY is_live DESC, f.id ASC
+            LIMIT 2;
             """;
         command.Parameters.AddWithValue("$path", fact.Subject);
         command.Parameters.AddWithValue("$predicate", fact.Predicate);
         command.Parameters.AddWithValue("$body", fact.Body);
         command.Parameters.AddWithValue("$validFrom", fact.ValidFrom);
 
-        return command.ExecuteScalar() is long id ? id : null;
+        using var reader = command.ExecuteReader();
+        if (!reader.Read())
+        {
+            return null;
+        }
+
+        var id = reader.GetInt64(0);
+        var live = reader.GetInt64(1) != 0;
+        var ambiguous = reader.Read();
+
+        // Ambiguity does not affect presence (D68 §4.1) — only whether this row may be used as the
+        // address a supersession points at. Several closed duplicates give no basis for preferring
+        // one.
+        return new ExistingMatch(id, AddressUsable: !ambiguous || live);
+    }
+
+    private static long? CurrentSupersededBy(SqliteConnection connection, SqliteTransaction transaction, long factId)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = "SELECT superseded_by FROM fact WHERE id = $id;";
+        command.Parameters.AddWithValue("$id", factId);
+        return command.ExecuteScalar() as long?;
     }
 
     private static long Insert(SqliteConnection connection, SqliteTransaction transaction, JournalFact fact)
@@ -500,7 +568,14 @@ public static class FactJournal
     {
         using var update = connection.CreateCommand();
         update.Transaction = transaction;
-        update.CommandText = "UPDATE fact SET superseded_by = $target WHERE id = $id;";
+        // The predicate is an assertion, not the guard: provenance (only rows this replay inserted
+        // reach Link — see the `inserted` set in Replay) is the only thing that discriminates a
+        // replay-inserted row from a pre-existing one closed by Forget, which is structurally
+        // identical (D68 §3.1-3.2). This is cheap insurance against a future caller reaching Link
+        // by another route.
+        update.CommandText =
+            "UPDATE fact SET superseded_by = $target " +
+            "WHERE id = $id AND valid_to IS NOT NULL AND superseded_by IS NULL;";
         update.Parameters.AddWithValue("$target", supersededBy);
         update.Parameters.AddWithValue("$id", factId);
         update.ExecuteNonQuery();
