@@ -1478,3 +1478,13 @@ would spend the deepest reasoning tier on something the spec had specified corre
 Those write different subjects and do not participate in the code-fact supersession chain, so they are
 not in this race. If a future writer ever produces `about` facts for indexed files from outside
 `CodeIndexer.Index`, this analysis expires and the lock's placement must be revisited.
+
+**Per-commit verification, B through F.** Each commit is verified against *its own* tree, not the
+working tree it happened to be split out of: stash any later commit's in-progress diff, run tier 1 and
+tier 2 against the isolated tree, then restore. Tier 3 stays on the aggregate, because it drives the
+published binary and is the tier least sensitive to which working-tree diffs are present. Commit A was
+verified one notch weaker than this — built in isolation, tested in aggregate — which was adequate
+there because a compile dependency would have failed the build and no commit-A test reaches
+`repo index --all`. It stops being adequate once commits acquire behavioural coupling to earlier ones,
+which is the whole reason this is written down rather than re-decided per commit: *builds in isolation,
+tested in aggregate* is what lets a commit go out green and bisect red later.
