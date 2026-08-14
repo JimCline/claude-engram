@@ -1156,6 +1156,40 @@ uncommitted change under test, and a pattern spelling `·` as a bare `.` silentl
   lock and is expected to go green with it. Nothing needs to be staged. If it does *not* redden when
   run against a pre-E tree, the race did not reproduce in that environment and the test is not yet
   meaningful — say so rather than accepting the green.
+
+  **The two commanded runs no longer both exit 0, and the exit assertion changes with them.** Commit
+  A's `Assert.All(concurrentResults, r => r.ExitCode == 0)` asserts the opposite of §6.4's rule once
+  the lock reaches that path: two commanded `engram index --apply --full` processes against one
+  identity are exactly the case where one prints the note and exits 1. The replacement is three
+  assertions, and the third is the reason the first is not a no-op:
+
+  1. every result exits **0 or 1** — anything else is a crash, not a lock skip;
+  2. **at least one exits 0** — the lock must always have a winner, and a pair that both lost means
+     something else holds it;
+  3. every result that exits **1** carries `another process is indexing this repo` on stdout. Without
+     this, `0 or 1` accepts an ordinary failure wearing the lock's exit code and the pair goes green
+     on a broken build.
+
+  **Both exiting 0 stays legal and must not be asserted against.** The two processes need not overlap,
+  and NE-1 already recorded a home pair where the race did not fire (§10). A test that reddens on a
+  legal schedule is worse than one that is occasionally vacuous, so *exactly one 0 and one 1* is
+  rejected. The consequence is that this tier cannot deterministically prove the lock blocks anything;
+  **the Tier 2 items above are what do that**, and these assertions must not later be tightened into a
+  flaky restatement of them. What Tier 3 adds is that the published binary wires the lock into the
+  `index --apply` path at all, which no library-level test can see.
+
+  **Rejected: driving one arm through an ambient caller.** §6.4's table makes ambient callers skip
+  silently, so the loser still does no work and the arms collapse identically, while the uniform exit
+  0 removes the only signal that the lock fired. It changes the scenario away from the
+  two-commanded-processes case §6.4's rule is about, and buys nothing.
+
+  **The enrollment index is waited out on the lock, not on the stamp.** `EnrollAndWaitForAutoIndex`
+  polls `last_full_scan_at` and then sleeps 1 s. Post-E that is a race: the stamp commits inside
+  `CodeIndexer.Index` while the lock releases in `Index`'s `finally`, so a stamped row does not yet
+  mean the identity is unclaimed — and if the auto-spawned index still holds it, **both** controlled
+  runs lose and assertion 2 reddens for a reason unrelated to the property under test. Replace the
+  sleep with a poll for `<home>/locks` holding no `*.lock` file (or not existing), same 30 s bound,
+  explicit failure message. A condition, not an interval.
 - **Regression sweep**: every existing index test must pass unmodified. NE-6 asks whether any of them
   index one repo concurrently.
 
