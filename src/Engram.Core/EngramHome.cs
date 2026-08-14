@@ -67,6 +67,17 @@ public sealed class EngramHome
     public string EmbeddingProgressPath { get; }
 
     /// <summary>
+    /// What the running server's background freshness loop is doing, for readers outside that
+    /// process.
+    /// </summary>
+    /// <remarks>
+    /// Derived state (D8), the third instance of the <c>embedding.json</c>/<c>metal.json</c>
+    /// pattern (spec §6.8): liveness, which repo is being freshened, and why a tick stopped. How
+    /// many repos are due stays in the database, which is their authority.
+    /// </remarks>
+    public string IndexProgressPath { get; }
+
+    /// <summary>
     /// Which MCP tool permissions we granted in Claude Code's settings, so the uninstaller can
     /// take back exactly those and nothing the user wrote themselves.
     /// </summary>
@@ -107,6 +118,7 @@ public sealed class EngramHome
         IndexLockDir = Path.Combine(root, "locks");
         MetalRecordPath = Path.Combine(root, "metal.json");
         EmbeddingProgressPath = Path.Combine(root, "embedding.json");
+        IndexProgressPath = Path.Combine(root, "indexing.json");
         GrantedPermissionsPath = Path.Combine(root, "granted-permissions.json");
         MemoryGuardStatePath = Path.Combine(root, "memory-guard.state");
         ClaudeSettingsPath = Path.Combine(userProfileDirectory, ".claude", "settings.json");

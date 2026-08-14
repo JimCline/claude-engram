@@ -56,6 +56,12 @@ public static class DefaultConfig
         [indexing]
         auto_index_on_session_start = true
 
+        # A second, slower cadence: while the server is running, freshen the most-neglected
+        # enrolled repo every few minutes rather than only at session start. Off by default —
+        # session start already covers the common case, and this is a permanent background
+        # walker someone should choose rather than inherit from auto_index_on_session_start.
+        auto_index_in_background = false
+
         # Where there is a git checkout, git decides what belongs to the repo:
         # tracked files plus untracked ones that are not ignored. That already
         # excludes build output, node_modules, caches and temp files, per every

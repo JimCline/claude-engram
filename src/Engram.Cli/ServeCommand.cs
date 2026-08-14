@@ -82,6 +82,11 @@ internal static class ServeCommand
         // that was never configured, and it costs one line per server rather than one per event.
         builder.Logging.AddFilter(typeof(WebhookService).FullName, LogLevel.Information);
 
+        // Same exception, same reason: quiet by construction (idle ticks publish nothing but the
+        // note file), so the Warning-everywhere-else bound does not starve it of its one line per
+        // repo actually freshened.
+        builder.Logging.AddFilter(typeof(IndexFreshnessService).FullName, LogLevel.Information);
+
         builder.WebHost.UseUrls($"http://127.0.0.1:{resolvedPort}");
 
         builder.Services.AddHttpContextAccessor();
@@ -100,6 +105,11 @@ internal static class ServeCommand
         // second daemon. It self-disables when no provider is configured, which is the ordinary
         // case, so registering it unconditionally costs a started-and-returned task.
         builder.Services.AddHostedService<EmbeddingBacklogService>();
+
+        // The background repo-freshness loop (spec §6). Registered unconditionally for the same
+        // reason as the backlog — with auto_index_in_background left at its default off, it writes
+        // one Unavailable note and returns, which is the ordinary case.
+        builder.Services.AddHostedService<IndexFreshnessService>();
 
         // Delivery of the telemetry log to whoever subscribed. Registered unconditionally for the
         // same reason as the backlog — with no URL configured it returns immediately, which is the
@@ -170,6 +180,14 @@ internal static class ServeCommand
             if (EmbeddingProgress.Read(home)?.Pid == identity.Pid)
             {
                 EmbeddingProgress.Clear(home);
+            }
+
+            // Same rule and same ownership test as the embedding note. A declined freshness
+            // service never enters its loop and so never reaches the loop's own cleanup — this is
+            // the only place that case is cleared.
+            if (IndexProgress.Read(home)?.Pid == identity.Pid)
+            {
+                IndexProgress.Clear(home);
             }
         });
 

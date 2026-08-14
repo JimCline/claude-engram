@@ -26,11 +26,20 @@ public sealed record IndexingSettings(
     int MaxMeanLineBytes,
     bool UseGit,
     IReadOnlyList<string> Problems,
-    IReadOnlyList<string> Ignored)
+    IReadOnlyList<string> Ignored,
+    bool AutoIndexInBackground)
 {
     public const string Section = "indexing";
 
     public const bool DefaultAutoIndexOnSessionStart = true;
+
+    /// <summary>
+    /// Off by default (spec §6.6, OQ-2): distinct from <see cref="DefaultAutoIndexOnSessionStart"/>
+    /// because that key's meaning is pinned to session start specifically, and widening it to also
+    /// mean "run a continuous background walker" would change what an existing <c>true</c> consents
+    /// to. Someone who enabled indexing at session start did not thereby ask for a permanent one.
+    /// </summary>
+    public const bool DefaultAutoIndexInBackground = false;
 
     /// <summary>
     /// Keys this section used to have, and what answers for them now.
@@ -147,7 +156,8 @@ public sealed record IndexingSettings(
         DefaultMaxMeanLineBytes,
         UseGit: true,
         Problems: [],
-        Ignored: []);
+        Ignored: [],
+        DefaultAutoIndexInBackground);
 
     public static IndexingSettings Read(ConfigFile config)
     {
@@ -177,7 +187,8 @@ public sealed record IndexingSettings(
             Positive(config, "max_mean_line_bytes", DefaultMaxMeanLineBytes, problems),
             config.Bool(Section, "use_git") ?? true,
             problems,
-            ignored);
+            ignored,
+            config.Bool(Section, "auto_index_in_background") ?? DefaultAutoIndexInBackground);
     }
 
     private static int Positive(ConfigFile config, string key, int fallback, List<string> problems)
