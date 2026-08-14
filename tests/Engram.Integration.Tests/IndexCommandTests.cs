@@ -827,4 +827,65 @@ public class IndexCommandTests
         var file = Path.Combine(queueDir, $"{at.UtcDateTime.Ticks}-{Environment.ProcessId}-{Guid.NewGuid():N}.spool");
         File.WriteAllText(file, at.ToString("o") + "\n" + (path is null ? string.Empty : path + "\n"));
     }
+
+    // §6.4's commanded/ambient split: a caller someone typed (this one) must never silently no-op
+    // on lock contention, against RunFreshen below, which never runs from anything a person typed
+    // and must stay silent. Collapsing either to the other's behavior reddens one of this pair.
+
+    [Fact]
+    public void Run_RepoLockedByAnotherProcess_PrintsTheNoteAndExitsNonZero()
+    {
+        using var sandbox = new SandboxHome();
+        var repo = Path.Combine(sandbox.Home.Root, "locked-repo");
+        Directory.CreateDirectory(repo);
+        var identity = CodeIndexer.ResolveIdentity(repo);
+
+        var (held, _) = IndexLock.TryClaim(sandbox.Home, identity, DateTimeOffset.UtcNow);
+        Assert.NotNull(held);
+
+        var stdout = new StringWriter();
+        var exitCode = CliApp.Run(
+            ["--home", sandbox.Home.Root, "index", repo, "--apply"],
+            stdout,
+            new StringWriter());
+
+        Assert.Equal(1, exitCode);
+        Assert.Contains(
+            $"{identity}: skipped: another process is indexing this repo", stdout.ToString(), StringComparison.Ordinal);
+
+        held!.Dispose();
+    }
+
+    [Fact]
+    public void RunFreshen_RepoLockedByAnotherProcess_StaysSilentAndExitsZero()
+    {
+        using var sandbox = new SandboxHome();
+        var repo = Path.Combine(sandbox.Home.Root, "locked-repo");
+        Directory.CreateDirectory(repo);
+
+        // RepoEnrollment stores (and RepoFreshness.Due hands back) the canonicalized root, so the
+        // identity claimed here must be resolved from that same canonical form — otherwise this
+        // process's held lock and the one CodeIndexer.Index recomputes from the enrolled candidate
+        // never collide.
+        var identity = CodeIndexer.ResolveIdentity(PathCanonicalizer.Canonical(repo));
+        var now = DateTimeOffset.UtcNow;
+
+        using (var connection = EngramDatabase.OpenInitialized(sandbox.Home))
+        {
+            RepoEnrollment.Enroll(connection, identity, repo, now);
+        }
+
+        var (held, _) = IndexLock.TryClaim(sandbox.Home, identity, now);
+        Assert.NotNull(held);
+
+        var stdout = new StringWriter();
+        var stderr = new StringWriter();
+        var exitCode = CliApp.Run(["--home", sandbox.Home.Root, "index", "--freshen", "--apply"], stdout, stderr);
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(string.Empty, stdout.ToString());
+        Assert.Equal(string.Empty, stderr.ToString());
+
+        held!.Dispose();
+    }
 }

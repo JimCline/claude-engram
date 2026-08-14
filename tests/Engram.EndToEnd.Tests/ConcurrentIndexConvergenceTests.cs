@@ -12,13 +12,13 @@ namespace Engram.EndToEnd.Tests;
 /// Asserts that property directly, in every home, rather than by comparing the concurrent home's
 /// live set against the serial home's: a deterministic bug in shared write code lands identically on
 /// both arms, so a cross-arm equality can never move to catch it. Cross-arm comparison — closed-fact-
-/// count equality — is deliberately deferred to commit E's <c>IndexLock</c> per §7: NE-1 measured
-/// concurrent and serial runs agreeing on the live set while disagreeing on closed count (81 vs 80 in
-/// one run), and that disagreement is what <c>IndexLock</c> fixes, not this guard. Modeled on the arm
-/// 1a shape proven at <c>/tmp/engram-ne1-run.sh</c>: enroll into two disposable homes, wait out each
-/// home's auto-spawned first index so it cannot become an uncontrolled third writer, mutate the repo
-/// once, then run the two controlled scans concurrently against one home and serially against the
-/// other.
+/// count equality — is a second, narrower assertion below it: NE-1 measured concurrent and serial runs
+/// agreeing on the live set while disagreeing on closed count (81 vs 80 in one run), and
+/// <c>IndexLock</c> (commit E) is what fixes that disagreement, not the live-set guard above. Modeled
+/// on the arm 1a shape proven at <c>/tmp/engram-ne1-run.sh</c>: enroll into two disposable homes, wait
+/// out each home's auto-spawned first index, on its lock rather than its stamp, so it cannot hold the
+/// lock the controlled runs need, mutate the repo once, then run the two controlled scans concurrently
+/// against one home and serially against the other.
 /// </remarks>
 public class ConcurrentIndexConvergenceTests
 {
@@ -61,7 +61,19 @@ public class ConcurrentIndexConvergenceTests
             var concurrentRun1 = Task.Run(() => EngramProcess.Run(concurrentHome.Root, "index", "--apply", "--full", repo));
             var concurrentRun2 = Task.Run(() => EngramProcess.Run(concurrentHome.Root, "index", "--apply", "--full", repo));
             var concurrentResults = await Task.WhenAll(concurrentRun1, concurrentRun2);
-            Assert.All(concurrentResults, r => Assert.True(r.ExitCode == 0, $"concurrent run exited {r.ExitCode}: {r.Stderr}"));
+            // §6.4: two commanded runs against one identity, so IndexLock lets exactly one proceed
+            // and the loser exits 1 with the contention note. Both exiting 0 is legal — the two
+            // processes need not overlap — but a 1 that does not carry the note is an ordinary
+            // failure wearing the lock's exit code, which is the only way this pair goes green on a
+            // broken build. Whether the lock actually blocks is Tier 2's to prove, deterministically;
+            // do not tighten this into a flaky restatement of it.
+            Assert.All(concurrentResults, r => Assert.True(
+                r.ExitCode is 0 or 1,
+                $"concurrent run exited {r.ExitCode}, which is neither success nor a lock skip: {r.Stderr}"));
+            Assert.Contains(concurrentResults, r => r.ExitCode == 0);
+            Assert.All(
+                concurrentResults.Where(r => r.ExitCode == 1),
+                r => Assert.Contains("another process is indexing this repo", r.Stdout, StringComparison.Ordinal));
 
             var serialRun1 = EngramProcess.Run(serialHome.Root, "index", "--apply", "--full", repo);
             Assert.True(serialRun1.ExitCode == 0, $"serial run 1 exited {serialRun1.ExitCode}: {serialRun1.Stderr}");
@@ -70,6 +82,12 @@ public class ConcurrentIndexConvergenceTests
 
             AssertUxFactLiveHolds(concurrentHome.Root);
             AssertUxFactLiveHolds(serialHome.Root);
+
+            // The assertion IndexLock exists for (§7): without it, NE-1 measured the concurrent arm
+            // closing one more fact than the serial arm (81 vs 80) — a fact one sibling process wrote
+            // and the other, racing it, immediately superseded. Equal live sets on both arms cannot
+            // see that; only the closed count can.
+            Assert.Equal(CountClosedFacts(serialHome.Root), CountClosedFacts(concurrentHome.Root));
         }
         finally
         {
@@ -146,7 +164,24 @@ public class ConcurrentIndexConvergenceTests
         }
 
         Assert.True(stamped, $"auto-spawned enrollment index never stamped last_full_scan_at within 30s for {home}");
-        Thread.Sleep(1000);
+
+        // The stamp commits inside CodeIndexer.Index before the lock releases in Index's finally,
+        // so polling the stamp alone can leave the auto-index still holding the lock — and make
+        // both controlled runs below lose it. Poll the lock directory itself instead.
+        var locks = Path.Combine(home, "locks");
+        var released = false;
+        for (var i = 0; i < 60; i++)
+        {
+            if (!Directory.Exists(locks) || Directory.GetFiles(locks, "*.lock").Length == 0)
+            {
+                released = true;
+                break;
+            }
+
+            Thread.Sleep(500);
+        }
+
+        Assert.True(released, $"the enrollment index still holds an index lock after 30s in {home}");
     }
 
     private static void AssertUxFactLiveHolds(string home)
@@ -170,6 +205,13 @@ public class ConcurrentIndexConvergenceTests
         Assert.True(
             string.IsNullOrWhiteSpace(duplicates),
             $"duplicate live fact(s) for one subject+predicate in {home}:\n{duplicates}");
+    }
+
+    private static int CountClosedFacts(string home)
+    {
+        var databasePath = Path.Combine(home, "engram.db");
+        var count = RunSqlite(databasePath, "SELECT count(*) FROM fact WHERE valid_to IS NOT NULL;");
+        return int.Parse(count.Trim());
     }
 
     private static string RunGit(string workingDirectory, params string[] args)

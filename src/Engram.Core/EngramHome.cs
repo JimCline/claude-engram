@@ -37,6 +37,16 @@ public sealed class EngramHome
     public string BackupDir { get; }
 
     /// <summary>
+    /// Per-identity index lock files (§6.4), one per repo currently being indexed.
+    /// </summary>
+    /// <remarks>
+    /// Derived state, like <see cref="BackupDir"/>: not created by <c>init</c>, only lazily by
+    /// <see cref="IndexLock"/> on first claim, since a store that never runs a concurrent index
+    /// never needs it.
+    /// </remarks>
+    public string IndexLockDir { get; }
+
+    /// <summary>
     /// What ggml-metal reported about this machine at the last local model load (D28).
     /// </summary>
     /// <remarks>
@@ -94,6 +104,7 @@ public sealed class EngramHome
         ReportDir = Path.Combine(root, "report");
         LibDir = Path.Combine(root, "lib");
         BackupDir = Path.Combine(root, "backups");
+        IndexLockDir = Path.Combine(root, "locks");
         MetalRecordPath = Path.Combine(root, "metal.json");
         EmbeddingProgressPath = Path.Combine(root, "embedding.json");
         GrantedPermissionsPath = Path.Combine(root, "granted-permissions.json");

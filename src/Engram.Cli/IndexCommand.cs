@@ -152,13 +152,25 @@ internal static class IndexCommand
                 new IndexOptions(root, apply, drain, full, Queue: sharedQueue),
                 DateTimeOffset.UtcNow);
 
+            IndexTelemetry.Note(home, "cli", "finished", identity);
+
+            // §6.4: a command someone typed never silently no-ops on lock contention — print the
+            // note and exit non-zero, bypassing the normal report print (which would otherwise
+            // dump an all-zero report around it).
+            var lockNote = report.Notes.FirstOrDefault(
+                n => n.StartsWith("skipped: another process is indexing this repo", StringComparison.Ordinal));
+            if (lockNote is not null)
+            {
+                stdout.WriteLine($"{identity}: {lockNote}");
+                return 1;
+            }
+
             // DiscardExcept deletes queue state, so the whole secondary-root pass — including
             // discarding — is gated on --apply the same way Consume is (D49): a dry run must not
             // move state, and printing "N left for other repos" implies a discard that never runs.
             var draining = drainAll && apply && sharedQueue is not null;
 
             Print(report, stdout, reportQueueLine: !draining);
-            IndexTelemetry.Note(home, "cli", "finished", identity);
 
             if (draining)
             {
@@ -239,7 +251,16 @@ internal static class IndexCommand
         {
             var report = RepoIndexRun.Freshen(
                 connection, home, config, settings, candidate.Root, apply, budget: null, DateTimeOffset.UtcNow);
-            Print(report, stdout);
+
+            // §6.4: ambient — stay silent on lock contention rather than printing a note nobody
+            // is watching for; the repo is picked up again on a later freshen pass.
+            var lockNote = report.Notes.FirstOrDefault(
+                n => n.StartsWith("skipped: another process is indexing this repo", StringComparison.Ordinal));
+            if (lockNote is null)
+            {
+                Print(report, stdout);
+            }
+
             IndexTelemetry.Note(home, "cli", "finished", identity);
             return 0;
         }
@@ -302,7 +323,15 @@ internal static class IndexCommand
                 new IndexOptions(secondaryRoot, apply, Drain: true, Full: false, AllowFullScanDue: false, Queue: queue),
                 DateTimeOffset.UtcNow);
 
-            Print(report, stdout, reportQueueLine: false);
+            // §6.4: ambient, same as RunFreshen above — silent on contention, this root's entries
+            // stay queued for a later drain rather than reporting a note nobody typed a command to see.
+            var lockNote = report.Notes.FirstOrDefault(
+                n => n.StartsWith("skipped: another process is indexing this repo", StringComparison.Ordinal));
+            if (lockNote is null)
+            {
+                Print(report, stdout, reportQueueLine: false);
+            }
+
             IndexTelemetry.Note(home, "cli", "finished", secondaryIdentity);
         }
 

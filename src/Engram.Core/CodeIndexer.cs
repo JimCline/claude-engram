@@ -80,6 +80,26 @@ public static class CodeIndexer
         var root = ResolveRoot(options.Root);
         var identity = ResolveIdentity(root);
 
+        // Claimed before the last_root repair below writes anything, so the whole
+        // read-modify-write cycle for this identity — the file_state snapshot, the scan, and the
+        // write pass — runs inside one critical section per repo (§6.4). Never claimed for a dry
+        // run: it writes nothing, so it must neither block nor be blocked. `using` releases the
+        // lock at every exit from this method, the same guarantee a `finally` would give, without
+        // wrapping the rest of the method in one.
+        IndexLock? claimedLock = null;
+        if (options.Apply)
+        {
+            var (held, blockedBy) = IndexLock.TryClaim(home, identity, now);
+            if (held is null)
+            {
+                return ContentionReport(root, blockedBy);
+            }
+
+            claimedLock = held;
+        }
+
+        using var indexLock = claimedLock;
+
         // A repo enrolled once and later moved on disk still resolves to the same identity
         // from its new location; without this repair the stale last_root sticks, the
         // session-start hook's cache-only lookup keeps missing it, and the primer offers
@@ -278,6 +298,33 @@ public static class CodeIndexer
             QueueLeft: queue.LeftBehind(root),
             Notes: notes);
     }
+
+    /// <summary>
+    /// What a blocked <c>--apply</c> caller gets when <see cref="IndexLock.TryClaim"/> loses to a
+    /// live holder (§6.4): zero counts, and a note every caller checks for by the same prefix,
+    /// regardless of whether it has to report it (commanded) or stay silent (ambient).
+    /// </summary>
+    private static IndexReport ContentionReport(string root, IndexLockRecord? blockedBy) =>
+        new(
+            RepoPath: root,
+            Root: root,
+            Applied: false,
+            FullScan: false,
+            VersionForcedFull: false,
+            FilesConsidered: 0,
+            Analyzed: 0,
+            Unchanged: 0,
+            Deleted: 0,
+            Renamed: 0,
+            FactsWritten: 0,
+            FactsClosed: 0,
+            FactsUnchanged: 0,
+            ProtectedSkipped: 0,
+            QueueConsumed: 0,
+            QueueLeft: 0,
+            Notes: [blockedBy is not null
+                ? $"skipped: another process is indexing this repo (pid {blockedBy.Pid}, since {blockedBy.StartedAt:O})"
+                : "skipped: another process is indexing this repo"]);
 
     /// <summary>
     /// Batch pre-pass for files whose language declares tier 2 (D24): one sidecar process

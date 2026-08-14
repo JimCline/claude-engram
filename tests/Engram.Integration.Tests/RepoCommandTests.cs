@@ -372,4 +372,45 @@ public class RepoCommandTests
             return false;
         }
     }
+
+    /// <summary>
+    /// The obligation deferred from commit B (§6.4): once <c>IndexLock</c> exists, a locked repo
+    /// must count toward <c>skippedLocked</c> and the whole pass must exit non-zero for it, not just
+    /// for a genuine failure. Falsifiable by reverting the aggregate back to <c>failed &gt; 0</c>
+    /// alone.
+    /// </summary>
+    [Fact]
+    public void IndexAll_ARepoLockedByAnotherProcess_CountsAsSkippedLocked_AndExitsNonZero()
+    {
+        using var sandbox = new SandboxHome();
+        var repo = Path.Combine(sandbox.Home.Root, "locked-repo");
+        Directory.CreateDirectory(repo);
+
+        // RepoEnrollment stores (and RepoFreshness.Due hands back) the canonicalized root, so the
+        // identity claimed here must be resolved from that same canonical form — otherwise this
+        // process's held lock and the one CodeIndexer.Index recomputes from the enrolled candidate
+        // never collide.
+        var identity = CodeIndexer.ResolveIdentity(PathCanonicalizer.Canonical(repo));
+        var now = DateTimeOffset.UtcNow;
+
+        using (var connection = EngramDatabase.OpenInitialized(sandbox.Home))
+        {
+            RepoEnrollment.Enroll(connection, identity, repo, now);
+        }
+
+        var (held, _) = IndexLock.TryClaim(sandbox.Home, identity, now);
+        Assert.NotNull(held);
+
+        var stdout = new StringWriter();
+        var exitCode = RepoCommand.Run(sandbox.Home.Root, ["index", "--all", "--apply"], stdout, new StringWriter());
+
+        Assert.Equal(1, exitCode);
+        var output = stdout.ToString();
+        Assert.Contains(
+            $"{identity}: skipped: another process is indexing this repo", output, StringComparison.Ordinal);
+        Assert.Contains("0 serviced", output, StringComparison.Ordinal);
+        Assert.Contains("1 skipped (locked)", output, StringComparison.Ordinal);
+
+        held!.Dispose();
+    }
 }
