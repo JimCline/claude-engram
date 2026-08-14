@@ -5007,3 +5007,52 @@ line under test is necessary and not sufficient: the question is whether anythin
 the outcome being asserted. Where two call sites both deliver it, either split the guard so each is
 reachable alone (12c) or name both deletions in the arm (12b) — but say which, because a one-line
 falsification against a two-stamp property is the failure that looks most like success.
+
+## D68 — A supersession may only be written into a row this replay inserted, and provenance is the only thing that can express that
+
+`backup replay` is additive: it never rewrites or closes a fact the target already
+had. That was implemented for fact bodies and not at `FactJournal.Link`, the one site that writes to an
+existing row. `Link` sets `superseded_by` and never `valid_to` — `Insert` writes that from the journal — so a
+supersession applied to a **live** target produces a row simultaneously live and superseded, a state
+`ux_fact_live` does not constrain because it is partial on `valid_to IS NULL`; and `FactTokenIndex.Remove`
+then fires unconditionally, stripping a live fact from an index that holds live facts only while `fact_fts`
+keeps it. Applied to an **already-superseded** target it overwrites `fact.superseded_by` while the
+`supersession` insert's `ON CONFLICT(old_fact_id) DO NOTHING` preserves the original, leaving two records of
+one relationship that contradict each other — the two halves of one operation disagreeing about idempotency.
+
+**The guard cannot be written as a row-state predicate, and the reason is the whole decision.** The obvious
+`WHERE valid_to IS NOT NULL AND superseded_by IS NULL` admits every row provenance admits *plus* pre-existing
+rows closed with `superseded_by` NULL — which is the recorded shape of a `Forget`, closed with no
+replacement, and there is no other shape a retraction has. Writing there converts a retraction into a
+supersession and fabricates a `supersession` row for a replacement that never happened, counted as success
+rather than conflict. A replay-inserted row and a forgotten row are structurally identical, so no predicate
+over row state separates them. The predicate is kept on the `UPDATE` as an assertion, but the test targets
+provenance: implement the predicate *instead* and the forgotten-row test reddens, which is how it was
+accepted.
+
+The rule was already in the file. `FactJournal.cs:355` says an absent `idMap` entry must make a supersession
+"come out as unresolved rather than aimed at some other row" — an entry means *this replay wrote that row*.
+The `Existing()` branch created entries from a **match** instead, and pass 2 fed those to `Link`. That branch
+now obeys the comment the other branch already had.
+
+**Presence and address are two questions, and `Existing()` answered both with one `LIMIT 1` and no
+`ORDER BY`.** Where the target holds duplicate `(subject, predicate, body, valid_from)` tuples — reachable,
+and measured once in 401 rows under two concurrent `index --apply --full` runs — the row returned was
+whichever the B-tree handed back. Presence must stay YES on ambiguity: `WouldDisplaceALiveBelief` is live-only
+for the same partial-index reason, so a closed-duplicate pair with no live member does not trip it, and
+suppressing presence would insert a third copy, then a fourth, unbounded on every replay. The **address** is
+where ambiguity bites: exactly one live match is a basis (a supersession names the belief currently held, and
+at most one duplicate can be live), while several closed matches give none — `f.id ASC` there is
+arbitrary-but-deterministic, which is still arbitrary, and a deterministic wrong address is worse than none
+because it reads as a decision. All-closed ambiguity withholds the `idMap` entry and comes out `unresolved`,
+which already means the pointer was lost.
+
+A declined link is classified into the buckets that exist rather than a new counter: equal to the intended
+target is `AlreadyPresent`, anything else is `Conflicted`. The documented split is "already there" versus
+"not recovered", and a declined link is exactly not-recovered, so the meanings coincide rather than collide —
+this is not a second meaning riding an existing field, and `ReplayResult` keeps its shape.
+
+Duplicate tuples are `fact` rows, so by D8 `repair` may never delete one: the duplicates are permanent, and
+this change makes replay survive them rather than removing them.
+
+Design and rulings: `docs/backup-replay-supersession-spec.md`.
