@@ -345,6 +345,24 @@ Returns a list because there is one row per neglected repo. If none are neglecte
 because a check that vanishes when healthy is a check nobody notices is gone. If `connection is
 null`, one `Off` row.
 
+**`CheckEnrolledRepos` tolerates the same two absences as `CheckRepo`, through the same catch.** A
+store predating the repository index lacks `repo_registry`; a store predating enrollment lacks
+`repo_enrollment`; a pre-v8 store has both but no `last_scan_suppressed_reason`. All three arrive as
+`SqliteException` matching `no such table` or `no such column`, and all three yield a single `Ok`
+row stating the check could not run and why — never `Broken`, never a clean bill of health (D69).
+The catch is the one `CheckRepo` already uses, shared rather than copied: two catches worded
+separately are two implementations of one policy, and the first divergence is a doctor that answers
+differently about the same store depending on which check reached the missing table first. It may
+**not** match on `SqliteErrorCode` alone, for D69's reason — the statement is a constant in our own
+source and a typo in it would be swallowed into a permanent silent "not applicable".
+
+**A third sibling test covers the enrollment table.** E3 added two —
+`Doctor_OnAStoreMissingTheSuppressionColumn_…` and `Doctor_OnAStoreMissingTheRepoRegistryTable_…` —
+both scoped to `CheckRepo`, which reads only `repo_registry`. Nothing read `repo_enrollment` from
+doctor until `CheckEnrolledRepos`, so there was no case to cover before Commit C. Three fixtures, one
+assertion each: exit 0, no `Broken` row, and a row that says why the check could not run. Falsify by
+removing the catch; all three must redden.
+
 ### 3.2 Predicate, and why it is not `IsFullScanDue`
 
 ```
@@ -382,12 +400,38 @@ Four decisions embedded here, each with its reason:
 4. **Absent checkouts are excluded.** `doctor` should not tell someone to index a directory that is
    not there; that is a different, existing concern.
 
+**A neglect row names a known cause rather than prescribing a re-index.** Let
+`suppressed(identity) := repo_registry.last_scan_suppressed_reason IS NOT NULL`, read by a left join
+from the enrolled row's identity in the same query — not a lookup per candidate. An enrolled repo
+with no registry row joins to NULL and is not suppressed. `neglected(row, now)` is unchanged; only
+the rendering branches:
+
+- `neglected && !suppressed` → `Warn`, detail names the root and the age of the last full scan,
+  `Fix` is the repo index command.
+- `neglected && suppressed` → `Warn`, detail names the root, the age, **and** the suppression
+  reason, and there is **no** `Fix` command.
+
+The reason is that `last_full_scan_at` is deliberately not stamped when a scan is suppressed (D69),
+so a repository truncating on every attempt is neglected permanently and by construction. Its `Fix`
+would instruct the user to run the index that produced the suppression — D53's trap arriving through
+a second door, since that rule exists precisely so doctor does not answer an unwalkable tree with
+`engram index --apply`. There is no command that fixes a budget-truncated scan, so the row carries
+none rather than carrying one that cannot work.
+
+The row is **not** suppressed, and this is not §3.2 decision 3's lock escape hatch reused — that one
+is gated on `IndexLock`, which does not exist until Commit E. Standing the row down would be wrong
+even once E lands: `CheckEnrolledRepos` spans every enrolled repo while `CheckRepo` covers only the
+repo doctor was run inside, so suppressing here silences the case entirely for any repo the user is
+not standing in — a repo that is both stale and skipping deletions, reported nowhere. Both rows
+appearing when doctor runs inside that repo is accepted: different scopes, each accurate. `Warn`,
+never `Broken`, unchanged.
+
 ### 3.3 Output
 
 ```
-indexing/enrollment  WARN  engram — never scanned (enrolled 3 days ago)
+indexing/enrollment  WARN  engram — never scanned (enrolled 3d ago)
                            fix: engram repo index --all --apply
-indexing/enrollment  WARN  wrangl — last full scan 22 days ago
+indexing/enrollment  WARN  wrangl — last full scan 22d ago
                            fix: engram repo index --all --apply
 ```
 
@@ -399,9 +443,17 @@ well-defined; a test asserting exact rows against an unstated ordering passes by
 - The `Fix` string names `engram repo index --all --apply`, which is why **item 2 lands before item
   1** (§8). `doctor` must never name a command that does not exist.
 - Identity is rendered the way `engram repo list` renders it — bare, exactly as written at
-  `RepoCommand.cs:240`, with the scan stamp formatted through `MomentText.Local` as at `:237`/`:243`
-  — so the two surfaces address repos identically and a user can match a doctor row to a list entry
-  by eye.
+  `RepoCommand.cs:240`. The scan-age quantity is rendered through the existing `Age()` helper, not
+  `MomentText.Local`: `CheckRepo`'s sibling rows already render the same "how old" quantity with
+  `Age()` in the same `doctor` output, and two renderings of one quantity in one run is a divergence
+  trap, not a stylistic choice. `Age()` answers a duration, not a moment, so `MomentText.Local`'s
+  absolute-stamp rule — which exists so beliefs stay orderable relative to each other (D44) — does not
+  transfer here; a third "N days ago" prose helper was considered and rejected as an unneeded second
+  duration renderer serving nothing but this illustration. §7's exact-row assertions must be
+  hand-written literals against an injected `now`, never a value re-derived by calling `Age()` inside
+  the test itself — that composes a tautology that passes regardless of what the helper does. If
+  `Age()` does not cover the never-scanned branch cleanly, stop and report rather than adding a second
+  helper quietly.
 - **Discoverability for the off-by-default background key.** When the check is already warning *and*
   `auto_index_in_background` is absent from the config, append one sentence to the last row naming
   the key as an option. Only when already warning: an unset key is not a fault, and D37 forbids
@@ -1013,6 +1065,31 @@ uncommitted change under test, and a pattern spelling `·` as a bare `.` silentl
   stops someone "simplifying" the two predicates into one.
 - **Tier 2**: the `Fix` string is byte-identical to the command item 2 actually accepts. A test that
   asserts a hand-written string proves nothing; assert it **parses**, by feeding it to the arg parser.
+  The `Fix`-parses test must assert it saw **at least one** command before parsing what it found — a
+  test that parses whichever rows happen to carry a `Fix` covers nothing at all once a branch exists
+  that emits none (the suppressed neglect row, below), and would pass while doing it.
+- **Tier 2**: an enrolled repo, aged past `NeglectedAfter`, with a non-NULL
+  `last_scan_suppressed_reason`, in a home whose **cwd is a different repo** — exactly one row,
+  carrying the suppression reason and no `Fix` command. The cwd requirement is not incidental: run it
+  inside the subject repo and it passes on `CheckRepo`'s suppression row while proving nothing about
+  `CheckEnrolledRepos`, and it would mask the scope premise this decision rests on. Falsify by
+  deleting the `suppressed` branch; the row must come back with the index command in it.
+- **Tier 2**: two repos in `repo_registry` with a `last_full_scan_at` old enough to be neglected were
+  the check keyed to it — one with **no** `repo_enrollment` row, one with a row whose `state` is not
+  `Enrolled` — produce **no** neglect row. This holds by construction, because `CheckEnrolledRepos`
+  reads only enrollment fields, and that is exactly why it needs a test: every enrollment test in the
+  B series called `Enroll` first, leaving the unenrolled path untested by construction (D69), and the
+  same fixture habit will do the same thing here. The declined case is the one with teeth — warning
+  weekly about a repository the user explicitly said no to is doctor reporting a choice as a fault,
+  which is how people learn to stop reading it (D37). Falsify by widening the selection to
+  `repo_registry`; both must redden, and the mode is right — an extra `Warn` row, silently, with no
+  exception.
+- **Tier 2**: three fixtures — a store missing `repo_registry`, a store missing `repo_enrollment`, and
+  a pre-v8 store missing `last_scan_suppressed_reason` — each produce exit 0 with no `Broken` row and a
+  row stating the check could not run and why. The `repo_enrollment` fixture is a third sibling beside
+  E3's two `CheckRepo`-scoped tests, not a restoration — nothing read `repo_enrollment` from doctor
+  before `CheckEnrolledRepos` existed to read it. Falsify by removing the shared catch; all three must
+  redden.
 - **Tier 2** (only if E has landed): a live lock for an otherwise-neglected identity suppresses the
   row; a lock naming a dead pid does not; and **the lock file still exists after the `doctor` run**.
   That last assertion is the one that catches a reaping `doctor`.
