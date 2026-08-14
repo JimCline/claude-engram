@@ -744,6 +744,15 @@ public static class CodeIndexer
     /// one — a checkout can move directories without becoming a different repo — else the
     /// root path.
     /// </summary>
+    /// <remarks>
+    /// A caller enrolling a row under a precomputed identity must pass a <paramref name="root"/>
+    /// already run through <see cref="PathCanonicalizer.Canonical"/>, matching what
+    /// <see cref="RepoEnrollment.Enroll"/> stores as <c>LastRoot</c> — <see cref="Index"/> resolves
+    /// its own identity independently from that stored root, ignoring whatever identity the caller
+    /// enrolled under, so a test that skips canonicalizing first enrolls under an identity a real
+    /// tick never reaches and <c>StampFullScan</c> silently no-ops (hit while writing tests for
+    /// commits D, E and F).
+    /// </remarks>
     public static string ResolveIdentity(string root)
     {
         var remote = GitFileLister.Run(root, "remote", "get-url", "origin")?.Trim();
