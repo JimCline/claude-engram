@@ -192,17 +192,18 @@ public static class RepoEnrollment
         return now.ToUnixTimeSeconds() - last >= intervalMinutes * 60L;
     }
 
-    public static void StampFullScan(SqliteConnection connection, string identity, DateTimeOffset now)
-    {
-        using var transaction = EngramDatabase.BeginWrite(connection);
+    /// <summary>
+    /// Participates in a transaction the caller already opened, so a related write on another
+    /// table (e.g. clearing <c>repo_registry.last_scan_suppressed_reason</c>) commits atomically
+    /// alongside this one rather than as a separate commit a crash could land between (D4).
+    /// </summary>
+    public static void StampFullScan(SqliteConnection connection, SqliteTransaction transaction, string identity, DateTimeOffset now) =>
         Execute(
             connection,
             transaction,
             "UPDATE repo_enrollment SET last_full_scan_at = $now WHERE identity = $identity;",
             ("$now", now.ToUnixTimeSeconds()),
             ("$identity", identity));
-        transaction.Commit();
-    }
 
     /// <summary>
     /// Pure policy for the primer's conditional line: emit for a never-asked repo, or a deferred

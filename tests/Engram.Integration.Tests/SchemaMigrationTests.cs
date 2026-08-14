@@ -87,6 +87,16 @@ public class SchemaMigrationTests
     private static void DropDetailsColumn(SqliteConnection connection) =>
         Execute(connection, "ALTER TABLE fact DROP COLUMN details;");
 
+    /// <summary>
+    /// The structural half of making a downgrade fixture version-N-shaped (N &lt; 8) for
+    /// <c>repo_registry.last_scan_suppressed_reason</c> — every fixture below version 8 needs
+    /// this now that the column lives on <c>repo_registry</c> rather than <c>repo_enrollment</c>
+    /// (docs/repo-index-remediation-spec.md §14), the same way <see cref="DropDetailsColumn"/>
+    /// covers <c>fact.details</c> for version 6.
+    /// </summary>
+    private static void DropSuppressionColumn(SqliteConnection connection) =>
+        Execute(connection, "ALTER TABLE repo_registry DROP COLUMN last_scan_suppressed_reason;");
+
     /// <summary>Builds a store at version 1 holding one fact, and closes it.</summary>
     private static long WriteVersion1Store(SandboxHome sandbox, string path, string body)
     {
@@ -99,6 +109,7 @@ public class SchemaMigrationTests
             T0).FactId;
 
         DropDetailsColumn(connection);
+        DropSuppressionColumn(connection);
         Execute(connection, "DROP TABLE repo_enrollment;");
         Assert.Equal(1, EngramDatabase.ReadSchemaVersion(connection));
         return id;
@@ -127,6 +138,7 @@ public class SchemaMigrationTests
             T0).FactId;
 
         DropDetailsColumn(connection);
+        DropSuppressionColumn(connection);
         Execute(connection, "DROP TABLE repo_enrollment;");
         Execute(connection, "UPDATE schema_meta SET value = '5' WHERE key = 'schema_version';");
         Assert.Equal(5, EngramDatabase.ReadSchemaVersion(connection));
@@ -151,9 +163,40 @@ public class SchemaMigrationTests
             + "('/projects/acme/code/api', 'github.com/acme/api', '/tmp/api', 0), "
             + "('/projects/acme/code/gone', 'github.com/acme/gone', NULL, 0);");
 
+        DropSuppressionColumn(connection);
         Execute(connection, "DROP TABLE repo_enrollment;");
         Execute(connection, "UPDATE schema_meta SET value = '6' WHERE key = 'schema_version';");
         Assert.Equal(6, EngramDatabase.ReadSchemaVersion(connection));
+    }
+
+    /// <summary>
+    /// Version 8 added <c>last_scan_suppressed_reason</c> as an <c>ALTER TABLE ADD COLUMN</c> on
+    /// <c>repo_registry</c>, not <c>repo_enrollment</c> — moved there because the column fails
+    /// silently for any indexed-but-unenrolled repo (docs/repo-index-remediation-spec.md §14) —
+    /// the first migration to alter that table's own columns rather than create or drop it
+    /// outright, so "version-7-shaped" means dropping just that column: the same D60 shape
+    /// <see cref="WriteVersion5Store"/> uses for <c>fact.details</c>, and required here because
+    /// the migration's <c>ALTER TABLE ADD COLUMN</c> is unguarded — a fixture that only stamped
+    /// <c>schema_version</c> back without genuinely lacking the column would throw on re-add
+    /// rather than proving anything about the migration. This fixture also needs a matching
+    /// <c>repo_registry</c> row for the same identity, since <c>repo_enrollment</c>'s row alone
+    /// no longer carries anything the migration or the test that follows reads.
+    /// </summary>
+    private static void WriteVersion7Store(SandboxHome sandbox)
+    {
+        using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
+        Execute(
+            connection,
+            "INSERT INTO repo_registry (repo_path, identity, disk_path, created_at) VALUES "
+            + "('/projects/acme/code/api', 'github.com/acme/api', '/tmp/api', 0);");
+        Execute(
+            connection,
+            "INSERT INTO repo_enrollment (identity, state, source, last_root, decided_at, last_full_scan_at) "
+            + "VALUES ('github.com/acme/api', 'enrolled', 'user', '/tmp/api', 0, NULL);");
+
+        DropSuppressionColumn(connection);
+        Execute(connection, "UPDATE schema_meta SET value = '7' WHERE key = 'schema_version';");
+        Assert.Equal(7, EngramDatabase.ReadSchemaVersion(connection));
     }
 
     /// <summary>Builds a store at version 2 holding one live fact and one closed one.</summary>
@@ -173,6 +216,7 @@ public class SchemaMigrationTests
         Execute(connection, $"UPDATE fact SET valid_to = '{T0:O}' WHERE id = {closed};");
 
         DropDetailsColumn(connection);
+        DropSuppressionColumn(connection);
         Execute(connection, "DROP TABLE repo_enrollment;");
         Assert.Equal(2, EngramDatabase.ReadSchemaVersion(connection));
         return (live, closed);
@@ -370,6 +414,57 @@ public class SchemaMigrationTests
         {
             command.CommandText = "SELECT COUNT(*) FROM repo_enrollment WHERE identity = 'github.com/acme/gone';";
             Assert.Equal(0L, (long)command.ExecuteScalar()!);
+        }
+
+        var snapshot = Assert.Single(BackupStore.List(sandbox.Home));
+        Assert.Contains("pre-v" + EngramDatabase.SchemaVersion, snapshot.Name, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Falsified per §14.5.1 by temporarily removing the migration's <c>if (from &lt; 8)</c> block
+    /// so no <c>ALTER TABLE</c> runs: confirmed red — <c>OpenInitialized</c> throws
+    /// <c>InvalidOperationException</c> because <c>ReadSchemaVersion</c> never advances past 7 while
+    /// <see cref="EngramDatabase.SchemaVersion"/> is 8 — then restored.
+    /// </summary>
+    [Fact]
+    public void Migrating_AVersion7Store_AddsTheSuppressionColumnWithoutTouchingExistingRows()
+    {
+        using var sandbox = new SandboxHome(initialize: false);
+        WriteVersion7Store(sandbox);
+        SqliteConnection.ClearAllPools();
+
+        using var reopened = EngramDatabase.OpenInitialized(sandbox.Home);
+
+        Assert.Equal(EngramDatabase.SchemaVersion, EngramDatabase.ReadSchemaVersion(reopened));
+
+        using (var command = reopened.CreateCommand())
+        {
+            command.CommandText =
+                "SELECT COUNT(*) FROM pragma_table_info('repo_registry') "
+                + "WHERE name = 'last_scan_suppressed_reason';";
+            Assert.Equal(1L, (long)command.ExecuteScalar()!);
+        }
+
+        using (var command = reopened.CreateCommand())
+        {
+            command.CommandText =
+                "SELECT state, source, last_root FROM repo_enrollment "
+                + "WHERE identity = 'github.com/acme/api';";
+            using var reader = command.ExecuteReader();
+            Assert.True(reader.Read());
+            Assert.Equal("enrolled", reader.GetString(0));
+            Assert.Equal("user", reader.GetString(1));
+            Assert.Equal("/tmp/api", reader.GetString(2));
+        }
+
+        using (var command = reopened.CreateCommand())
+        {
+            command.CommandText =
+                "SELECT last_scan_suppressed_reason FROM repo_registry "
+                + "WHERE identity = 'github.com/acme/api';";
+            using var reader = command.ExecuteReader();
+            Assert.True(reader.Read());
+            Assert.True(reader.IsDBNull(0));
         }
 
         var snapshot = Assert.Single(BackupStore.List(sandbox.Home));

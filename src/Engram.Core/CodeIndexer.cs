@@ -127,6 +127,10 @@ public static class CodeIndexer
         // for a full FullScanIntervalMinutes and silently downgrade the repo to incremental.
         var stampFullScan = false;
 
+        // Same reasoning as stampFullScan: null unless a completed, applied run actually skipped
+        // deletions, so a dry run reports what it would do without moving repo_registry state.
+        string? suppressedReason = null;
+
         if (full)
         {
             var scan = RepoScanner.Scan(root, settings, budget: options.Budget ?? ScanBudget.Default);
@@ -141,6 +145,7 @@ public static class CodeIndexer
             {
                 deletions = [];
                 notes.Add($"{scan.Summary()}; skipped deletions, because a partial scan cannot show a file is gone");
+                suppressedReason = options.Apply ? "truncated" : null;
             }
             else if (onDisk.Count == 0 && states.Count > 0)
             {
@@ -150,6 +155,7 @@ public static class CodeIndexer
                 // default, and the scan not having failed means D53's Truncated guard never arms.
                 deletions = [];
                 notes.Add($"scan found 0 files against {states.Count} already indexed; skipped deletions rather than closing every fact in the repo");
+                suppressedReason = options.Apply ? "empty-scan" : null;
             }
             else
             {
@@ -233,7 +239,17 @@ public static class CodeIndexer
         // After the writes, not before: see the comment on stampFullScan above.
         if (stampFullScan)
         {
-            RepoEnrollment.StampFullScan(connection, identity, now);
+            // One transaction, not two commits: a crash between them would leave
+            // last_full_scan_at fresh with the suppression reason still set, which reads as an
+            // unresolved condition forever (D4, D33's retired-key shape).
+            using var transaction = EngramDatabase.BeginWrite(connection);
+            RepoEnrollment.StampFullScan(connection, transaction, identity, now);
+            ClearSuppressedReason(connection, transaction, identity);
+            transaction.Commit();
+        }
+        else if (suppressedReason is not null)
+        {
+            SetSuppressedReason(connection, identity, suppressedReason);
         }
 
         if (options.Apply && storedVersion != CurrentVersion)
@@ -762,6 +778,21 @@ public static class CodeIndexer
         notes.Add($"registered {repoPath} for {identity}");
         return repoPath;
     }
+
+    private static void SetSuppressedReason(SqliteConnection connection, string identity, string reason) =>
+        Execute(
+            connection,
+            null,
+            "UPDATE repo_registry SET last_scan_suppressed_reason = $reason WHERE identity = $identity;",
+            ("$reason", reason),
+            ("$identity", identity));
+
+    private static void ClearSuppressedReason(SqliteConnection connection, SqliteTransaction transaction, string identity) =>
+        Execute(
+            connection,
+            transaction,
+            "UPDATE repo_registry SET last_scan_suppressed_reason = NULL WHERE identity = $identity;",
+            ("$identity", identity));
 
     private static Dictionary<string, string> LoadStates(SqliteConnection connection, string repoPath)
     {

@@ -19,7 +19,7 @@ internal static class RepoCommand
 
         if (args.Length == 0 || args[0].StartsWith('-'))
         {
-            stderr.WriteLine("error: expected a subcommand — enroll, decline, later, reset, or list.");
+            stderr.WriteLine("error: expected a subcommand — enroll, decline, later, reset, index, or list.");
             return 2;
         }
 
@@ -32,6 +32,7 @@ internal static class RepoCommand
             "decline" => Decline(home, rest, stdout, stderr),
             "later" => Later(home, rest, stdout, stderr),
             "reset" => Reset(home, rest, stdout, stderr),
+            "index" => IndexAll(home, rest, stdout, stderr),
             "list" => List(home, stdout, stderr),
             _ => Unknown(args[0], stderr),
         };
@@ -247,6 +248,153 @@ internal static class RepoCommand
     }
 
     /// <summary>
+    /// <c>engram repo index --all [--apply]</c> — every enrolled repo <see cref="RepoFreshness"/>
+    /// calls due, in its most-neglected-first order, run one after another through
+    /// <see cref="RepoIndexRun.Freshen"/> (§4). <c>--all</c> is required so this never collides
+    /// with <c>engram index --apply</c>'s bare-invocation meaning, and dry-run is the default like
+    /// every other verb that rewrites what is already there (D49).
+    /// </summary>
+    private static int IndexAll(EngramHome home, string[] args, TextWriter stdout, TextWriter stderr)
+    {
+        if (!args.Contains("--all"))
+        {
+            stderr.WriteLine("error: expected --all (usage: engram repo index --all [--apply]).");
+            return 2;
+        }
+
+        var apply = args.Contains("--apply");
+
+        if (!apply && !File.Exists(home.DatabasePath))
+        {
+            // Same reasoning as IndexCommand: opening would create an empty database, and a dry
+            // run that leaves a file behind is not a dry run.
+            stderr.WriteLine($"error: no store at {home.DatabasePath} — run 'engram init' first");
+            return 1;
+        }
+
+        var config = ConfigFile.Load(home.ConfigPath);
+        var settings = IndexingSettings.Read(config);
+        foreach (var problem in settings.Problems)
+        {
+            stderr.WriteLine($"warning: {problem}");
+        }
+
+        var now = DateTimeOffset.UtcNow;
+
+        using var connection = apply ? EngramDatabase.OpenInitialized(home) : EngramDatabase.Open(home);
+
+        IReadOnlyList<FreshnessCandidate> candidates;
+        try
+        {
+            candidates = RepoFreshness.Due(connection, IndexingSettings.FullScanIntervalMinutes, now, new HashSet<string>());
+        }
+        catch (SqliteException e) when (e.Message.Contains("no such table", StringComparison.OrdinalIgnoreCase))
+        {
+            stderr.WriteLine("error: this store predates the code index tables. Re-run with --apply,");
+            stderr.WriteLine("which migrates after snapshotting, or run 'engram doctor' to see where it stands.");
+            return 1;
+        }
+
+        var serviced = 0;
+        var skippedAbsent = 0;
+        var skippedLocked = 0;
+        var failed = 0;
+        var truncated = 0;
+
+        foreach (var candidate in candidates)
+        {
+            var identity = candidate.Row.Identity;
+            var root = candidate.Root;
+
+            if (!Directory.Exists(root))
+            {
+                skippedAbsent++;
+                stdout.WriteLine($"{identity}: skipped — {root} no longer exists on disk.");
+                continue;
+            }
+
+            if (apply)
+            {
+                IndexTelemetry.Note(home, CliSessionId, "started", identity);
+            }
+
+            IndexReport report;
+            try
+            {
+                report = RepoIndexRun.Freshen(connection, home, config, settings, root, apply, budget: null, now);
+            }
+            catch (Exception e)
+            {
+                failed++;
+                if (apply)
+                {
+                    IndexTelemetry.Note(home, CliSessionId, "failed", identity);
+                }
+
+                stdout.WriteLine($"{identity}: failed — {e.Message}");
+                continue;
+            }
+
+            if (apply)
+            {
+                IndexTelemetry.Note(home, CliSessionId, "finished", identity);
+            }
+
+            // §6.4 (commit E, not yet built): IndexLock reports contention as a zero-count report
+            // carrying this note, which every caller of CodeIndexer.Index receives without needing
+            // to know a lock exists. Matched here so a commanded run counts and reports it (never
+            // silently) the moment IndexLock starts producing it — nothing else in this method
+            // needs to change when that lands.
+            var lockNote = report.Notes.FirstOrDefault(
+                n => n.StartsWith("skipped: another process is indexing this repo", StringComparison.Ordinal));
+            if (lockNote is not null)
+            {
+                skippedLocked++;
+                stdout.WriteLine($"{identity}: {lockNote}");
+                continue;
+            }
+
+            serviced++;
+            PrintCandidateReport(identity, report, stdout);
+
+            if (report.Notes.Any(n => n.Contains(
+                "skipped deletions, because a partial scan cannot show a file is gone", StringComparison.Ordinal)))
+            {
+                truncated++;
+                stdout.WriteLine("  partial — not marked scanned");
+            }
+        }
+
+        stdout.WriteLine();
+        stdout.WriteLine($"{serviced} serviced, {skippedAbsent} skipped (absent), "
+            + $"{skippedLocked} skipped (locked), {failed} failed"
+            + (truncated > 0 ? $", {truncated} partial — not marked scanned" : string.Empty));
+
+        if (!apply)
+        {
+            stdout.WriteLine();
+            stdout.WriteLine("Dry run only — nothing was changed. Re-run with --apply to index.");
+        }
+
+        return failed > 0 || skippedLocked > 0 ? 1 : 0;
+    }
+
+    private static void PrintCandidateReport(string identity, IndexReport report, TextWriter stdout)
+    {
+        stdout.WriteLine(identity);
+
+        var mode = report.FullScan ? "full scan" : "queue drain";
+        var verb = report.Applied ? string.Empty : "would be ";
+        stdout.WriteLine($"  {mode}: {report.FilesConsidered} file(s) considered, {report.Analyzed} analyzed, "
+            + $"{report.FactsWritten} {verb}written, {report.FactsClosed} {verb}closed");
+
+        foreach (var note in report.Notes)
+        {
+            stdout.WriteLine($"  {note}");
+        }
+    }
+
+    /// <summary>
     /// The one implementation of "resolve a requested path to its enclosing git checkout root,
     /// or refuse" — shared by every verb here and by <see cref="EngramMcpTools.IndexRepo"/>, so a
     /// path outside any checkout is refused the same way from both entry points (D53).
@@ -313,7 +461,7 @@ internal static class RepoCommand
 
     private static int Unknown(string subcommand, TextWriter stderr)
     {
-        stderr.WriteLine($"error: unknown repo subcommand '{subcommand}'. Expected enroll, decline, later, reset, or list.");
+        stderr.WriteLine($"error: unknown repo subcommand '{subcommand}'. Expected enroll, decline, later, reset, index, or list.");
         return 2;
     }
 }

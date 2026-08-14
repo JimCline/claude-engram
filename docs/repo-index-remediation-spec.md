@@ -486,19 +486,33 @@ The no-flag guard is the load-bearing half, per D49's own note: a tier-3 test as
    here, because this verb was asked to do work and silence would read as work done.
 2. `var candidates = RepoFreshness.Due(connection, IndexingSettings.FullScanIntervalMinutes, now, exclude: []);`
 3. For each candidate, in the returned (most-neglected-first) order:
-   - `IndexTelemetry.Note(home, "cli", "started", identity)`
    - `RepoIndexRun.Freshen(connection, home, config, settings, root, apply, budget: null, now)` —
      `budget: null` means `CodeIndexer` applies `ScanBudget.Default`, the same bound the single-repo
      command gets (§10, NE-5).
-   - `IndexTelemetry.Note(home, "cli", "finished", identity)`
    - print the report through `RepoCommand`'s own renderer
-4. On an exception from one repo: emit `"failed"` for that identity, print the error, **continue to
-   the next repo**, and exit **1** at the end. One unreadable checkout must not abandon the other
-   nine — the same shape as `backup replay`'s "what it cannot write, it skips and counts".
+   - **Only when `apply` is true**, bracket the run with
+     `IndexTelemetry.Note(home, "cli", "started", identity)` and
+     `IndexTelemetry.Note(home, "cli", "finished", identity)`. A dry run emits neither.
+4. On an exception from one repo: emit `"failed"` for that identity **when `apply` is true**, print
+   the error, **continue to the next repo**, and exit **1** at the end. One unreadable checkout must
+   not abandon the other nine — the same shape as `backup replay`'s "what it cannot write, it skips
+   and counts".
 5. On a lock skip (§6.4): count it, print the note naming the holder, and exit **1** at the end.
    This is a **commanded** surface, so a skip is never silent.
 6. Print a trailing summary: serviced / skipped-absent / skipped-locked / failed, and the count of
    truncated scans.
+
+**Why a dry run is silent.** All three phases gate on the same `apply`, together. `index` events are
+what a reader counts to answer whether automatic indexing is running, and D55 makes `telemetry.jsonl`
+and the webhook feed the same data by construction — so a dry run emitting `started`/`finished`
+announces work that did not happen, to a live feed as well as to the log. That is D56's ruling
+applied: the hook-driven capture was given its own kind rather than folded into `remember`, because
+folding inflates the number a gate turns on in the direction that looks like success. A separate
+`index-dry-run` kind is rejected on the other half of D56 — a kind nothing reads is a feature that
+reads as switched off, and no reader for it has been asked for.
+
+Gating the phases separately is also forbidden: a `failed` with no `started` violates D55's
+reports-both-ends contract. An exception on the dry path surfaces as a nonzero exit and stderr.
 
 ### 4.4 D53 compliance
 
@@ -940,19 +954,55 @@ uncommitted change under test, and a pattern spelling `·` as a bare `.` silentl
     **Do not open a production seam to reach it.** An injection point existing only so five lines
     of control flow can be asserted buys a property that is already fully visible on inspection,
     and pays permanent indirection on the batch path for it.
+    **Scope correction.** The degradation argument above enumerates *filesystem* boundaries only —
+    `GitFileLister.List` returning null, `RepoScanner.Walk` catching and continuing (more so after
+    commit E2, which absorbs the unreadable-directory case that previously propagated),
+    `PathCanonicalizer.Canonical` returning at its depth bound. **Database errors are a different
+    class and were outside that analysis**: a SQLite error escaping `CodeIndexer.Index` would
+    propagate to `:323` and trip `failed`. So this path is **unverified, not untestable by
+    construction**, and the untried avenue is database-error injection rather than any filesystem
+    fixture. Ships uncovered at B on that basis. Still do not open a production seam to reach it — if
+    someone provokes it through an ordinary store fixture, add the test then.
   - **truncated scan**: with a `ScanBudget` forced tiny, assert `last_full_scan_at` is **still NULL**
     afterwards and no deletions were applied. *This is the D53 guard and it is the most important
     test in the commit.* Falsify by removing the `if (scan.Truncated)` branch in `CodeIndexer`.
-  - **exit codes**: a missing `--all` exits **2**. **The exit-1 arm has no reachable trigger at
-    this commit** — the throw is unreachable (above) and lock skips do not exist until commit E,
-    which is where it should be asserted, on a skip that can actually be provoked. Do not
-    manufacture the 1 here: a test that reaches it by stubbing the only thing that produces it is
-    asserting the stub. The file's existing split between the two (`:23`, `:44`, `:226`, `:317`)
-    is easy to break by accident, and a test that asserts only "non-zero" cannot catch it.
-- **Tier 3** (`Engram.EndToEnd.Tests`): `engram repo index --all` with **no** `--apply` writes
-  nothing — snapshot every file in the home by size and mtime around the run. Per D49 this is the
-  load-bearing half. Also: bare `engram repo index` exits **2** with a usage line that lists `index`
-  among the subcommands.
+  - **exit codes, all three arms**: a missing `--all` exits **2**; a successful run exits **0**; and
+    exit **1** is asserted on both triggers reachable at this commit — **no store on disk with
+    `--apply` absent** (`:267-273`) and **`RepoFreshness.Due` throwing against a store predating the
+    code-index tables** (`:287-296`). The file's existing split between 0 and 2 (`:23`, `:44`, `:226`,
+    `:317`) is easy to break by accident, and a test asserting only "non-zero" cannot catch it.
+  - **The two components of `:369`'s aggregate are deliberately not asserted here.** `skippedLocked`
+    (declared `:300`, incremented `:342`) is **unconditionally dead until commit E** — it increments
+    only inside `if (lockNote is not null)`, no `IndexLock` type exists yet, and the code's own comment
+    at `:333-337` says so. Its assertion is an obligation on commit E, recorded in E's block. `failed`
+    (declared `:301`, incremented `:325`) is **unverified rather than unreachable** — see line 915.
+    A test that reached either by stubbing the only thing that produces it would be asserting the stub.
+- **Tier 3** (`Engram.EndToEnd.Tests`): `engram repo index --all` with **no** `--apply` writes nothing —
+  snapshot every file in the home by size and mtime around the run. Per D49 this is the load-bearing
+  half. **The fixture must contain at least one repo that `RepoFreshness.Due` actually returns** — an
+  enrolled repo with `last_full_scan_at` NULL and a real checkout on disk holding at least one
+  indexable file — so the loop body executes. A run over zero candidates asserts nothing: it stays
+  green with `--apply` ignored entirely, which is the same "a guard that cannot fail is worthless"
+  defect this spec has now hit five times. **Falsification is the acceptance test**: force `apply` on
+  inside the loop and confirm this test goes red. Report that result, not merely that the test passes.
+  `Snapshot` must keep enumerating every file with no filtering — do not exclude `telemetry.jsonl` or
+  any other path.
+
+  **If the strengthened test goes red on something other than `telemetry.jsonl` — a `-wal` or `-shm`
+  sidecar, a store mtime — that is a finding to report to the Architect, not a licence to add an
+  exclusion.** The natural response to a red snapshot is to filter whatever moved, which hollows the
+  guard out through the side door the previous paragraph just closed.
+
+  *One scope boundary, conditional on a mechanism I have not verified:* if the `--all` path opens the
+  store with `OpenInitialized` rather than `Open`, this guarantee holds only against a store already at
+  the current schema — a dry run against an older store legitimately migrates, and D31 makes that
+  migration snapshot first. That is not a defect, but state it here rather than let a later reader take
+  the test as promising more than it does. If the path opens with `Open`, no scoping is needed and this
+  paragraph should be deleted.
+
+  Also: bare `engram repo index` exits **2** with a usage line that lists `index` among the
+  subcommands.
+
   Set `ENGRAM_HOME` or pass `--home` on every published-binary invocation.
 
 ### Commit C — `doctor`
@@ -1017,6 +1067,9 @@ uncommitted change under test, and a pattern spelling `·` as a bare `.` silentl
 - **Tier 2**: the commanded/ambient reporting split (§6.4's table) — a blocked commanded caller exits
   non-zero, a blocked ambient caller exits 0 and prints nothing. Falsify by collapsing them to one
   behaviour; both arms must redden.
+- **Tier 2**: **`skippedLocked` exits 1** — the obligation deferred from commit B. `IndexLock` is what
+  first makes `:342` reachable, so this is the commit where a provokable lock skip must assert exit
+  **1** and the note naming the holder. Falsify by reverting `:369`'s aggregate to `failed > 0` alone.
 - **Tier 3** — **extend** commit A's `ConcurrentIndexConvergenceTests` rather than writing a second
   one, with the assertion the lock exists *for*: the concurrent run's **closed**-fact count now equals
   the serial run's, and no fact is written and superseded within one run by a sibling process.
@@ -1039,9 +1092,17 @@ uncommitted change under test, and a pattern spelling `·` as a bare `.` silentl
   - **summary text, not just the flag**: assert the rendered summary **names** the unreadable
     directory and its count. Falsify by deleting the new arm from `Summary()`'s stop switch — if that
     switch has a `_` default, this is the only assertion in the commit that reddens (§13.3).
-  - **stop precedence**: a walk that skips an unreadable directory *and then* exhausts the time budget
-    reports the time budget as its stop while still naming the skipped directory in the summary
-    (ruling C). Falsify by making the new branch's assignment unconditional.
+  - **No stop-precedence test, deliberately.** An earlier version of this spec required `stop` to be
+    assigned only when still `Complete`, and a test that a later stop reason still wins. Both are
+    withdrawn: the time and ceiling branches `return` out of `Walk`, so nothing runs after either
+    fires, and the only branch that can have pre-assigned `stop` is the unreadable one writing the same
+    value. Conditional and unconditional assignment are therefore the same function on every
+    reachable path, and no test can separate them. Three constructions were tried and correctly
+    refused — a wall-clock race (see `Walk_OutOfTime_StopsBeforeEnumeratingAnything`'s doc comment on
+    why a flaky guard gets deleted rather than kept), a pair of sibling directories whose visit order
+    depends on `Directory.EnumerateFileSystemEntries`'s unspecified ordering, and an injectable
+    clock/ordering seam. The seam is refused on the same grounds §13.4 refuses prefix-scoped
+    suppression: permanent indirection on the walk to witness a state that cannot occur.
   - **layer 2**: an existing, empty, readable root with facts already indexed → deletions skipped, the
     note names the condition, and `last_full_scan_at` is **not** stamped (ruling D). Fully portable —
     no permissions needed, which is the point of staging the mountpoint case this way. Falsify by
@@ -1054,6 +1115,25 @@ uncommitted change under test, and a pattern spelling `·` as a bare `.` silentl
     costume. Assert inside the test that the enumeration actually failed, or skip.
 - **Tier 3**: none required. Every behaviour here is reachable at tier 2 and the published-binary
   surface is unchanged.
+
+### Commit E3 — doctor warns on suppressed deletions
+
+- **Tier 2**:
+  - registered repo, deletions suppressed by either layer → `doctor` reports **`Warn`** for that row.
+    Assert the **state**, not the Notes text: a Notes-only assertion passes with the defect fully
+    present, which is how the E2 version of this was missed.
+  - **the clear path**: suppress, then run a clean full scan, assert the row returns to `Ok`. Falsify
+    by deleting the clear — this is the load-bearing half and the one most likely to be got wrong.
+  - never-suppressed registered repo → `Ok`, silent. The negative that stops this warning on every repo.
+  - exit code stays 0 in every case above (D37).
+  - **the v7→v8 migration**: falsify by breaking the migration deliberately and confirming the test
+    goes red — a passing test alone proves nothing (§14.5.1). If the ALTER is guarded by a presence
+    check, the pre-v8 fixture must genuinely lack the column (drop it after rollback, or build the v7
+    shape directly); stamping the version number down on a current-schema store is not sufficient.
+- **Tier 3**: `engram doctor` against a home with a suppressed repo exits 0 and prints the warning row.
+  Set `ENGRAM_HOME` or pass `--home`.
+- **Tier 3**: `engram doctor` against a **v7** store (no suppression column) exits 0 with no `Broken`
+  row (§14.5.2). This is an exit-code guard, so it belongs at this tier, on the published binary.
 
 ### Commit F — `IndexFreshnessService`
 
@@ -1092,6 +1172,7 @@ riskiest change is not entangled with the newest feature.
 | **D** | `index --freshen` + `--skip` + launcher job | Touches the session-start path. Lands **alone** so a bisect on a hook-latency regression finds it unambiguously — this repo's history says that class of regression is only visible at tier 3. |
 | **E** | `IndexLock` | Touches the hot path of *everything already shipped*. Lands alone, and **before** F, so if it breaks something the bisect is not confused by a new background service. Its own tier-3 assertion extends A's guard. |
 | **E2** | RepoScanner truncation on an unreadable directory (§13) | Must precede F: F is what runs `--all` unattended on a timer, which is what turns this from a hazard needing a coincidence into one sampled continuously. It does **not** need to block commit B — B only widens a window that already exists — though landing it first is cheap if B has not merged. |
+| **E3** | `doctor` warns on suppressed deletions (§14) | Must precede F for the same reason E2 does: E2's Notes text suffices only while runs are commanded, and F is what removes the reader. Sibling of E2, not an afterthought — the observability §13.4 requires arrives here. |
 | **F** | `IndexFreshnessService` + `auto_index_in_background` + `indexing.json` | Purely additive behind a default-off flag. Last, because it is the only item that can be shipped disabled and enabled later. |
 
 B and C could be one commit; keeping them apart means a `doctor` regression is never bisected into an
@@ -1342,6 +1423,23 @@ which this query is structurally unable to detect.
 Whether any facts were closed and never rewritten: indexed paths in the store that no longer resolve
 on disk, which a dry-run index already computes. Decides only whether E2 carries a repair question
 alongside prevention. Both layers are preventive regardless, so this does not block the commit.
+
+### NE-9 — Does the incremental drain path need its own guard, and is it on commit F's critical path?
+
+`CodeIndexer`'s incremental drain derives deletions from per-path `File.Exists`, outside the full-scan
+branch layer 2 guards. An unmounted volume can therefore still close facts for a queued path beneath
+it. Neither layer extends to cover it: per-path existence is not a scan, so there is no `Truncated`,
+and `onDisk is empty` has no analogue.
+
+**Determine**: whether commit F's timer drives full scans or drains.
+
+**Decides**: full scans → this is a separate item to settle before F, and E2's scope stands as
+written. Drains → the drain path is on F's critical path and needs its own design before F ships.
+E2's scope stands either way; it is not to be widened after review and falsification.
+
+Bound, for whoever picks this up: a path is only queued if `file-touched` fired, which requires the
+volume mounted — so exposure is "edited while mounted, drained after unmount", bounded by queue
+contents rather than repo size. Smaller than the full-scan hazard, same kind of wrong.
 
 ---
 
@@ -1625,13 +1723,29 @@ scan may do, and that ruling is already implemented one layer up in `CodeIndexer
 - The catch records the failure into `skipped` under a new `SkipReason` — a count plus the first
   failing path. `ScanResult.Summary()` already renders the `skipped` dictionary, so the count reaches
   every existing caller with no change at those call sites.
-- The catch sets `stop` to a new `ScanStop` value **only if `stop` is currently `Complete`** (ruling C).
+- The catch sets `stop` to the new `ScanStop` value unconditionally. This is safe, and the reason is
+  worth stating at the assignment: every other stop reason `return`s out of `Walk` entirely, so
+  nothing can run after one is set, and the only branch that can have already assigned `stop` is this
+  one — with the same value. A conditional here would defend a state the loop's control flow makes
+  unreachable.
 - `Summary()`'s stop switch gains an arm for the new value.
 - `Truncated` (`:59-68`) is `Stop != ScanStop.Complete` and needs no change; D53's guard in
   `CodeIndexer` then does the rest with no edit.
-- `doctor` already branches on `Truncated` (`Diagnostics.cs:965`), so the warning surface exists.
-  `Warn`, never `Broken` — an unreadable directory is a state, not corruption, and D37's exit code
-  must stay intact.
+- `doctor`'s existing `Truncated` branch (`Diagnostics.cs:965-972`) is **not** the warning surface this
+  design needs. It sits behind `if (!reader.Read())` — the never-indexed repo. A *registered* repo,
+  which is exactly the repo whose deletions were just suppressed, falls through to `:990` and reports
+  `DiagnosisState.Ok`. The new summary text does reach that row's message and `report.Notes`, so the
+  information is present, but D37's design is that people read the state column, and a column saying
+  `Ok` about a repo that will never apply a deletion again defeats §13.4's entire acceptance argument.
+- E2 therefore adds a **second, distinct** `Warn`: *registered repo, last run's deletions suppressed*.
+  Not a widening of the never-indexed branch — the two conditions have different remedies and one
+  message would have to hedge about which it means. `Warn`, never `Broken`; D37's exit code is intact.
+- The condition originally specified — "an index run happened and the full-scan stamp did not advance"
+  — is **not implementable**. `repo_enrollment` (`docs/engram-schema.sql:343-350`) holds exactly one
+  indexing timestamp, `last_full_scan_at`; `decided_at` is set once at enrollment, `RepoIndexRun.Freshen`
+  persists nothing, and the only other "a run happened" signal is `IndexTelemetry.Note`, which writes to
+  `telemetry.jsonl` — a log stream, not a column a diagnosis query can join. The `Warn` is therefore
+  built on recorded suppression state and moves to commit E3 (§14).
 
 **The trap, and it is silent.** If `Summary()`'s stop switch carries a `_` default, a new enum value
 renders as *nothing* and the fix ships with its only observable missing. The test must therefore
@@ -1644,7 +1758,10 @@ A repo containing one permanently unreadable directory will never again stamp `l
 will never again apply deletions. That is correct under D53 **once it is observable**, and silent it
 would trade a data-loss bug for a deletions-quietly-stopped-forever bug, which is harder to find and
 stays wrong longer. The observability in §13.3 is not decoration; it is the condition on which this
-cost is acceptable.
+cost is acceptable. Concretely: the Notes text discharges this **only while indexing runs are commanded**,
+where someone reads the output in front of them. It does not survive commit F, which runs `--all`
+unattended on a timer with nobody reading. The state-column `Warn` is therefore required before F, on
+the same clock and for the same reason E2 is — it lands in commit E3 (§14), not here.
 
 **Prefix-scoped suppression — suppressing deletions only beneath the unreadable subtree and applying
 them elsewhere — is rejected for now.** It is more code on the destructive path, defending a state
@@ -1683,8 +1800,10 @@ The `states is non-empty` clause is what keeps a brand-new repo with nothing ind
 
 - D53's guard in `CodeIndexer` (`:140-151`) is correct. Do not rewrite it; layer 1 exists to arm it.
 - `Truncated`'s definition (`RepoScanner.cs:59-68`).
-- The time and ceiling branches' existing unconditional assignment to `stop`. They `break`; only the
-  new branch is conditional (ruling C).
+- The time and ceiling branches `return` out of `Walk` (`:225-226`, `:261-262`, `:267-268`). The new
+  branch's unconditional assignment to `stop` depends on that and on nothing else — if a future stop
+  reason is ever added that sets `stop` and continues walking, this assignment has to be revisited,
+  and §7's E2 block explains why no test guards it today.
 - `doctor` stays `Warn` for every state introduced here. Nothing here may set exit 1.
 - `RepoCommand.IndexAll:308`'s existence check stays — see the note at §7's commit B block. It guards
   *use* where `IsSelectable` guards *selection*, and this commit does not close that window.
@@ -1706,3 +1825,137 @@ named differently in the tree:
 
 If any is wrong, the design in §13.3 and §13.5 still holds — only the implementation shape moves.
 Report the gap rather than adapting the design.
+
+Resolved: `Diagnostics.cs:965` *is* the `Truncated` branch, but covers only never-indexed repos — half
+the population the guard must inform. Recorded because this is what §13.7 exists for: the assumption
+was flagged as unverified, checked, and came back half true, which is the outcome an unflagged
+assumption produces silently.
+
+---
+
+## 14. Item 6 — doctor warns on a registered repo whose deletions were suppressed (commit E3)
+
+### 14.1 Why this is separate from E2
+
+§13.4 makes observability the condition on which layer 1's permanent deletion-suppression is
+acceptable. E2 delivers the behaviour and the Notes text but not the state column, and D37's design is
+that the state column is what people read. The Notes text suffices while runs are commanded; it does
+not survive F's unattended timer. E3 is therefore gated before F for the same reason E2 is.
+
+### 14.2 The mechanism
+
+A nullable column on `repo_registry` recording that the last run suppressed deletions and which
+condition fired. NULL means not suppressed. Match the table's existing naming.
+
+- **Written** in the two branches that already skip `stampFullScan` and add a note (§13.3, §13.5).
+- **Cleared** where `stampFullScan = options.Apply` happens — a full scan that applies deletions
+  resolves the condition.
+- **Read** by `doctor` as a second, distinct `Warn` beside the existing never-indexed branch at
+  `Diagnostics.cs:965-972`. `Warn`, never `Broken`; D37's exit code is intact. It reads from the same
+  `repo_registry` row `CheckRepo` already selects, rather than issuing a second lookup.
+- Schema v7 → v8. `docs/engram-schema.sql` is the authority for shape and changes with it. D31's
+  unconditional snapshot applies as normal.
+
+**Why not `repo_enrollment`, where this was first specified.** It fails silently at both ends for any
+repo that is registered but not enrolled — the state that `engram index --apply <path>` produces on a
+repo nobody enrolled. The write is a bare `UPDATE … WHERE identity`, which matches zero rows and
+returns success; and `CheckRepo` enumerates through `repo_registry`, so a warning keyed to enrollment
+can never fire for that population however badly its deletions were suppressed. Suppression describes
+the integrity of the *index* — the stale `file_state` rows recall will read — and that harm is identical
+whether or not anyone enrolled the repo. `last_full_scan_at` stays on `repo_enrollment` because it is
+the scheduler's due-ness clock, which is a property of the user's decision; this column is not.
+
+**Rejected: upserting an enrollment row when suppression is recorded.** It manufactures enrollment rows
+for repos the user never decided about, corrupting the population that drives the offer hook and the
+due-candidate list, and `state`'s CHECK constraint has no value meaning "undecided" — the upsert would
+have to invent one. A doctor warning is not worth that.
+
+**Assumption, stated because it is decisive and I verified it only by reading:** `CodeIndexer` is taken
+to have created or refreshed the repo's `repo_registry` row *before* control reaches the suppression
+write. If it does not, or if the order is the other way round, the new write silently no-ops exactly as
+the old one did. The test in §14.3/§14.4 that covers this must therefore index a repo **that has never
+been indexed before** and truncate that first scan — a re-index of an already-registered repo finds the
+row left by the previous run and passes with the ordering defect intact. That is the same
+population-cannot-vary shape, and this is the fifth instance of it in this commit series.
+
+**Required negative test:** a repo that is registered and **not** enrolled, whose scan was truncated,
+must produce the `Warn`. The four existing E3 tier-2 tests all call `RepoEnrollment.Enroll` first, so
+this gap is untested by construction and would survive the move.
+
+### 14.3 Why not a staleness threshold
+
+`last_full_scan_at` goes stale for reasons unrelated to suppression: a backlog leaving a repo waiting
+under `Due()`'s most-neglected-first ordering, a daemon that was not running, **a laptop shut for a
+week**. Any threshold makes all of those report a fault, which is D37's stated route to people
+learning to stop reading `doctor` — and it would poison the state column for the warning that most
+needs to be believed. It also requires a constant nothing derives, the same objection sustained
+against a threshold in layer 2.
+
+### 14.4 What must not change
+
+- The clear path. A column set on suppression and never cleared warns forever about a resolved
+  condition — the D33 retired-key shape, where a stale value reads exactly like a live one.
+- `Warn`, never `Broken`. Nothing in E3 may set exit 1.
+- E2's branches. E3 adds a write to each; it does not restructure them.
+
+### 14.5 Two failure modes this migration is specifically exposed to
+
+Both are shapes this repo has already paid for. Neither is caught by the tests §14.4 asks for, so they
+are separate requirements.
+
+**14.5.1 — If the ALTER is guarded, the fixture must genuinely lack the column.**
+
+SQLite has no `ADD COLUMN IF NOT EXISTS`, so an unguarded `ALTER TABLE repo_registry ADD COLUMN ...`
+against a table that already has the column throws. That is an acceptable outcome: it fails loudly and
+the fixture problem is visible immediately.
+
+The hazard is the guarded form. If the migration checks `pragma table_info(repo_enrollment)` and skips
+the ALTER when the column is present — a reasonable thing to write, and idempotent — it reproduces D60
+exactly: *a migration whose DDL is conditional needs a fixture genuinely missing it.
+`WriteVersion1Store` rolls a current-schema store back, so `CREATE INDEX IF NOT EXISTS` no-opped and a
+deliberately wrong migration left 18 of 18 green until the test dropped the index first.*
+
+So: **if the v7→v8 step guards the ALTER in any way, the pre-v8 fixture must produce a
+`repo_registry` that genuinely does not have the column** — by dropping it after the rollback, or by
+building the v7 table shape directly. Stamping the version number down on a current-schema store is not
+sufficient and is the exact defect D60 records.
+
+The acceptance test is falsification, not inspection: **break the migration deliberately and confirm
+the migration test goes red.** If it stays green, the fixture is the defect and the migration is
+unproven regardless of what the code says. Report the result of that falsification, not just that the
+test passes.
+
+*Assumption, unverified: this section names `WriteVersion1Store` from D60's write-up and does not
+assert that it, or any particular helper, is what builds the pre-v8 fixture today. Whatever helper
+does, the property above is what it must have.*
+
+**14.5.2 — `doctor` reads un-migrated stores by design, so the new check must tolerate the column's
+absence.**
+
+`CheckRepo` tolerates two absences with one check, because doctor may be run against any older schema —
+D37 has it open with `Open`, never `OpenInitialized`, so migration cannot be what makes the check
+possible:
+
+- **the column** `repo_registry.last_scan_suppressed_reason` — the store is pre-v8; repos still
+  enumerate and suppression is simply unknown;
+- **the table** `repo_registry` — the store predates the repository index; the repo check cannot run
+  at all.
+
+Both arrive as `SqliteException`; match `no such column` **or** `no such table` at the existing catch
+rather than adding a second one. Do not catch on `SqliteErrorCode` alone — that statement is a constant
+in our own source, so a typo in it would become a permanent silent "not applicable". Neither absence
+may produce `Broken` and both must exit 0: a store a schema behind is not a fault, and the next ordinary
+open migrates it (D37). Neither may render as a clean bill of health either — the row must say why the
+check could not run. A check reporting Ok when it could not execute is how a person learns the row
+means nothing.
+
+The covering tier-3 test builds its fixture by explicit `DROP TABLE IF EXISTS repo_registry`, never by
+relying on an older `WriteVersionNStore` happening not to create it — D60's trap is that a fixture
+rolled back from a current-schema store leaves the thing present and the guard no-ops green. Acceptance
+is the falsification: narrow the catch back to `no such column` only, republish, and the test must go
+red on the `no such table` failure. If it does not go red, `CheckRepo` short-circuits before the SELECT
+on that fixture, which is a finding for the Architect rather than a fixture to tune.
+
+Required test: **run `doctor` against a store missing `repo_registry` entirely, and against a v7 store
+missing only the column, and assert exit 0 with no `Broken` row in both.** This belongs in the tier
+that drives the published binary, since the failure is an exit code.

@@ -5056,3 +5056,119 @@ Duplicate tuples are `fact` rows, so by D8 `repair` may never delete one: the du
 this change makes replay survive them rather than removing them.
 
 Design and rulings: `docs/backup-replay-supersession-spec.md`.
+
+## D69 — Repo-index remediation: dry-run silence, where suppression state lives, and what a falsification has to reproduce
+
+**A dry run emits no telemetry at all.** `engram repo index --all` without `--apply` brackets
+nothing: the `started`/`finished`/`failed` triple in `RepoCommand.IndexAll` is gated on `apply`,
+and all three are gated *together*, because a `failed` with no matching `started` breaks the
+reports-both-ends contract that D55 exists to provide — anything displaying activity has to know
+when to stop displaying it. The alternative on the table was to keep emitting and exclude
+`telemetry.jsonl` from the tier-3 snapshot that asserts a dry run writes nothing. That was
+rejected twice over. First on D56's reasoning: `index` is the kind a reader consults to answer
+whether automatic indexing is running, and folding a run that did nothing into it inflates that
+answer in the direction that looks like success — the same defect D43 traced a wrong conclusion
+back to. Second on what the snapshot is *for*: `Snapshot` enumerates every file under the home
+and filters nothing, which is the whole of its value, because it catches writes its author never
+anticipated. Carving out one filename does not exempt one write, it removes that file from
+coverage permanently, for every future writer. A separate `index-dry-run` kind was also rejected,
+on D56's other half — a kind that is declared and never read is a feature that reads as switched
+off.
+
+The guard that holds this had to be strengthened before it guarded anything: as first written it
+ran against zero enrolled repos, so the loop body never executed and it would have stayed green
+with `--apply` ignored entirely. It now seeds a repo that `RepoFreshness.Due` actually returns.
+Measured on the published binary with the gate removed: `telemetry.jsonl` 1327 → 2216 bytes under
+a supposed no-op. That number is the acceptance, not the passing test.
+
+**Deletion-suppression state lives on `repo_registry`; `last_full_scan_at` stays on
+`repo_enrollment`.** The distinction is what keeps the two tables apart and it is not cohesion.
+`last_full_scan_at` is the scheduler's due-ness clock, so it is a property of a decision the user
+made — no enrollment, no schedule, nothing to record. `last_scan_suppressed_reason` describes the
+integrity of the index that *recall* reads: a truncated scan means `CodeIndexer` skipped
+deletions (D53), so `file_state` holds rows for files that are gone, and recall serves them. That
+harm is identical whether or not anyone enrolled the repository, and it is reachable without
+enrollment through `engram index --apply <path>`, which registers a repo and indexes it while
+`repo_enrollment` stays empty.
+
+Keyed to enrollment the failure was silent at *both* ends, which is worse than it first reads. The
+write was a bare `UPDATE repo_enrollment SET … WHERE identity = $identity`: for a registered but
+unenrolled repo it matched zero rows and returned success, so nothing was recorded — and
+`Diagnostics.CheckRepo` enumerates through `repo_registry`, so nothing was reported either. Doctor
+answered `Ok` about a store whose index it had not checked.
+
+Rejected: upserting an enrollment row so the write lands. It corrupts the population that drives
+the offer hook and the due-candidate list — manufacturing enrollment rows for repositories the
+user never decided about — and `state`'s CHECK constraint has no value meaning *undecided*, so the
+fix would have had to invent one. A cheap repair that falsifies the table's meaning is not cheap.
+
+**`CheckRepo` tolerates a missing column and a missing table through one catch.** Doctor opens
+with `EngramDatabase.Open` and never `OpenInitialized`, precisely so it can say *your store is a
+schema behind* rather than performing the answer (D37, D31) — so it can be pointed at any older
+schema. A pre-v8 store lacks `last_scan_suppressed_reason` and repos still enumerate with
+suppression unknown; a store predating the repository index lacks `repo_registry` entirely and the
+check cannot run at all. Both arrive as `SqliteException`, and the catch matches `no such column`
+or `no such table`. It may **not** match on `SqliteErrorCode` alone: that statement is a constant
+in our own source, so a typo in it would be swallowed into a permanent silent "not applicable" —
+the identical failure to the one being fixed, arriving through a different door.
+
+Neither absence is `Broken` and both exit 0: a store a schema behind is not a fault and the next
+ordinary open migrates it, and a doctor that reports red for a supported state is one people learn
+to stop reading (D37). Neither may render as a clean bill of health either — the row states why
+the check could not run, in both the `Ok` branch and the truncated-scan `Warn` branch, since a
+check reporting fine when it could not execute is how a person learns the row means nothing.
+
+**Stamping the scan and clearing the suppression reason are one transaction, and the non-atomic
+path was deleted rather than merely left unused.** Two commits meant a crash between them left a
+stale reason against a completed scan, which reads as suppression that is not happening.
+`RepoEnrollment.StampFullScan` now takes a caller-supplied transaction, and the auto-committing
+3-arg overload — by then reachable only from its own tests — was removed rather than kept for
+convenience. A path nothing in production drives, held alive by the tests that drive it, is the
+same defect as a guard that cannot fail; requiring the transaction makes the unsafe form
+unreachable instead of merely unpopular.
+
+**A falsification must reproduce the defect's failure *mode*, not merely produce a failure.** D60
+already records the too-quiet half — a break spelling `·` as a bare `.` matches one byte against
+two, silently no-ops, and the suite stays green, a falsification reporting success while proving
+nothing. This series bought the mirrored half, and it is the more seductive error because the
+tests do go red.
+
+The worked example: to prove that the new registered-but-never-enrolled guard catches the
+enrollment-keyed regression, the write was re-pointed at `repo_enrollment`. Five of six tests
+failed, not the predicted one — because the column had by then *moved*, so the statement threw
+`no such column` on every call. What that run demonstrated is that six tests notice an exception.
+The original defect was a silent zero-row UPDATE returning success, and whether the new test
+caught *that* was still entirely unproven. The valid break keeps the statement where the column
+exists and restores the enrollment gate that was the actual bug —
+`… WHERE identity = $identity AND EXISTS (SELECT 1 FROM repo_enrollment WHERE identity =
+$identity)` — silent, enrollment-gated, no exception. Re-run: exactly one test red, with
+`Expected: Warn, Actual: Ok`, which is the silent mode itself. Too loud invalidates an arm as
+surely as too quiet, and a break louder than the defect converts a real guard into an
+exception-detector nobody asked for.
+
+**Tier-3 results are not evidence while sessions share `./out`.** `EndToEndBinary` falls back to
+`./out/engram`, so a concurrent `dotnet publish` from another session rewrites the binary
+underneath a running suite. Observed: 11 failures spanning hooks, server lifecycle, installer and
+plugin commands; a retry in which only 2 failed, with entirely different errors and two *different*
+tests newly failing; and `a native dependency did not survive the install`, which is the llama.cpp
+natives (D45) being republished mid-run. Non-determinism spread across unrelated classes with a
+shared publish target is that signature. Re-run at a clean HEAD in an isolated worktree against a
+private publish: 77/77 of the same tests, and 183/183 for the full tier with the change applied.
+
+The near-miss is the part worth keeping. Several of those failures read `engram exited but its
+output pipes never closed`, which is the exact wording of a defect this repo has already paid for
+once — a detached maintenance child inheriting the hook's stdout, where a pipe reaches EOF only
+when its last writer closes. Filing that as flakiness would have buried a known-live failure mode
+under an environmental excuse. A contaminated tier-3 run is not merely unreliable; it is
+*confusing*, because it produces symptoms that impersonate real bugs.
+
+**The shape behind most of this series, stated once because it recurred at every layer: a correct
+branch or check wired to a population that cannot vary in the case it exists to catch.** The
+dry-run guard iterating zero candidates. Every enrollment test calling `Enroll` first, so the
+unenrolled path was untested by construction. The suppression write keyed to a table whose row may
+not exist. A doctor test dropping a table no code path reads. A required message nothing asserts —
+found because an implementor reported, as evidence a change was safe, that no test covered it.
+That report is the finding, not the clearance: whatever can be edited freely can be deleted
+silently with the suite green. Each of these passes. None of them can fail. The only reliable
+detector is to break the thing and watch the red, which is why every guard in this series was
+accepted on its falsification and not on its result.

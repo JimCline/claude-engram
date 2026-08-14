@@ -83,7 +83,11 @@ public class RepoFreshnessTests
         // A stamped-but-overdue row classifies as Stale, not UnfulfilledEnrollment — it is
         // ambient work, the same population NextDue's includeAmbient: false must exclude.
         RepoEnrollment.Enroll(connection, "stale-repo", MakeRepoDir(sandbox), now.AddDays(-2));
-        RepoEnrollment.StampFullScan(connection, "stale-repo", now.AddDays(-2));
+        using (var transaction = EngramDatabase.BeginWrite(connection))
+        {
+            RepoEnrollment.StampFullScan(connection, transaction, "stale-repo", now.AddDays(-2));
+            transaction.Commit();
+        }
 
         var withoutAmbient = RepoFreshness.NextDue(connection, 60, now, includeAmbient: false, EmptySet());
         Assert.Null(withoutAmbient);
@@ -118,10 +122,18 @@ public class RepoFreshnessTests
         var now = DateTimeOffset.UtcNow;
 
         RepoEnrollment.Enroll(connection, "recently-scanned", MakeRepoDir(sandbox), now.AddDays(-30));
-        RepoEnrollment.StampFullScan(connection, "recently-scanned", now.AddHours(-1));
+        using (var transaction = EngramDatabase.BeginWrite(connection))
+        {
+            RepoEnrollment.StampFullScan(connection, transaction, "recently-scanned", now.AddHours(-1));
+            transaction.Commit();
+        }
 
         RepoEnrollment.Enroll(connection, "long-stale", MakeRepoDir(sandbox), now.AddDays(-30));
-        RepoEnrollment.StampFullScan(connection, "long-stale", now - RepoFreshness.NeglectedAfter - TimeSpan.FromHours(1));
+        using (var transaction = EngramDatabase.BeginWrite(connection))
+        {
+            RepoEnrollment.StampFullScan(connection, transaction, "long-stale", now - RepoFreshness.NeglectedAfter - TimeSpan.FromHours(1));
+            transaction.Commit();
+        }
 
         var identities = RepoFreshness.Neglected(connection, now).Select(c => c.Row.Identity).ToList();
 

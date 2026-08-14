@@ -62,7 +62,11 @@ public class RepoEnrollmentTests
         RepoEnrollment.Enroll(connection, "github.com/acme/api", "/repo", DateTimeOffset.FromUnixTimeSeconds(0));
 
         var now = DateTimeOffset.FromUnixTimeSeconds(50_000);
-        RepoEnrollment.StampFullScan(connection, "github.com/acme/api", now);
+        using (var transaction = EngramDatabase.BeginWrite(connection))
+        {
+            RepoEnrollment.StampFullScan(connection, transaction, "github.com/acme/api", now);
+            transaction.Commit();
+        }
 
         var row = Assert.Single(RepoEnrollment.ListAll(connection));
         Assert.Equal(now.ToUnixTimeSeconds(), row.LastFullScanAt);

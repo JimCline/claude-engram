@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using Engram.Cli;
 using Engram.Core;
+using Microsoft.Data.Sqlite;
 
 namespace Engram.Integration.Tests;
 
@@ -147,6 +148,200 @@ public class RepoCommandTests
         using var check = EngramDatabase.OpenInitialized(sandbox.Home);
         var row = Assert.Single(RepoEnrollment.ListAll(check));
         Assert.Equal(RepoEnrollmentState.Enrolled, row.State);
+    }
+
+    /// <summary>
+    /// §7: three enrolled repos, stamped NULL / 2h old / 5m old against the 60-minute freshness
+    /// interval — exactly the two due repos are serviced, most-neglected-first (the never-scanned
+    /// one, then the 2h-stale one), and the repo scanned 5 minutes ago is not due and never appears.
+    /// </summary>
+    [Fact]
+    public void IndexAll_SelectsDueReposInMostNeglectedFirstOrder_AndSkipsFreshOnes()
+    {
+        using var sandbox = new SandboxHome();
+
+        var neverScanned = Path.Combine(sandbox.Home.Root, "never-scanned");
+        var stale = Path.Combine(sandbox.Home.Root, "stale");
+        var fresh = Path.Combine(sandbox.Home.Root, "fresh");
+        Directory.CreateDirectory(neverScanned);
+        Directory.CreateDirectory(stale);
+        Directory.CreateDirectory(fresh);
+
+        var neverScannedIdentity = CodeIndexer.ResolveIdentity(neverScanned);
+        var staleIdentity = CodeIndexer.ResolveIdentity(stale);
+        var freshIdentity = CodeIndexer.ResolveIdentity(fresh);
+        var now = DateTimeOffset.UtcNow;
+
+        using (var connection = EngramDatabase.OpenInitialized(sandbox.Home))
+        {
+            RepoEnrollment.Enroll(connection, neverScannedIdentity, neverScanned, now);
+            RepoEnrollment.Enroll(connection, staleIdentity, stale, now);
+            RepoEnrollment.Enroll(connection, freshIdentity, fresh, now);
+
+            using (var transaction = EngramDatabase.BeginWrite(connection))
+            {
+                RepoEnrollment.StampFullScan(connection, transaction, staleIdentity, now.AddHours(-2));
+                RepoEnrollment.StampFullScan(connection, transaction, freshIdentity, now.AddMinutes(-5));
+                transaction.Commit();
+            }
+        }
+
+        var stdout = new StringWriter();
+        var exitCode = RepoCommand.Run(sandbox.Home.Root, ["index", "--all"], stdout, new StringWriter());
+
+        Assert.Equal(0, exitCode);
+        var output = stdout.ToString();
+        Assert.Contains(neverScannedIdentity, output, StringComparison.Ordinal);
+        Assert.Contains(staleIdentity, output, StringComparison.Ordinal);
+        Assert.DoesNotContain(freshIdentity, output, StringComparison.Ordinal);
+        Assert.True(
+            output.IndexOf(neverScannedIdentity, StringComparison.Ordinal) < output.IndexOf(staleIdentity, StringComparison.Ordinal),
+            "the never-scanned repo (null stamp) must be serviced before the 2h-stale one");
+        Assert.Contains("2 serviced", output, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// §7's "deleted root" scenario, adjusted to what <c>RepoFreshness.IsSelectable</c> (line
+    /// 123-127) actually does: it excludes any row whose <c>last_root</c> is absent from disk
+    /// before <c>Due()</c> ever returns a candidate, per its own comment ("An enrolled repo whose
+    /// checkout is absent is deliberately not a candidate: a missing checkout is not a freshness
+    /// problem"). So <c>IndexAll</c>'s own per-candidate <c>Directory.Exists</c>/skipped-absent
+    /// handling never fires for a root deleted before the run starts — this proves the reachable
+    /// half instead: the run still succeeds, with nothing to service, rather than crashing or
+    /// misreporting one candidate as due. Whether IndexAll's own check is meant only for a root
+    /// deleted mid-run (after Due() snapshots but before the loop reaches that candidate) is a
+    /// question reported upward rather than decided here.
+    /// </summary>
+    [Fact]
+    public void IndexAll_ARepoWhoseEnrolledRootNoLongerExistsOnDisk_IsExcludedUpstreamAndTheRunStillSucceeds()
+    {
+        using var sandbox = new SandboxHome();
+        var root = Path.Combine(sandbox.Home.Root, "checkout");
+        Directory.CreateDirectory(root);
+
+        var identity = CodeIndexer.ResolveIdentity(root);
+        using (var connection = EngramDatabase.OpenInitialized(sandbox.Home))
+        {
+            RepoEnrollment.Enroll(connection, identity, root, DateTimeOffset.UtcNow);
+        }
+
+        Directory.Delete(root, recursive: true);
+
+        var stdout = new StringWriter();
+        var exitCode = RepoCommand.Run(sandbox.Home.Root, ["index", "--all"], stdout, new StringWriter());
+
+        Assert.Equal(0, exitCode);
+        var output = stdout.ToString();
+        Assert.DoesNotContain(identity, output, StringComparison.Ordinal);
+        Assert.Contains("0 serviced, 0 skipped (absent)", output, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// §4.1/§7: a missing <c>--all</c> is a usage error (exit 2), distinct from an indexing failure
+    /// (exit 1) — the split the file's other verbs already draw between "typed it wrong" and "the
+    /// work failed", and one a test asserting only "non-zero" cannot catch if it breaks.
+    /// </summary>
+    [Fact]
+    public void IndexAll_WithoutTheAllFlag_ExitsTwo()
+    {
+        using var sandbox = new SandboxHome();
+        var stderr = new StringWriter();
+        var exitCode = RepoCommand.Run(sandbox.Home.Root, ["index"], new StringWriter(), stderr);
+
+        Assert.Equal(2, exitCode);
+        Assert.Contains("--all", stderr.ToString(), StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// §7 Commit B: no store on disk and <c>--apply</c> absent exits 1, distinct from both the
+    /// usage error above and a successful run — opening would create an empty database, and a dry
+    /// run that leaves a file behind is not a dry run (<c>RepoCommand.cs:267-273</c>).
+    /// </summary>
+    [Fact]
+    public void IndexAll_NoStoreOnDiskWithoutApply_ExitsOne()
+    {
+        using var sandbox = new SandboxHome(initialize: false);
+        var stderr = new StringWriter();
+        var exitCode = RepoCommand.Run(sandbox.Home.Root, ["index", "--all"], new StringWriter(), stderr);
+
+        Assert.Equal(1, exitCode);
+        Assert.Contains("no store", stderr.ToString(), StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// §7 Commit B: a store predating the code-index tables makes <c>RepoFreshness.Due</c> — via
+    /// <c>RepoEnrollment.ListAll</c> — throw a <c>SqliteException</c> naming <c>repo_enrollment</c>
+    /// as missing (<c>RepoCommand.cs:287-296</c>). <c>EngramDatabase.Open</c> (the non-apply path)
+    /// never migrates, so dropping the table after initializing leaves it genuinely absent rather
+    /// than merely version-stamped down.
+    /// </summary>
+    [Fact]
+    public void IndexAll_AStorePredatingTheCodeIndexTables_ExitsOne()
+    {
+        using var sandbox = new SandboxHome();
+
+        using (var connection = EngramDatabase.OpenInitialized(sandbox.Home))
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = "DROP TABLE repo_enrollment;";
+            command.ExecuteNonQuery();
+        }
+
+        var stderr = new StringWriter();
+        var exitCode = RepoCommand.Run(sandbox.Home.Root, ["index", "--all"], new StringWriter(), stderr);
+
+        Assert.Equal(1, exitCode);
+        Assert.Contains("predates the code index tables", stderr.ToString(), StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// D53's guard, and per spec §7 "the most important test in the commit": a scan that hits its
+    /// budget must not stamp <c>last_full_scan_at</c> or derive deletions from what it saw, because
+    /// a partial file list cannot tell "not present" from "not yet reached". Falsify by deleting the
+    /// <c>if (scan.Truncated)</c> branch in <c>CodeIndexer.Index</c> — both assertions must go red.
+    /// </summary>
+    [Fact]
+    public void Freshen_ATruncatedScan_LeavesLastFullScanAtNullAndDerivesNoDeletions()
+    {
+        using var sandbox = new SandboxHome();
+        var root = Path.Combine(sandbox.Home.Root, "checkout");
+        Directory.CreateDirectory(root);
+
+        // No git init: RepoScanner falls through to Walk for a plain directory, where
+        // ScanBudget.MaxFiles binds deterministically. A git-listed scan is never truncated by
+        // MaxFiles (D53), so this could not be forced reliably against a git checkout.
+        File.WriteAllText(Path.Combine(root, "a.txt"), "a");
+        File.WriteAllText(Path.Combine(root, "b.txt"), "b");
+        File.WriteAllText(Path.Combine(root, "c.txt"), "c");
+
+        var identity = CodeIndexer.ResolveIdentity(root);
+        var now = DateTimeOffset.UtcNow;
+
+        using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
+        var home = sandbox.Home;
+        var config = ConfigFile.Load(home.ConfigPath);
+        var settings = IndexingSettings.Read(config);
+
+        RepoEnrollment.Enroll(connection, identity, root, now);
+
+        var report = RepoIndexRun.Freshen(
+            connection, home, config, settings, root, apply: true,
+            budget: new ScanBudget(TimeSpan.FromSeconds(20), 1), now);
+
+        Assert.Contains(
+            report.Notes,
+            n => n.Contains("skipped deletions, because a partial scan cannot show a file is gone", StringComparison.Ordinal));
+        Assert.Equal(0, report.Deleted);
+        Assert.Null(ReadLastFullScanAt(connection, identity));
+    }
+
+    private static long? ReadLastFullScanAt(SqliteConnection connection, string identity)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT last_full_scan_at FROM repo_enrollment WHERE identity = $identity;";
+        command.Parameters.AddWithValue("$identity", identity);
+        var result = command.ExecuteScalar();
+        return result is null or DBNull ? null : Convert.ToInt64(result);
     }
 
     private static bool GitInit(string directory)

@@ -1,4 +1,7 @@
 using System.Text.Json;
+using System.Threading;
+
+using Microsoft.Data.Sqlite;
 
 namespace Engram.EndToEnd.Tests;
 
@@ -151,6 +154,196 @@ public class DoctorCommandTests
         Assert.Equal(2, exitCode);
         Assert.Equal(string.Empty, stdout);
         Assert.Contains("--not-a-flag", stderr, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// docs/repo-index-remediation-spec.md §7: doctor against a home with a suppressed repo
+    /// exits 0 and prints the warning. DiagnosticsTests.cs covers the same condition at the
+    /// object level asserting <c>DiagnosisState</c>; only the rendered text here can prove the
+    /// warning actually reaches doctor's stdout.
+    /// </summary>
+    [Fact]
+    public void Doctor_OnARepoWithSuppressedDeletions_ExitsZeroAndPrintsTheWarning()
+    {
+        Assert.SkipUnless(EndToEndBinary.Path is not null, EndToEndBinary.SkipReason);
+
+        using var home = new TestHome();
+
+        var repo = Path.Combine(home.Root, "checkout");
+        Directory.CreateDirectory(repo);
+        File.WriteAllText(Path.Combine(repo, "a.cs"), "class A;\n");
+        if (!GitInit(repo))
+        {
+            return;
+        }
+
+        EnrollAndWaitForFirstIndex(home.Root, repo);
+
+        // The next full scan finds nothing against an already-indexed repo, which suppresses
+        // its deletions rather than trusting an empty listing (commit E2).
+        File.Delete(Path.Combine(repo, "a.cs"));
+
+        var (indexExit, _, indexErr) = EngramProcess.Run(home.Root, "index", "--apply", "--full", repo);
+        Assert.True(indexExit == 0, $"index exited {indexExit}: {indexErr}");
+
+        var (doctorExit, doctorOut, doctorErr) = EngramProcess.RunWithStdinFromDirectory(
+            home.Root, repo, stdin: null, "doctor", "--offline");
+
+        Assert.True(doctorExit == 0, $"doctor exited {doctorExit}:\n{doctorOut}\n{doctorErr}");
+        Assert.Contains(
+            "found no files against an already-indexed repo, so its deletions were skipped",
+            doctorOut,
+            StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// docs/repo-index-remediation-spec.md §7 and §14.5.2: <c>EngramDatabase.Open</c>, which
+    /// doctor uses, never migrates (D31/D37), so a store between an upgrade and its next
+    /// migration genuinely has no <c>last_scan_suppressed_reason</c> column — and that is
+    /// routine, not a fault.
+    /// </summary>
+    [Fact]
+    public void Doctor_OnAStoreMissingTheSuppressionColumn_ExitsZeroWithNoBrokenRow()
+    {
+        Assert.SkipUnless(EndToEndBinary.Path is not null, EndToEndBinary.SkipReason);
+
+        using var home = new TestHome();
+
+        var repo = Path.Combine(home.Root, "checkout");
+        Directory.CreateDirectory(repo);
+        File.WriteAllText(Path.Combine(repo, "a.cs"), "class A;\n");
+        if (!GitInit(repo))
+        {
+            return;
+        }
+
+        EnrollAndWaitForFirstIndex(home.Root, repo);
+
+        // Engram.EndToEnd.Tests deliberately has no reference to Engram.Core, so the v7 shape
+        // is built with raw SQL rather than EngramDatabase/RepoEnrollment, mirroring what
+        // SchemaMigrationTests.WriteVersion7Store does for the integration tier.
+        var databasePath = Path.Combine(home.Root, "engram.db");
+        using (var connection = new SqliteConnection($"Data Source={databasePath}"))
+        {
+            connection.Open();
+
+            using var alter = connection.CreateCommand();
+            alter.CommandText = "ALTER TABLE repo_registry DROP COLUMN last_scan_suppressed_reason;";
+            alter.ExecuteNonQuery();
+
+            using var downgrade = connection.CreateCommand();
+            downgrade.CommandText = "UPDATE schema_meta SET value = '7' WHERE key = 'schema_version';";
+            downgrade.ExecuteNonQuery();
+        }
+
+        var (doctorExit, doctorOut, doctorErr) = EngramProcess.RunWithStdinFromDirectory(
+            home.Root, repo, stdin: null, "doctor", "--offline");
+
+        Assert.True(doctorExit == 0, $"doctor exited {doctorExit}:\n{doctorOut}\n{doctorErr}");
+        Assert.DoesNotContain("BROKEN", doctorOut, StringComparison.Ordinal);
+        Assert.Contains("suppression check not applicable", doctorOut, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// docs/repo-index-remediation-spec.md §14.5.2's second absence: a store that predates the
+    /// repository index has no <c>repo_registry</c> table at all, not merely a missing column,
+    /// and that is routine too — the same <c>EngramDatabase.Open</c>-never-migrates reasoning as
+    /// <see cref="Doctor_OnAStoreMissingTheSuppressionColumn_ExitsZeroWithNoBrokenRow"/>. Built by
+    /// dropping the table outright rather than by relying on a rolled-back fixture happening not
+    /// to create it — the latter is D60's trap and would leave the guard proving nothing.
+    /// </summary>
+    [Fact]
+    public void Doctor_OnAStoreMissingTheRepoRegistryTable_ExitsZeroWithNoBrokenRow()
+    {
+        Assert.SkipUnless(EndToEndBinary.Path is not null, EndToEndBinary.SkipReason);
+
+        using var home = new TestHome();
+
+        var repo = Path.Combine(home.Root, "checkout");
+        Directory.CreateDirectory(repo);
+        File.WriteAllText(Path.Combine(repo, "a.cs"), "class A;\n");
+        if (!GitInit(repo))
+        {
+            return;
+        }
+
+        EnrollAndWaitForFirstIndex(home.Root, repo);
+
+        var databasePath = Path.Combine(home.Root, "engram.db");
+        using (var connection = new SqliteConnection($"Data Source={databasePath}"))
+        {
+            connection.Open();
+
+            using var drop = connection.CreateCommand();
+            drop.CommandText = "DROP TABLE IF EXISTS repo_registry;";
+            drop.ExecuteNonQuery();
+        }
+
+        var (doctorExit, doctorOut, doctorErr) = EngramProcess.RunWithStdinFromDirectory(
+            home.Root, repo, stdin: null, "doctor", "--offline");
+
+        Assert.True(doctorExit == 0, $"doctor exited {doctorExit}:\n{doctorOut}\n{doctorErr}");
+        Assert.DoesNotContain("BROKEN", doctorOut, StringComparison.Ordinal);
+        Assert.Contains("repo check not applicable", doctorOut, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Polls <c>repo list</c> until the first index that <c>repo enroll</c> spawns in the
+    /// background finishes — that spawn has no synchronous or suppressible form, so the only way
+    /// to observe completion from outside is watching the reported file count settle. Matches the
+    /// pattern already established in RepoCommandTests.cs and ConcurrentIndexConvergenceTests.cs.
+    /// </summary>
+    private static void EnrollAndWaitForFirstIndex(string home, string repo)
+    {
+        var (enrollExit, enrollOut, enrollErr) = EngramProcess.Run(home, "repo", "enroll", repo);
+        Assert.True(enrollExit == 0, $"repo enroll exited {enrollExit}: {enrollErr}");
+        Assert.Contains("first index is running in the background", enrollOut, StringComparison.Ordinal);
+
+        var deadline = DateTime.UtcNow.AddSeconds(30);
+        var listOutput = string.Empty;
+        while (!listOutput.Contains("file(s) indexed", StringComparison.Ordinal)
+            || listOutput.Contains("0 file(s) indexed", StringComparison.Ordinal))
+        {
+            if (DateTime.UtcNow >= deadline)
+            {
+                break;
+            }
+
+            Thread.Sleep(200);
+            (_, listOutput, _) = EngramProcess.Run(home, "repo", "list");
+        }
+
+        Assert.Contains("1 file(s) indexed", listOutput, StringComparison.Ordinal);
+    }
+
+    /// <summary><c>repo enroll</c> refuses a directory that isn't a git checkout.</summary>
+    private static bool GitInit(string directory)
+    {
+        try
+        {
+            var info = new System.Diagnostics.ProcessStartInfo("git")
+            {
+                WorkingDirectory = directory,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+            };
+            info.ArgumentList.Add("init");
+            info.ArgumentList.Add("-q");
+
+            using var process = System.Diagnostics.Process.Start(info);
+            if (process is null)
+            {
+                return false;
+            }
+
+            process.WaitForExit(10_000);
+            return process.HasExited && process.ExitCode == 0;
+        }
+        catch (Exception e) when (e is System.ComponentModel.Win32Exception or InvalidOperationException)
+        {
+            return false;
+        }
     }
 
     /// <summary>Every file under a root, by path, size and last write — enough to catch a rewrite.</summary>

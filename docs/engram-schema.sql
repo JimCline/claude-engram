@@ -328,11 +328,17 @@ CREATE TABLE file_state (
 );
 
 CREATE TABLE repo_registry (
-  repo_path   TEXT PRIMARY KEY,  -- memory path, e.g. /projects/acme/code/acme-api
-  identity    TEXT NOT NULL,     -- normalized git remote URL, else normalized root path
-  disk_path   TEXT,              -- last seen location; NULL once detached
-  detached_at INTEGER,           -- non-NULL when the checkout is gone from disk
-  created_at  INTEGER NOT NULL
+  repo_path                   TEXT PRIMARY KEY,  -- memory path, e.g. /projects/acme/code/acme-api
+  identity                    TEXT NOT NULL,     -- normalized git remote URL, else normalized root path
+  disk_path                   TEXT,              -- last seen location; NULL once detached
+  detached_at                 INTEGER,           -- non-NULL when the checkout is gone from disk
+  created_at                  INTEGER NOT NULL,
+  last_scan_suppressed_reason TEXT CHECK (last_scan_suppressed_reason IN ('truncated','empty-scan'))
+                                                  -- NULL = last run's deletions were not suppressed;
+                                                  -- set by CodeIndexer wherever it skips stampFullScan,
+                                                  -- cleared wherever a full scan applies deletions (§14).
+                                                  -- Lives here, not on repo_enrollment: an indexed but
+                                                  -- unenrolled repo still has a repo_registry row.
 );
 CREATE UNIQUE INDEX ux_repo_identity ON repo_registry(identity);
 
@@ -375,7 +381,7 @@ CREATE INDEX ix_fact_token_fact ON fact_token(fact_id);
 
 
 CREATE TABLE schema_meta (key TEXT PRIMARY KEY, value TEXT);
-INSERT INTO schema_meta(key, value) VALUES ('schema_version', '7');
+INSERT INTO schema_meta(key, value) VALUES ('schema_version', '8');
 
 -- Built by a fresh CREATE, and pre-stamped ready: an empty table matches whatever
 -- FactTokenIndex.Rebuild would produce over zero facts, so a new store needs no rebuild pass.

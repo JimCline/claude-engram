@@ -945,47 +945,130 @@ public static class Diagnostics
         // to "which repo is this" is how a report drifts from the system it describes.
         var identity = CodeIndexer.ResolveIdentity(repoRoot);
 
+        // The suppression column is read from this same query, not a second lookup
+        // (docs/repo-index-remediation-spec.md §14.2). EngramDatabase.Open, which doctor uses,
+        // never migrates (D31/D37) — so a store between an upgrade and its next migration
+        // genuinely has no last_scan_suppressed_reason column (pre-v8), or no repo_registry
+        // table at all (predates the repository index). Both are routine, not a fault (§14.5.2).
+        var columnExists = true;
         using var command = connection.CreateCommand();
         command.CommandText =
             """
-            SELECT r.repo_path, COUNT(f.path), MAX(f.indexed_at)
+            SELECT r.repo_path, COUNT(f.path), MAX(f.indexed_at), r.last_scan_suppressed_reason
             FROM repo_registry r LEFT JOIN file_state f ON f.repo_path = r.repo_path
             WHERE r.identity = $identity
             GROUP BY r.repo_path;
             """;
         command.Parameters.AddWithValue("$identity", identity);
 
-        using var reader = command.ExecuteReader();
-        if (!reader.Read())
+        SqliteDataReader reader;
+        try
         {
-            // A truncated scan is the one case where "not indexed" is worth flagging rather than
-            // reporting flat: the directory is too big to be a project, so "engram index --apply"
-            // would be an instruction to index it anyway. Warn, never Broken — nothing about the
-            // installation is wrong, and only Broken sets exit 1 (D37).
-            if (scan.Truncated)
+            reader = command.ExecuteReader();
+        }
+        catch (SqliteException e) when (e.Message.Contains("no such column", StringComparison.OrdinalIgnoreCase)
+            || e.Message.Contains("no such table", StringComparison.OrdinalIgnoreCase))
+        {
+            if (e.Message.Contains("no such table", StringComparison.OrdinalIgnoreCase))
             {
+                // Truncation is independent of whether repo_registry exists — the same D53
+                // reasoning the reader.Read()-false branch below applies, and checking schema
+                // state first would silently drop this Warn for a pre-repo-index store. The
+                // detail still carries the schema explanation from the Ok branch below, since
+                // that fact is required (§14.5.2) and the truncation Warn must not drop it.
+                if (scan.Truncated)
+                {
+                    return new Diagnosis(
+                        "indexing",
+                        DiagnosisState.Warn,
+                        $"{scan.Summary()} in {repoRoot} (repo check not applicable — store predates the repository index)",
+                        "too large to scan; run this from inside the project you want indexed");
+                }
+
+                // repo_registry itself is absent, so there is no fallback query left to run —
+                // the store predates the repository index and the repo check cannot run at all.
                 return new Diagnosis(
                     "indexing",
-                    DiagnosisState.Warn,
-                    $"{scan.Summary()} in {repoRoot}",
-                    "too large to scan; run this from inside the project you want indexed");
+                    DiagnosisState.Ok,
+                    $"{scan.Summary()} in {repoRoot} (repo check not applicable — store predates the repository index)");
             }
 
-            // Not indexed is a choice, not a fault (D37) — indexing starts on the next
-            // session start once enabled, or right now by hand.
-            return new Diagnosis(
-                "indexing",
-                DiagnosisState.Off,
-                $"{scan.Summary()} in {repoRoot}, none indexed yet",
-                "engram index --apply");
+            columnExists = false;
+            command.CommandText =
+                """
+                SELECT r.repo_path, COUNT(f.path), MAX(f.indexed_at)
+                FROM repo_registry r LEFT JOIN file_state f ON f.repo_path = r.repo_path
+                WHERE r.identity = $identity
+                GROUP BY r.repo_path;
+                """;
+            reader = command.ExecuteReader();
         }
 
-        var repoPath = reader.GetString(0);
-        var indexed = reader.GetInt64(1);
-        var newest = reader.IsDBNull(2) ? (long?)null : reader.GetInt64(2);
+        string repoPath;
+        long indexed;
+        long? newest;
+        string? suppressedReason;
+
+        using (reader)
+        {
+            if (!reader.Read())
+            {
+                // A truncated scan is the one case where "not indexed" is worth flagging rather than
+                // reporting flat: the directory is too big to be a project, so "engram index --apply"
+                // would be an instruction to index it anyway. Warn, never Broken — nothing about the
+                // installation is wrong, and only Broken sets exit 1 (D37).
+                if (scan.Truncated)
+                {
+                    return new Diagnosis(
+                        "indexing",
+                        DiagnosisState.Warn,
+                        $"{scan.Summary()} in {repoRoot}",
+                        "too large to scan; run this from inside the project you want indexed");
+                }
+
+                // Not indexed is a choice, not a fault (D37) — indexing starts on the next
+                // session start once enabled, or right now by hand.
+                return new Diagnosis(
+                    "indexing",
+                    DiagnosisState.Off,
+                    $"{scan.Summary()} in {repoRoot}, none indexed yet",
+                    "engram index --apply");
+            }
+
+            repoPath = reader.GetString(0);
+            indexed = reader.GetInt64(1);
+            newest = reader.IsDBNull(2) ? (long?)null : reader.GetInt64(2);
+            suppressedReason = columnExists && !reader.IsDBNull(3) ? reader.GetString(3) : null;
+        }
+
         var age = newest is { } stamp
             ? $", newest {Age(DateTimeOffset.UtcNow - DateTimeOffset.FromUnixTimeSeconds(stamp))} old"
             : string.Empty;
+
+        if (suppressedReason is not null)
+        {
+            var why = suppressedReason switch
+            {
+                "truncated" => "the last full scan could not read part of the repo, so its deletions were skipped",
+                "empty-scan" => "the last full scan found no files against an already-indexed repo, so its deletions were skipped",
+                _ => "the last full scan skipped its deletions",
+            };
+
+            return new Diagnosis(
+                "indexing",
+                DiagnosisState.Warn,
+                $"{Plural((int)indexed, "file")} indexed into {repoPath}{age}; {why}",
+                "engram index --full --apply once the scan can see the repo again");
+        }
+
+        if (!columnExists)
+        {
+            return new Diagnosis(
+                "indexing",
+                DiagnosisState.Ok,
+                $"{Plural((int)indexed, "file")} indexed into {repoPath}{age}; {scan.Summary()} on disk "
+                    + "(suppression check not applicable — store predates v8)");
+        }
 
         return new Diagnosis(
             "indexing",

@@ -20,7 +20,7 @@ namespace Engram.Core;
 /// </remarks>
 public static class EngramDatabase
 {
-    public const int SchemaVersion = 7;
+    public const int SchemaVersion = 8;
 
     public const int BusyTimeoutMilliseconds = 5000;
 
@@ -347,6 +347,23 @@ public static class EngramDatabase
                 """);
 
             WriteMeta(connection, null, "schema_version", "7");
+        }
+
+        if (from < 8)
+        {
+            // Unguarded: a store that already has the column throws loudly rather than silently
+            // no-opping, which is the acceptable failure mode here (docs/repo-index-remediation-spec.md
+            // §14.5.1) — the trap that guard would reintroduce is a fixture that only stamps the
+            // version down without actually lacking the column.
+            Execute(
+                connection,
+                null,
+                """
+                ALTER TABLE repo_registry ADD COLUMN last_scan_suppressed_reason TEXT
+                  CHECK (last_scan_suppressed_reason IN ('truncated', 'empty-scan'));
+                """);
+
+            WriteMeta(connection, null, "schema_version", "8");
         }
     }
 

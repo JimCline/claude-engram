@@ -899,4 +899,296 @@ public sealed class DiagnosticsTests : IDisposable
         Assert.DoesNotContain("partial", row.Detail, StringComparison.Ordinal);
         Assert.Equal("engram index --apply", row.Fix);
     }
+
+    // ---- doctor on a repo whose deletions were suppressed (commit E3) ----
+
+    /// <summary>
+    /// Asserts the state, not the Notes text (docs/repo-index-remediation-spec.md §7) — a
+    /// Notes-only assertion passes with the defect fully present, which is how the E2 version of
+    /// this was missed.
+    /// </summary>
+    [Fact]
+    public void RegisteredRepo_DeletionsSuppressedByTruncation_WarnsWithState()
+    {
+        using var sandbox = new SandboxHome();
+        var directory = Path.Combine(sandbox.Home.Root, "project");
+        Directory.CreateDirectory(directory);
+        File.WriteAllText(Path.Combine(directory, "a.cs"), "class A;\n");
+        using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
+
+        var identity = CodeIndexer.ResolveIdentity(directory);
+        RepoEnrollment.Enroll(connection, identity, directory, DateTimeOffset.UtcNow);
+
+        CodeIndexer.Index(
+            connection,
+            sandbox.Home,
+            ConfigFile.Empty,
+            IndexingSettings.Default,
+            new IndexOptions(directory, Apply: true, Drain: false, Full: true),
+            DateTimeOffset.UtcNow);
+
+        CodeIndexer.Index(
+            connection,
+            sandbox.Home,
+            ConfigFile.Empty,
+            IndexingSettings.Default,
+            new IndexOptions(
+                directory,
+                Apply: true,
+                Drain: false,
+                Full: true,
+                Budget: new ScanBudget(TimeSpan.Zero, MaxFiles: 1_000)),
+            DateTimeOffset.UtcNow);
+
+        var row = Diagnostics.CheckRepo(directory, ConfigFile.Empty, connection);
+
+        Assert.Equal(DiagnosisState.Warn, row.State);
+    }
+
+    /// <summary>
+    /// Ruling 2's required negative (docs/repo-index-remediation-spec.md §14): unlike
+    /// <see cref="RegisteredRepo_DeletionsSuppressedByTruncation_WarnsWithState"/>, this repo has
+    /// never been indexed before — its very first <see cref="CodeIndexer.Index"/> call is the one
+    /// that truncates. <c>EnsureRepo</c>'s dry-run early return never inserts a
+    /// <c>repo_registry</c> row, so this only warns if <c>CodeIndexer</c> creates that row before
+    /// the suppression write reaches it within this same call — a row the suppression write can
+    /// attach to has to already exist, and both happen inside one <c>Index</c> invocation here.
+    /// </summary>
+    [Fact]
+    public void NeverBeforeIndexedRepo_TruncatedOnFirstScan_StillWarns()
+    {
+        using var sandbox = new SandboxHome();
+        var directory = Path.Combine(sandbox.Home.Root, "project");
+        Directory.CreateDirectory(directory);
+        File.WriteAllText(Path.Combine(directory, "a.cs"), "class A;\n");
+        using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
+
+        var identity = CodeIndexer.ResolveIdentity(directory);
+        RepoEnrollment.Enroll(connection, identity, directory, DateTimeOffset.UtcNow);
+
+        CodeIndexer.Index(
+            connection,
+            sandbox.Home,
+            ConfigFile.Empty,
+            IndexingSettings.Default,
+            new IndexOptions(
+                directory,
+                Apply: true,
+                Drain: false,
+                Full: true,
+                Budget: new ScanBudget(TimeSpan.Zero, MaxFiles: 1_000)),
+            DateTimeOffset.UtcNow);
+
+        var row = Diagnostics.CheckRepo(directory, ConfigFile.Empty, connection);
+
+        Assert.Equal(DiagnosisState.Warn, row.State);
+    }
+
+    /// <summary>
+    /// Required negative test (docs/repo-index-remediation-spec.md §14.2): a repo that is
+    /// registered but never enrolled — the population <c>engram index --apply &lt;path&gt;</c>
+    /// produces on a repo nobody enrolled — must still warn on suppressed deletions.
+    /// Suppression describes the integrity of the index, which is identical whether or not
+    /// anyone enrolled the repo; the other E3 tests all call <see cref="RepoEnrollment.Enroll"/>
+    /// first, so this population is untested by construction and would miss a suppression write
+    /// keyed to <c>repo_enrollment</c> instead of <c>repo_registry</c> (§14.2's "why not
+    /// repo_enrollment").
+    /// </summary>
+    [Fact]
+    public void RegisteredButNeverEnrolledRepo_TruncatedScan_StillWarns()
+    {
+        using var sandbox = new SandboxHome();
+        var directory = Path.Combine(sandbox.Home.Root, "project");
+        Directory.CreateDirectory(directory);
+        File.WriteAllText(Path.Combine(directory, "a.cs"), "class A;\n");
+        using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
+
+        CodeIndexer.Index(
+            connection,
+            sandbox.Home,
+            ConfigFile.Empty,
+            IndexingSettings.Default,
+            new IndexOptions(
+                directory,
+                Apply: true,
+                Drain: false,
+                Full: true,
+                Budget: new ScanBudget(TimeSpan.Zero, MaxFiles: 1_000)),
+            DateTimeOffset.UtcNow);
+
+        var row = Diagnostics.CheckRepo(directory, ConfigFile.Empty, connection);
+
+        Assert.Equal(DiagnosisState.Warn, row.State);
+    }
+
+    /// <summary>
+    /// A store with no <c>repo_registry</c> table at all — the "no such table" catch in
+    /// <see cref="Diagnostics.CheckRepo"/> — must say why the repo check did not run rather than
+    /// reporting a plain <c>Ok</c> row indistinguishable from one that actually checked (§14.5.2).
+    /// </summary>
+    [Fact]
+    public void StoreWithNoRepoRegistryTable_NotTruncated_ExplainsWhyTheCheckDidNotRun()
+    {
+        using var sandbox = new SandboxHome();
+        var directory = Path.Combine(sandbox.Home.Root, "project");
+        Directory.CreateDirectory(directory);
+        File.WriteAllText(Path.Combine(directory, "a.cs"), "class A;\n");
+
+        using (var connection = EngramDatabase.OpenInitialized(sandbox.Home))
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = "DROP TABLE repo_registry;";
+            command.ExecuteNonQuery();
+        }
+
+        using var reopened = EngramDatabase.Open(sandbox.Home);
+        var row = Diagnostics.CheckRepo(directory, ConfigFile.Empty, reopened);
+
+        Assert.Equal(DiagnosisState.Ok, row.State);
+        Assert.Contains("store predates the repository index", row.Detail, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Same missing-table path as above, but the scan is also truncated — the Warn branch carries
+    /// the same explanatory clause as the Ok branch, and both must be guarded independently.
+    /// </summary>
+    [Fact]
+    public void StoreWithNoRepoRegistryTable_TruncatedScan_ExplainsWhyTheCheckDidNotRun()
+    {
+        using var sandbox = new SandboxHome();
+        var directory = Path.Combine(sandbox.Home.Root, "project");
+        Directory.CreateDirectory(directory);
+        File.WriteAllText(Path.Combine(directory, "a.cs"), "class A;\n");
+
+        using (var connection = EngramDatabase.OpenInitialized(sandbox.Home))
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = "DROP TABLE repo_registry;";
+            command.ExecuteNonQuery();
+        }
+
+        using var reopened = EngramDatabase.Open(sandbox.Home);
+        var row = Diagnostics.CheckRepo(
+            directory, ConfigFile.Empty, reopened, new ScanBudget(TimeSpan.Zero, MaxFiles: 1_000));
+
+        Assert.Equal(DiagnosisState.Warn, row.State);
+        Assert.Contains("store predates the repository index", row.Detail, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void RegisteredRepo_DeletionsSuppressedByEmptyScan_WarnsWithState()
+    {
+        using var sandbox = new SandboxHome();
+        var directory = Path.Combine(sandbox.Home.Root, "project");
+        Directory.CreateDirectory(directory);
+        File.WriteAllText(Path.Combine(directory, "a.cs"), "class A;\n");
+        using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
+
+        var identity = CodeIndexer.ResolveIdentity(directory);
+        RepoEnrollment.Enroll(connection, identity, directory, DateTimeOffset.UtcNow);
+
+        CodeIndexer.Index(
+            connection,
+            sandbox.Home,
+            ConfigFile.Empty,
+            IndexingSettings.Default,
+            new IndexOptions(directory, Apply: true, Drain: false, Full: true),
+            DateTimeOffset.UtcNow);
+
+        File.Delete(Path.Combine(directory, "a.cs"));
+
+        CodeIndexer.Index(
+            connection,
+            sandbox.Home,
+            ConfigFile.Empty,
+            IndexingSettings.Default,
+            new IndexOptions(directory, Apply: true, Drain: false, Full: true),
+            DateTimeOffset.UtcNow);
+
+        var row = Diagnostics.CheckRepo(directory, ConfigFile.Empty, connection);
+
+        Assert.Equal(DiagnosisState.Warn, row.State);
+    }
+
+    /// <summary>
+    /// The load-bearing half (docs/repo-index-remediation-spec.md §7): a column set on suppression
+    /// and never cleared warns forever about a resolved condition (D33's retired-key shape).
+    /// Falsified by deleting the <c>ClearSuppressedReason</c> call from
+    /// <c>CodeIndexer.cs</c>'s post-write block: confirmed red — this test reported <c>Warn</c>
+    /// where it asserts <c>Ok</c> — then restored.
+    /// </summary>
+    [Fact]
+    public void SuppressionClears_AfterACleanFullScanCompletes()
+    {
+        using var sandbox = new SandboxHome();
+        var directory = Path.Combine(sandbox.Home.Root, "project");
+        Directory.CreateDirectory(directory);
+        File.WriteAllText(Path.Combine(directory, "a.cs"), "class A;\n");
+        using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
+
+        var identity = CodeIndexer.ResolveIdentity(directory);
+        RepoEnrollment.Enroll(connection, identity, directory, DateTimeOffset.UtcNow);
+
+        CodeIndexer.Index(
+            connection,
+            sandbox.Home,
+            ConfigFile.Empty,
+            IndexingSettings.Default,
+            new IndexOptions(directory, Apply: true, Drain: false, Full: true),
+            DateTimeOffset.UtcNow);
+
+        CodeIndexer.Index(
+            connection,
+            sandbox.Home,
+            ConfigFile.Empty,
+            IndexingSettings.Default,
+            new IndexOptions(
+                directory,
+                Apply: true,
+                Drain: false,
+                Full: true,
+                Budget: new ScanBudget(TimeSpan.Zero, MaxFiles: 1_000)),
+            DateTimeOffset.UtcNow);
+
+        Assert.Equal(DiagnosisState.Warn, Diagnostics.CheckRepo(directory, ConfigFile.Empty, connection).State);
+
+        CodeIndexer.Index(
+            connection,
+            sandbox.Home,
+            ConfigFile.Empty,
+            IndexingSettings.Default,
+            new IndexOptions(directory, Apply: true, Drain: false, Full: true),
+            DateTimeOffset.UtcNow);
+
+        var row = Diagnostics.CheckRepo(directory, ConfigFile.Empty, connection);
+
+        Assert.Equal(DiagnosisState.Ok, row.State);
+    }
+
+    /// <summary>The negative that stops this warning from firing on every registered repo.</summary>
+    [Fact]
+    public void NeverSuppressedRegisteredRepo_ReportsOkWithNoSuppressionWording()
+    {
+        using var sandbox = new SandboxHome();
+        var directory = Path.Combine(sandbox.Home.Root, "project");
+        Directory.CreateDirectory(directory);
+        File.WriteAllText(Path.Combine(directory, "a.cs"), "class A;\n");
+        using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
+
+        var identity = CodeIndexer.ResolveIdentity(directory);
+        RepoEnrollment.Enroll(connection, identity, directory, DateTimeOffset.UtcNow);
+
+        CodeIndexer.Index(
+            connection,
+            sandbox.Home,
+            ConfigFile.Empty,
+            IndexingSettings.Default,
+            new IndexOptions(directory, Apply: true, Drain: false, Full: true),
+            DateTimeOffset.UtcNow);
+
+        var row = Diagnostics.CheckRepo(directory, ConfigFile.Empty, connection);
+
+        Assert.Equal(DiagnosisState.Ok, row.State);
+        Assert.DoesNotContain("skipped", row.Detail, StringComparison.Ordinal);
+    }
 }
