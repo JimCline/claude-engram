@@ -105,7 +105,7 @@ public sealed class IndexFreshness(EngramHome home, Action<string>? log = null)
         try
         {
             var report = RepoIndexRun.Freshen(
-                connection, home, config, settings, candidate.Root, apply: true, budget: null, now);
+                connection, home, config, settings, candidate.Root, identity, apply: true, budget: null, now);
 
             // §6.4: ambient — stay silent on lock contention, same as `index --freshen`; nobody is
             // watching for the note and the next tick picks another candidate.

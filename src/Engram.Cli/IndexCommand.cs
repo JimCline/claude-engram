@@ -250,7 +250,7 @@ internal static class IndexCommand
         try
         {
             var report = RepoIndexRun.Freshen(
-                connection, home, config, settings, candidate.Root, apply, budget: null, DateTimeOffset.UtcNow);
+                connection, home, config, settings, candidate.Root, identity, apply, budget: null, DateTimeOffset.UtcNow);
 
             // §6.4: ambient — stay silent on lock contention rather than printing a note nobody
             // is watching for; the repo is picked up again on a later freshen pass.

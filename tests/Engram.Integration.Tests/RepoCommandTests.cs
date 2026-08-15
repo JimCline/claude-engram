@@ -325,7 +325,7 @@ public class RepoCommandTests
         RepoEnrollment.Enroll(connection, identity, root, now);
 
         var report = RepoIndexRun.Freshen(
-            connection, home, config, settings, root, apply: true,
+            connection, home, config, settings, root, identity, apply: true,
             budget: new ScanBudget(TimeSpan.FromSeconds(20), 1), now);
 
         Assert.Contains(
@@ -333,6 +333,44 @@ public class RepoCommandTests
             n => n.Contains("skipped deletions, because a partial scan cannot show a file is gone", StringComparison.Ordinal));
         Assert.Equal(0, report.Deleted);
         Assert.Null(ReadLastFullScanAt(connection, identity));
+    }
+
+    /// <summary>
+    /// A caller of <see cref="RepoIndexRun.Freshen"/> passes the identity its
+    /// <c>repo_enrollment</c> row is keyed under; that must be what gets stamped, never whatever
+    /// <see cref="CodeIndexer.ResolveIdentity"/> recomputes from <c>root</c> internally — the two can
+    /// disagree (a fresh git remote lookup returning something other than what the row was enrolled
+    /// under), and an identity mismatch makes the <c>UPDATE ... WHERE identity = $identity</c> in
+    /// <see cref="RepoEnrollment.StampFullScan"/> match no row while the scan itself still reports
+    /// success. Falsify by reverting the stamp site in <c>CodeIndexer.Index</c> to stamp under the
+    /// locally resolved <c>identity</c> instead of <c>options.EnrolledIdentity ?? identity</c> — this
+    /// must go red, because the enrolled identity here is deliberately not what a fresh
+    /// <c>ResolveIdentity(root)</c> call on this plain directory would produce.
+    /// </summary>
+    [Fact]
+    public void Freshen_StampsUnderTheEnrolledIdentity_NotARecomputedOne()
+    {
+        using var sandbox = new SandboxHome();
+        var root = Path.Combine(sandbox.Home.Root, "checkout");
+        Directory.CreateDirectory(root);
+        File.WriteAllText(Path.Combine(root, "a.txt"), "a");
+
+        // ResolveIdentity(root) on a plain directory with no git remote returns root itself — so an
+        // enrollment under any other string reproduces the drift a stale or differently-derived
+        // enrolled identity would cause.
+        var enrolledIdentity = "mismatched-identity-not-derivable-from-root";
+        var now = DateTimeOffset.UtcNow;
+
+        using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
+        var home = sandbox.Home;
+        var config = ConfigFile.Load(home.ConfigPath);
+        var settings = IndexingSettings.Read(config);
+
+        RepoEnrollment.Enroll(connection, enrolledIdentity, root, now);
+
+        RepoIndexRun.Freshen(connection, home, config, settings, root, enrolledIdentity, apply: true, budget: null, now);
+
+        Assert.NotNull(ReadLastFullScanAt(connection, enrolledIdentity));
     }
 
     private static long? ReadLastFullScanAt(SqliteConnection connection, string identity)

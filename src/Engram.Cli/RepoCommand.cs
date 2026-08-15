@@ -321,7 +321,7 @@ internal static class RepoCommand
             IndexReport report;
             try
             {
-                report = RepoIndexRun.Freshen(connection, home, config, settings, root, apply, budget: null, now);
+                report = RepoIndexRun.Freshen(connection, home, config, settings, root, identity, apply, budget: null, now);
             }
             catch (Exception e)
             {

@@ -30,6 +30,7 @@ public static class RepoIndexRun
         ConfigFile config,
         IndexingSettings settings,
         string root,
+        string identity,
         bool apply,
         ScanBudget? budget,
         DateTimeOffset now)
@@ -38,6 +39,6 @@ public static class RepoIndexRun
             home,
             config,
             settings,
-            new IndexOptions(root, apply, Drain: false, Full: false, Budget: budget),
+            new IndexOptions(root, apply, Drain: false, Full: false, Budget: budget, EnrolledIdentity: identity),
             now);
 }

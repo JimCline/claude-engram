@@ -14,6 +14,15 @@ namespace Engram.Core;
 /// Set by a multi-root pass that must peek the spool directory exactly once and drain every root
 /// against the same captured list (§6.3e), rather than re-reading the whole directory per root.
 /// </param>
+/// <param name="EnrolledIdentity">
+/// The identity a caller already resolved this repo's <c>repo_enrollment</c> row under —
+/// <see cref="RepoEnrollment.StampFullScan"/> and the suppression-reason clear must target this
+/// identity, not the one <see cref="CodeIndexer.ResolveIdentity"/> recomputes from <c>Root</c> here,
+/// because a caller enrolling under a precomputed identity is not guaranteed to get the same string
+/// back from a fresh git remote lookup and a mismatch makes that write silently match no row. Null
+/// for callers with no enrollment row to stamp (a bare <c>engram index --apply</c>), which fall back
+/// to the recomputed identity as before.
+/// </param>
 public sealed record IndexOptions(
     string Root,
     bool Apply,
@@ -22,7 +31,8 @@ public sealed record IndexOptions(
     string? SidecarPath = null,
     ScanBudget? Budget = null,
     bool AllowFullScanDue = true,
-    SpoolQueue? Queue = null);
+    SpoolQueue? Queue = null,
+    string? EnrolledIdentity = null);
 
 public sealed record IndexReport(
     string RepoPath,
@@ -262,9 +272,10 @@ public static class CodeIndexer
             // One transaction, not two commits: a crash between them would leave
             // last_full_scan_at fresh with the suppression reason still set, which reads as an
             // unresolved condition forever (D4, D33's retired-key shape).
+            var stampIdentity = options.EnrolledIdentity ?? identity;
             using var transaction = EngramDatabase.BeginWrite(connection);
-            RepoEnrollment.StampFullScan(connection, transaction, identity, now);
-            ClearSuppressedReason(connection, transaction, identity);
+            RepoEnrollment.StampFullScan(connection, transaction, stampIdentity, now);
+            ClearSuppressedReason(connection, transaction, stampIdentity);
             transaction.Commit();
         }
         else if (suppressedReason is not null)
