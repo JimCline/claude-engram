@@ -20,7 +20,7 @@ namespace Engram.Core;
 /// </remarks>
 public static class EngramDatabase
 {
-    public const int SchemaVersion = 9;
+    public const int SchemaVersion = 10;
 
     public const int BusyTimeoutMilliseconds = 5000;
 
@@ -401,6 +401,30 @@ public static class EngramDatabase
                 """);
 
             WriteMeta(connection, null, "schema_version", "9");
+        }
+
+        if (from < 10)
+        {
+            // Conflict verdicts (docs/memory-expansion/02-conflict-verdicts-spec.md) —
+            // nothing added to `fact` (D8). A verdict is an annotation, never a fact mutation.
+            Execute(
+                connection,
+                null,
+                """
+                CREATE TABLE fact_relation (
+                  id INTEGER PRIMARY KEY,
+                  fact_id    INTEGER NOT NULL REFERENCES fact(id),
+                  related_id INTEGER NOT NULL REFERENCES fact(id),
+                  relation   TEXT NOT NULL CHECK (relation IN
+                             ('supersedes','conflicts_with','scoped','not_conflict')),
+                  reason     TEXT,
+                  judged_at  INTEGER NOT NULL
+                );
+                CREATE INDEX ix_fact_relation_fact    ON fact_relation(fact_id);
+                CREATE INDEX ix_fact_relation_related ON fact_relation(related_id);
+                """);
+
+            WriteMeta(connection, null, "schema_version", "10");
         }
     }
 

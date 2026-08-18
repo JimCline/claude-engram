@@ -200,6 +200,31 @@ public class BackupStoreTests
         Assert.True(BackupStore.Due(sandbox.Home, connection, Settings(), T0.AddHours(2)).ShouldTake);
     }
 
+    /// <summary>
+    /// <c>engram_judge</c> writes only to <c>fact_relation</c> — no fact is inserted, closed, or
+    /// otherwise touched. A fingerprint blind to that table calls a judge-only session "nothing
+    /// changed" and <c>backup take --if-due</c> skips it, silently, for as long as every session
+    /// after the last snapshot does nothing but judge.
+    /// </summary>
+    [Fact]
+    public void Due_AfterAJudgeOnlySession_IsTrue()
+    {
+        using var sandbox = new SandboxHome(initialize: false);
+        using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
+        var a = Write(connection, "/knowledge/testing/kestrel", "It binds loopback only.", T0);
+        var b = Write(connection, "/knowledge/testing/merlin", "It stoops at speed.", T0);
+        BackupStore.Take(connection, sandbox.Home, T0);
+
+        using (var transaction = EngramDatabase.BeginWrite(connection))
+        {
+            FactRelations.Judge(
+                connection, transaction, a, b, "conflicts_with", "test verdict", T0.AddHours(1).ToUnixTimeSeconds());
+            transaction.Commit();
+        }
+
+        Assert.True(BackupStore.Due(sandbox.Home, connection, Settings(), T0.AddHours(2)).ShouldTake);
+    }
+
     [Fact]
     public void Due_WhenDisabled_IsFalse()
     {

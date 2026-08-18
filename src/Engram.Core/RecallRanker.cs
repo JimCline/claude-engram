@@ -303,6 +303,7 @@ public static class RecallRanker
         var subjectName = reader.GetString(reader.GetOrdinal("subject_name"));
         var path = reader.GetString(reader.GetOrdinal("path"));
         var versions = reader.GetInt32(reader.GetOrdinal("versions"));
+        var judged = reader.GetInt32(reader.GetOrdinal("relations")) > 0;
         var labelIndex = NullableInt(reader, "label_index");
 
         var ageDays = AgeDaysOf(createdAt, now);
@@ -310,7 +311,7 @@ public static class RecallRanker
         var line = origin switch
         {
             FactOrigin.LongTerm => RecallEngine.FormatFactLine(
-                new CannedFact(handle, subjectName, string.Empty, body, scope, string.Empty, ageDays, null, versions, detailsChars)),
+                new CannedFact(handle, subjectName, string.Empty, body, scope, string.Empty, ageDays, null, versions, detailsChars, judged)),
             FactOrigin.CurrentSession => RecallEngine.FormatSessionFactLine(
                 ToSessionFact(factId, body, path, subjectName, ageDays, detailsChars, agentNames)),
             FactOrigin.PriorSession => RecallEngine.FormatPriorSessionFactLine(
@@ -561,12 +562,17 @@ public static class RecallRanker
 
             -- The outer ORDER BY is repeated: LIMIT inside a CTE bounds the rows, but SQLite does not
             -- guarantee the outer query preserves that order. Free at <= 501 rows.
-            -- The versions subquery is outside the LIMIT, so it runs at most 501 times instead of once
-            -- per candidate. Groups on path+predicate (D57), not subject_id, matching FactStore.VersionCounts.
+            -- The versions and relations subqueries are outside the LIMIT, so each runs at most 501
+            -- times instead of once per candidate. versions groups on path+predicate (D57), not
+            -- subject_id, matching FactStore.VersionCounts. relations counts fact_relation rows
+            -- naming this fact on either side, matching FactRelations.RelationCounts — the source
+            -- of the "· judged" marker; ranking itself is unchanged.
             SELECT b.*,
                    (SELECT COUNT(*) FROM fact f2
                       JOIN entity e2 ON e2.id = f2.subject_id
-                     WHERE e2.path = b.path AND f2.predicate = b.predicate) AS versions
+                     WHERE e2.path = b.path AND f2.predicate = b.predicate) AS versions,
+                   (SELECT COUNT(*) FROM fact_relation fr
+                     WHERE fr.fact_id = b.fact_id OR fr.related_id = b.fact_id) AS relations
             FROM bounded b
             ORDER BY CASE WHEN b.origin = 0 THEN 0 ELSE 1 END, b.fused DESC, b.handle;
             """);

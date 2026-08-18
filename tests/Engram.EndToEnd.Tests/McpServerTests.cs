@@ -1,10 +1,128 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
 
 namespace Engram.EndToEnd.Tests;
 
 public class McpServerTests
 {
+    private static string HandleOf(string response) => Regex.Match(response, @"\[(f\d+)\]").Groups[1].Value;
+
+    [Fact]
+    public async Task McpServer_RememberJudgeExpandHistory_RoundTripsThroughTheRealBinary()
+    {
+        Assert.SkipUnless(EndToEndBinary.Path is not null, EndToEndBinary.SkipReason);
+
+        using var home = new TestHome();
+        var port = FreeTcpPort.Next();
+        var cancellationToken = TestContext.Current.CancellationToken;
+
+        var (startExit, _, startErr) = EngramProcess.Run(home.Root, "start", "--port", port.ToString());
+        Assert.True(startExit == 0, $"engram start failed: {startErr}");
+
+        try
+        {
+            using var client = new HttpMcpClient(port);
+            await client.InitializeAsync(cancellationToken);
+
+            var firstText = await client.CallToolTextAsync(
+                "engram_remember",
+                new JsonObject { ["statement"] = "The nightly backup job runs at 2am UTC." },
+                cancellationToken);
+            var first = HandleOf(firstText);
+            Assert.NotEmpty(first);
+
+            var secondText = await client.CallToolTextAsync(
+                "engram_remember",
+                new JsonObject { ["statement"] = "The nightly backup job runs at 2am Pacific." },
+                cancellationToken);
+            var second = HandleOf(secondText);
+            Assert.NotEmpty(second);
+
+            var judgeText = await client.CallToolTextAsync(
+                "engram_judge",
+                new JsonObject
+                {
+                    ["fact_id"] = first,
+                    ["related_id"] = second,
+                    ["relation"] = "conflicts_with",
+                    ["reason"] = "disagree on timezone",
+                },
+                cancellationToken);
+            Assert.Contains("conflicts_with", judgeText);
+
+            var historyText = await client.CallToolTextAsync(
+                "engram_expand",
+                new JsonObject { ["id"] = first, ["view"] = "history" },
+                cancellationToken);
+            Assert.Contains("conflicts_with", historyText);
+            Assert.Contains(second, historyText);
+        }
+        finally
+        {
+            EngramProcess.Run(home.Root, "stop");
+        }
+    }
+
+    [Fact]
+    public async Task McpServer_RememberCandidatesJudgeExpandHistory_RoundTripsThroughTheRealBinary()
+    {
+        Assert.SkipUnless(EndToEndBinary.Path is not null, EndToEndBinary.SkipReason);
+
+        using var home = new TestHome();
+        File.AppendAllText(Path.Combine(home.Root, "config.toml"), "\n[remember]\ncandidates = true\n");
+        var port = FreeTcpPort.Next();
+        var cancellationToken = TestContext.Current.CancellationToken;
+
+        var (startExit, _, startErr) = EngramProcess.Run(home.Root, "start", "--port", port.ToString());
+        Assert.True(startExit == 0, $"engram start failed: {startErr}");
+
+        try
+        {
+            using var client = new HttpMcpClient(port);
+            await client.InitializeAsync(cancellationToken);
+
+            var firstText = await client.CallToolTextAsync(
+                "engram_remember",
+                new JsonObject { ["statement"] = "The nightly backup job runs at 2am UTC." },
+                cancellationToken);
+            var first = HandleOf(firstText);
+            Assert.NotEmpty(first);
+
+            var secondText = await client.CallToolTextAsync(
+                "engram_remember",
+                new JsonObject { ["statement"] = "The nightly backup job now also runs a checksum verification." },
+                cancellationToken);
+            var second = HandleOf(secondText);
+            Assert.NotEmpty(second);
+            Assert.Contains("Possibly related:", secondText);
+            Assert.Contains($"[{first}]", secondText);
+
+            var judgeText = await client.CallToolTextAsync(
+                "engram_judge",
+                new JsonObject
+                {
+                    ["fact_id"] = first,
+                    ["related_id"] = second,
+                    ["relation"] = "conflicts_with",
+                    ["reason"] = "disagree on whether checksums are verified",
+                },
+                cancellationToken);
+            Assert.Contains("conflicts_with", judgeText);
+
+            var historyText = await client.CallToolTextAsync(
+                "engram_expand",
+                new JsonObject { ["id"] = first, ["view"] = "history" },
+                cancellationToken);
+            Assert.Contains("conflicts_with", historyText);
+            Assert.Contains(second, historyText);
+        }
+        finally
+        {
+            EngramProcess.Run(home.Root, "stop");
+        }
+    }
+
     [Fact]
     public async Task McpServer_InitializeListToolsCallRecallAndWriteTelemetry()
     {
@@ -27,7 +145,7 @@ public class McpServerTests
                 .Select(t => t!["name"]!.GetValue<string>())
                 .OrderBy(name => name, StringComparer.Ordinal)
                 .ToArray();
-            Assert.Equal(["engram_browse", "engram_expand", "engram_forget", "engram_index_repo", "engram_recall", "engram_remember", "engram_revise", "engram_start", "engram_status", "engram_stop"], toolNames);
+            Assert.Equal(["engram_browse", "engram_expand", "engram_forget", "engram_index_repo", "engram_judge", "engram_recall", "engram_remember", "engram_revise", "engram_start", "engram_status", "engram_stop"], toolNames);
 
             var hitText = await client.CallToolTextAsync(
                 "engram_recall", new JsonObject { ["query"] = "AOT packaging and Roslyn" }, cancellationToken);
@@ -91,7 +209,7 @@ public class McpServerTests
                 .Select(t => t!["name"]!.GetValue<string>())
                 .OrderBy(name => name, StringComparer.Ordinal)
                 .ToArray();
-            Assert.Equal(["engram_browse", "engram_expand", "engram_forget", "engram_index_repo", "engram_recall", "engram_remember", "engram_revise", "engram_start", "engram_status", "engram_stop"], toolNames);
+            Assert.Equal(["engram_browse", "engram_expand", "engram_forget", "engram_index_repo", "engram_judge", "engram_recall", "engram_remember", "engram_revise", "engram_start", "engram_status", "engram_stop"], toolNames);
 
             var telemetryPath = Path.Combine(home.Root, "telemetry.jsonl");
             Assert.False(File.Exists(telemetryPath));

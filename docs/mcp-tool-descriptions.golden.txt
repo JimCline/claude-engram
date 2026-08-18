@@ -28,6 +28,17 @@ Record the user's answer on indexing this checkout: enroll, decline (stop asking
   param: decision
   enroll, decline, or later.
 
+tool: engram_judge
+Record a verdict on how two facts relate: supersedes, conflicts_with, scoped, or not_conflict. Call it after engram_recall or engram_expand surfaces two facts that might disagree, to settle which one stands and why. The verdict is recorded alongside both facts — neither is changed or closed by it — and shows up under engram_expand ... history for either one.
+  param: fact_id
+  The bracketed id of the fact being judged, e.g. "f42".
+  param: related_id
+  The bracketed id of the fact it is being compared against, e.g. "f17".
+  param: relation
+  One of: supersedes, conflicts_with, scoped, not_conflict.
+  param: reason
+  Why this verdict — what distinguishes or reconciles the two facts.
+
 tool: engram_recall
 Check memory BEFORE reading files or exploring the repo. Searches Engram's stored facts (decisions, conventions, gotchas, contracts) and returns a token-budgeted, ranked digest with fact handles and a coverage estimate. Call this first for any question about how this project works, what was decided, or why something is the way it is — it is far cheaper than rediscovering the answer by reading source.
   param: query
@@ -36,7 +47,7 @@ Check memory BEFORE reading files or exploring the repo. Searches Engram's store
   Maximum tokens to spend on the response. Defaults to 500.
 
 tool: engram_remember
-Engram's durable memory, and where anything worth keeping goes even when another memory system is available. Call it when the user asks you to remember or save something, and whenever you learn something durable: a decision, a constraint, a partial result, a dead end already ruled out — state you would otherwise repeat in context and would lose to compaction. `engram_recall` ranks these above long-term memory for the rest of this session, and they stay recallable in later ones, so this is for anything still true next week rather than only the next ten minutes. Subagents pass their own name in `agent`. When restating something the user just said, pass the bracketed id of its automatic capture in `supersedes` so the rewrite replaces it rather than duplicating it.
+Engram's durable memory, and where anything worth keeping goes even when another memory system is available. Call it when the user asks you to remember or save something, and whenever you learn something durable: a decision, a constraint, a partial result, a dead end already ruled out — state you would otherwise repeat in context and would lose to compaction. `engram_recall` ranks these above long-term memory for the rest of this session, and they stay recallable in later ones, so this is for anything still true next week rather than only the next ten minutes. Subagents pass their own name in `agent`. When restating something the user just said, pass the bracketed id of its automatic capture in `supersedes` so the rewrite replaces it rather than duplicating it. When candidates are enabled, also returns up to 3 similar live facts already stored, for a follow-up engram_judge call.
   param: statement
   The fact to remember, as a short, self-contained statement — aim under ~300 characters; depth belongs in details.
   param: details

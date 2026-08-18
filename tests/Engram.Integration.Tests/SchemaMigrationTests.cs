@@ -110,6 +110,18 @@ public class SchemaMigrationTests
         Execute(connection, "DROP TABLE sync_deferred_close;");
     }
 
+    /// <summary>
+    /// The structural half of making a downgrade fixture version-N-shaped (N &lt; 10) for the
+    /// conflict-verdicts side table — every fixture below version 10 needs this the same way
+    /// <see cref="DropSyncTables"/> covers version 9's tables, so the version-10 migration's
+    /// unconditional <c>CREATE TABLE</c> cannot silently no-op against a fixture that still
+    /// has it (D60).
+    /// </summary>
+    private static void DropFactRelationTable(SqliteConnection connection)
+    {
+        Execute(connection, "DROP TABLE fact_relation;");
+    }
+
     /// <summary>Builds a store at version 1 holding one fact, and closes it.</summary>
     private static long WriteVersion1Store(SandboxHome sandbox, string path, string body)
     {
@@ -124,6 +136,7 @@ public class SchemaMigrationTests
         DropDetailsColumn(connection);
         DropSuppressionColumn(connection);
         DropSyncTables(connection);
+        DropFactRelationTable(connection);
         Execute(connection, "DROP TABLE repo_enrollment;");
         Assert.Equal(1, EngramDatabase.ReadSchemaVersion(connection));
         return id;
@@ -154,6 +167,7 @@ public class SchemaMigrationTests
         DropDetailsColumn(connection);
         DropSuppressionColumn(connection);
         DropSyncTables(connection);
+        DropFactRelationTable(connection);
         Execute(connection, "DROP TABLE repo_enrollment;");
         Execute(connection, "UPDATE schema_meta SET value = '5' WHERE key = 'schema_version';");
         Assert.Equal(5, EngramDatabase.ReadSchemaVersion(connection));
@@ -180,6 +194,7 @@ public class SchemaMigrationTests
 
         DropSuppressionColumn(connection);
         DropSyncTables(connection);
+        DropFactRelationTable(connection);
         Execute(connection, "DROP TABLE repo_enrollment;");
         Execute(connection, "UPDATE schema_meta SET value = '6' WHERE key = 'schema_version';");
         Assert.Equal(6, EngramDatabase.ReadSchemaVersion(connection));
@@ -212,6 +227,7 @@ public class SchemaMigrationTests
 
         DropSuppressionColumn(connection);
         DropSyncTables(connection);
+        DropFactRelationTable(connection);
         Execute(connection, "UPDATE schema_meta SET value = '7' WHERE key = 'schema_version';");
         Assert.Equal(7, EngramDatabase.ReadSchemaVersion(connection));
     }
@@ -233,8 +249,29 @@ public class SchemaMigrationTests
             + "('/projects/acme/code/api', 'github.com/acme/api', '/tmp/api', 0);");
 
         DropSyncTables(connection);
+        DropFactRelationTable(connection);
         Execute(connection, "UPDATE schema_meta SET value = '8' WHERE key = 'schema_version';");
         Assert.Equal(8, EngramDatabase.ReadSchemaVersion(connection));
+    }
+
+    /// <summary>
+    /// Version 10 added <c>fact_relation</c> as a brand new <c>CREATE TABLE</c>, the same shape
+    /// as version 9's sync tables (<see cref="WriteVersion8Store"/>): "version-9-shaped" means the
+    /// sync tables are present (they exist as of version 9) but <c>fact_relation</c> is outright
+    /// absent, dropped after the current-schema store is opened so the migration's unconditional
+    /// <c>CREATE TABLE</c> cannot silently no-op against a fixture that still has it (D60).
+    /// </summary>
+    private static void WriteVersion9Store(SandboxHome sandbox)
+    {
+        using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
+        Execute(
+            connection,
+            "INSERT INTO repo_registry (repo_path, identity, disk_path, created_at) VALUES "
+            + "('/projects/acme/code/api', 'github.com/acme/api', '/tmp/api', 0);");
+
+        DropFactRelationTable(connection);
+        Execute(connection, "UPDATE schema_meta SET value = '9' WHERE key = 'schema_version';");
+        Assert.Equal(9, EngramDatabase.ReadSchemaVersion(connection));
     }
 
     /// <summary>Builds a store at version 2 holding one live fact and one closed one.</summary>
@@ -256,6 +293,7 @@ public class SchemaMigrationTests
         DropDetailsColumn(connection);
         DropSuppressionColumn(connection);
         DropSyncTables(connection);
+        DropFactRelationTable(connection);
         Execute(connection, "DROP TABLE repo_enrollment;");
         Assert.Equal(2, EngramDatabase.ReadSchemaVersion(connection));
         return (live, closed);
@@ -533,6 +571,40 @@ public class SchemaMigrationTests
                 "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' "
                 + "AND name IN ('sync_chunk_state', 'sync_deferred_close');";
             Assert.Equal(2L, (long)command.ExecuteScalar()!);
+        }
+
+        using (var command = reopened.CreateCommand())
+        {
+            command.CommandText = "SELECT identity FROM repo_registry WHERE identity = 'github.com/acme/api';";
+            Assert.Equal("github.com/acme/api", (string)command.ExecuteScalar()!);
+        }
+
+        var snapshot = Assert.Single(BackupStore.List(sandbox.Home));
+        Assert.Contains("pre-v" + EngramDatabase.SchemaVersion, snapshot.Name, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Falsified by temporarily removing the migration's <c>if (from &lt; 10)</c> block so no
+    /// <c>CREATE TABLE</c> runs: confirmed red — <c>OpenInitialized</c> throws
+    /// <c>InvalidOperationException</c> because <c>ReadSchemaVersion</c> never advances past 9 while
+    /// <see cref="EngramDatabase.SchemaVersion"/> is 10 — then restored.
+    /// </summary>
+    [Fact]
+    public void Migrating_AVersion9Store_CreatesTheFactRelationTableWithoutTouchingExistingRows()
+    {
+        using var sandbox = new SandboxHome(initialize: false);
+        WriteVersion9Store(sandbox);
+        SqliteConnection.ClearAllPools();
+
+        using var reopened = EngramDatabase.OpenInitialized(sandbox.Home);
+
+        Assert.Equal(EngramDatabase.SchemaVersion, EngramDatabase.ReadSchemaVersion(reopened));
+
+        using (var command = reopened.CreateCommand())
+        {
+            command.CommandText =
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'fact_relation';";
+            Assert.Equal(1L, (long)command.ExecuteScalar()!);
         }
 
         using (var command = reopened.CreateCommand())

@@ -85,11 +85,13 @@ public sealed class EngramMcpTools
         "recallable in later ones, so this is for anything still true next week rather than only the " +
         "next ten minutes. Subagents pass their own name in `agent`. When restating something the user " +
         "just said, pass the bracketed id of its automatic capture in `supersedes` so the rewrite " +
-        "replaces it rather than duplicating it.")]
+        "replaces it rather than duplicating it. When candidates are enabled, also returns up to 3 " +
+        "similar live facts already stored, for a follow-up engram_judge call.")]
     public static string Remember(
         EngramHome home,
         McpSessionId session,
         McpHomeState homeState,
+        LocalRuntime local,
         [Description("The fact to remember, as a short, self-contained statement — aim under ~300 characters; depth belongs in details.")] string statement,
         [Description("Depth the statement cannot carry — a full config, a long rationale, verbatim output. Most memories need none: if the statement holds it, stop there.")] string? details = null,
         [Description("What or who the fact is about, if not obvious from the statement.")] string? subject = null,
@@ -155,7 +157,45 @@ public sealed class EngramMcpTools
         var evidenceText = string.IsNullOrWhiteSpace(evidence) ? string.Empty : $" (evidence: {evidence})";
         var agentText = string.IsNullOrWhiteSpace(agent) ? string.Empty : $" [via {agent}]";
 
-        return $"[{FactCatalog.HandleFor(factId)}] remembered: {subjectText} — \"{statement}\"{evidenceText}{agentText}";
+        var response = $"[{FactCatalog.HandleFor(factId)}] remembered: {subjectText} — \"{statement}\"{evidenceText}{agentText}";
+
+        var config = ConfigFile.Load(home.ConfigPath);
+        if (RememberSettings.Read(config).Candidates)
+        {
+            var candidateLines = NearNeighbourCandidates(home, config, local, session, statement, factId);
+            if (candidateLines.Count > 0)
+            {
+                response += "\n\nPossibly related:\n" + string.Join('\n', candidateLines.Select(line => "  " + line));
+            }
+        }
+
+        return response;
+    }
+
+    // Near-neighbour candidates for a fresh engram_remember write (docs/memory-expansion/
+    // 02-conflict-verdicts-spec.md, Design). Runs post-write, through the same lanes and the
+    // same D44 corroboration bar (2+ lanes agreeing) recall itself uses — no new matcher, no
+    // new threshold. Store-wide: engram_remember's `subject` is free-text display metadata,
+    // not a structured entity path, so there is no entity grouping to scope a search to.
+    private static IReadOnlyList<string> NearNeighbourCandidates(
+        EngramHome home, ConfigFile config, LocalRuntime local, McpSessionId session, string statement, long factId)
+    {
+        var settings = RetrievalSettings.Read(config);
+        var now = DateTimeOffset.UtcNow;
+
+        using var connection = EngramDatabase.OpenInitialized(home);
+        var currentSessionId = SessionStore.FindSession(connection, session.Value);
+        var vectorQuery = VectorLane.PrepareQuery(
+            connection, home, EmbeddingSettings.Read(config), statement, Environment.GetEnvironmentVariable, local);
+
+        var outcome = RecallRanker.Rank(connection, statement, settings.BudgetTokens, settings.SeedK, currentSessionId, now, vectorQuery);
+
+        return outcome.Candidates
+            .Where(candidate => candidate.FactId != factId)
+            .Where(candidate => RecallEngine.LanesThatFound(candidate) > 1)
+            .Take(3)
+            .Select(candidate => candidate.Line)
+            .ToList();
     }
 
     [McpServerTool(Name = "engram_forget")]
@@ -430,6 +470,82 @@ public sealed class EngramMcpTools
         };
     }
 
+    [McpServerTool(Name = "engram_judge")]
+    [Description(
+        "Record a verdict on how two facts relate: supersedes, conflicts_with, scoped, or not_conflict. " +
+        "Call it after engram_recall or engram_expand surfaces two facts that might disagree, to settle " +
+        "which one stands and why. The verdict is recorded alongside both facts — neither is changed or " +
+        "closed by it — and shows up under engram_expand ... history for either one.")]
+    public static string Judge(
+        EngramHome home,
+        McpSessionId session,
+        McpHomeState homeState,
+        [Description("The bracketed id of the fact being judged, e.g. \"f42\".")] string fact_id,
+        [Description("The bracketed id of the fact it is being compared against, e.g. \"f17\".")] string related_id,
+        [Description("One of: supersedes, conflicts_with, scoped, not_conflict.")] string relation,
+        [Description("Why this verdict — what distinguishes or reconciles the two facts.")] string reason)
+    {
+        if (!homeState.Initialized)
+        {
+            return "Engram home is not initialised (run 'engram init'); nothing was recorded.";
+        }
+
+        if (!FactCatalog.TryParseHandle(fact_id, out var factId))
+        {
+            return $"'{fact_id}' is not a fact handle; they look like 'f42'. Nothing was recorded.";
+        }
+
+        if (!FactCatalog.TryParseHandle(related_id, out var relatedId))
+        {
+            return $"'{related_id}' is not a fact handle; they look like 'f42'. Nothing was recorded.";
+        }
+
+        if (factId == relatedId)
+        {
+            return $"'{fact_id}' and '{related_id}' are the same fact. Nothing was recorded.";
+        }
+
+        var normalizedRelation = relation.Trim().ToLowerInvariant();
+        if (!FactRelations.Kinds.Contains(normalizedRelation))
+        {
+            return $"'{relation}' is not a recognized relation; expected one of "
+                + $"{string.Join(", ", FactRelations.Kinds)}. Nothing was recorded.";
+        }
+
+        if (string.IsNullOrWhiteSpace(reason))
+        {
+            return "A verdict needs a reason. Nothing was recorded.";
+        }
+
+        using var connection = EngramDatabase.OpenInitialized(home);
+
+        if (FactStore.ReadById(connection, factId) is null)
+        {
+            return $"No fact with id '{fact_id}'. Nothing was recorded.";
+        }
+
+        if (FactStore.ReadById(connection, relatedId) is null)
+        {
+            return $"No fact with id '{related_id}'. Nothing was recorded.";
+        }
+
+        StoredRelation stored;
+        using (var transaction = EngramDatabase.BeginWrite(connection))
+        {
+            stored = FactRelations.Judge(
+                connection, transaction, factId, relatedId, normalizedRelation, reason.Trim(), DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+            transaction.Commit();
+        }
+
+        Telemetry.Append(home, new TelemetryRecord(
+            Timestamp: DateTime.UtcNow.ToString("o"),
+            SessionId: session.Value,
+            Kind: TelemetryEventKind.Judge));
+
+        return $"[{fact_id}] {normalizedRelation} [{related_id}]: {reason.Trim()}. "
+            + "Recorded as a standalone verdict — neither fact was changed or closed.";
+    }
+
     private static void AppendChildren(System.Text.StringBuilder builder, BrowseNode node, string indent)
     {
         foreach (var child in node.Children)
@@ -476,6 +592,35 @@ public sealed class EngramMcpTools
             }
 
             builder.Append('\n');
+        }
+
+        var relations = FactRelations.ForFact(connection, fact.Id);
+        if (relations.Count > 0)
+        {
+            builder.Append("Judged against ").Append(CountText(relations.Count, "other fact")).Append(":\n");
+            foreach (var relation in relations)
+            {
+                var otherId = relation.FactId == fact.Id ? relation.RelatedId : relation.FactId;
+
+                // "supersedes" is the one directional relation kept — the other three
+                // (conflicts_with, scoped, not_conflict) read the same from either side. Rendered
+                // literally from the wrong side it would say the older fact superseded the newer
+                // one; flip the wording when the fact whose history this is happens to be the
+                // superseding (fact_id) side of the row.
+                var verb = relation.Relation == "supersedes" && relation.FactId == fact.Id
+                    ? "is superseded by this fact"
+                    : relation.Relation;
+
+                builder.Append("  [").Append(FactCatalog.HandleFor(otherId)).Append("] ")
+                    .Append(verb).Append(" (").Append(When(relation.JudgedAt)).Append(')');
+
+                if (!string.IsNullOrWhiteSpace(relation.Reason))
+                {
+                    builder.Append(": ").Append(relation.Reason);
+                }
+
+                builder.Append('\n');
+            }
         }
 
         return builder.ToString().TrimEnd('\n');

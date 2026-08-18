@@ -410,9 +410,27 @@ CREATE TABLE sync_deferred_close (
   PRIMARY KEY (subject_path, predicate, body, valid_from)
 );
 
+-- ---------------------------------------------------------------------------
+-- Conflict verdicts (docs/memory-expansion/02-conflict-verdicts-spec.md) —
+-- a verdict is an annotation kept apart from `fact`, never a fact mutation
+-- (D8). Rows are immutable: a re-judgment is a new row, not an update.
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE fact_relation (
+  id INTEGER PRIMARY KEY,
+  fact_id    INTEGER NOT NULL REFERENCES fact(id),
+  related_id INTEGER NOT NULL REFERENCES fact(id),
+  relation   TEXT NOT NULL CHECK (relation IN
+             ('supersedes','conflicts_with','scoped','not_conflict')),
+  reason     TEXT,
+  judged_at  INTEGER NOT NULL
+);
+CREATE INDEX ix_fact_relation_fact    ON fact_relation(fact_id);
+CREATE INDEX ix_fact_relation_related ON fact_relation(related_id);
+
 
 CREATE TABLE schema_meta (key TEXT PRIMARY KEY, value TEXT);
-INSERT INTO schema_meta(key, value) VALUES ('schema_version', '9');
+INSERT INTO schema_meta(key, value) VALUES ('schema_version', '10');
 
 -- Built by a fresh CREATE, and pre-stamped ready: an empty table matches whatever
 -- FactTokenIndex.Rebuild would produce over zero facts, so a new store needs no rebuild pass.

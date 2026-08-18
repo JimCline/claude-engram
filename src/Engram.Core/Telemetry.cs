@@ -11,6 +11,10 @@ public static class TelemetryEventKind
     public const string Browse = "browse";
     public const string Expand = "expand";
     public const string Revise = "revise";
+
+    /// <summary>An <c>engram_judge</c> call recording a verdict between two facts.</summary>
+    public const string Judge = "judge";
+
     public const string SessionStart = "session-start";
 
     /// <summary>
@@ -93,7 +97,7 @@ public static class TelemetryEventKind
 
     /// <summary>
     /// A <c>sync export</c>/<c>sync import</c> run moving between started, finished, and failed
-    /// (docs/gp-adoption/01-sync-spec.md).
+    /// (docs/memory-expansion/01-sync-spec.md).
     /// </summary>
     /// <remarks>
     /// A kind declared but never emitted reads as a feature switched off (D56), so this exists
@@ -113,7 +117,7 @@ public static class TelemetryEventKind
     /// </remarks>
     public static IReadOnlyList<string> All { get; } =
     [
-        Recall, Remember, Digest, Browse, Expand, Revise,
+        Recall, Remember, Digest, Browse, Expand, Revise, Judge,
         SessionStart, ServerStart, ServerStop, SessionOpen, SubagentStart, PreCompact, PostCompact,
         FileTouched, UserPrompt, MemoryGuard, Index, Embedding, Enrollment, Sync,
     ];

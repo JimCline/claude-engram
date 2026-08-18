@@ -12,20 +12,20 @@ namespace Engram.Integration.Tests;
 /// </summary>
 public class McpToolSurfaceBudgetTests
 {
-    // Measured 3,964 characters across the seven tools in EngramMcpTools on 2026-08-13, when
-    // engram_index_repo joined (spec §6.6a-b) — the situational tools must not dilute
-    // recall's pitch, which is the funnel that matters. EngramServerTools's three tools
-    // (start/status/stop) are argued as cost in D17 but are not reflected over by
-    // ToolMethods() and are not counted in this figure — a separate, unmeasured gap. The
-    // +137 headroom is carried over from the previous ceiling's stated purpose of "ordinary
-    // wording changes"; raising this number is a deliberate edit that needs a reason in the
-    // commit message, not a knob to turn when a description outgrows it.
-    private const int MaxDefinitionChars = 4101;
+    // Measured 4,571 characters across the eight tools in EngramMcpTools on 2026-08-18, when
+    // engram_judge joined — a verdict between two facts needs its own addressing (two fact
+    // handles, a relation, a reason), which no existing tool can take as a parameter without
+    // conflating remember/expand's own contracts with judgment semantics.
+    // EngramServerTools's three tools (start/status/stop) are argued as cost in D17 but are
+    // not reflected over by ToolMethods() and are not counted in this figure — a separate,
+    // unmeasured gap. The +137 headroom is carried over from the previous ceiling's stated
+    // purpose of "ordinary wording changes"; raising this number is a deliberate edit that
+    // needs a reason in the commit message, not a knob to turn when a description outgrows it.
+    private const int MaxDefinitionChars = 4708;
 
-    // 6 -> 7 when engram_index_repo joined: it addresses a filesystem path and spawns a
-    // background process, which no existing tool can take as a parameter without changing
-    // that tool's addressing model (spec §6.6a-b).
-    private const int ExpectedToolCount = 7;
+    // 7 -> 8 when engram_judge joined: it records a verdict between two facts, which no
+    // existing tool can take as a parameter without changing that tool's own contract.
+    private const int ExpectedToolCount = 8;
 
     [Fact]
     public void ToolDefinitions_StayUnderCharacterCeiling()

@@ -596,10 +596,10 @@ public static class RecallEngine
     {
         var (shownBody, withheldBodyChars) = TruncateBody(fact.Body);
         var marker = MarkerFor(withheldBodyChars + fact.DetailsChars);
+        var version = fact.Versions > 1 ? $" · v{fact.Versions}" : string.Empty;
+        var judged = fact.Judged ? " · judged" : string.Empty;
 
-        return fact.Versions > 1
-            ? $"[{fact.Id}] {shownBody} ({fact.Scope} · {fact.AgeDays}d · v{fact.Versions}{marker})"
-            : $"[{fact.Id}] {shownBody} ({fact.Scope} · {fact.AgeDays}d{marker})";
+        return $"[{fact.Id}] {shownBody} ({fact.Scope} · {fact.AgeDays}d{version}{judged}{marker})";
     }
 
     /// <summary>

@@ -38,6 +38,7 @@ public static class FactCatalog
         var facts = FactStore.ReadLive(connection);
         var topics = FactStore.ReadEntityNames(connection, CannedFactSeeder.TopicKind);
         var versions = FactStore.VersionCounts(connection);
+        var relationCounts = FactRelations.RelationCounts(connection);
         var catalog = new List<CannedFact>(facts.Count);
         var sessionPrefix = SessionFacts.Root + "/";
 
@@ -49,7 +50,8 @@ public static class FactCatalog
             }
 
             versions.TryGetValue((fact.SubjectPath, fact.Predicate), out var count);
-            catalog.Add(ToCannedFact(fact, now, topics, count));
+            var judged = relationCounts.TryGetValue(fact.Id, out var relationCount) && relationCount > 0;
+            catalog.Add(ToCannedFact(fact, now, topics, count, judged));
         }
 
         return catalog;
@@ -100,7 +102,8 @@ public static class FactCatalog
         StoredFact fact,
         DateTimeOffset now,
         IReadOnlyDictionary<string, string>? topicNames = null,
-        int versions = 1) => new(
+        int versions = 1,
+        bool judged = false) => new(
         Id: HandleFor(fact.Id),
         Subject: fact.SubjectName,
         Predicate: fact.Predicate,
@@ -110,7 +113,8 @@ public static class FactCatalog
         AgeDays: AgeDaysOf(fact, now),
         Evidence: fact.Evidence,
         Versions: versions > 1 ? versions : 1,
-        DetailsChars: fact.Details?.Length ?? 0);
+        DetailsChars: fact.Details?.Length ?? 0,
+        Judged: judged);
 
     /// <summary>
     /// The display text of a fact's topic: the second path segment, resolved through the

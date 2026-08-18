@@ -102,6 +102,10 @@ public static class BackupCommand
             {
                 var facts = FactJournal.Write(connection, home, DateTimeOffset.UtcNow);
                 stdout.WriteLine($"Journalled {facts} {(facts == 1 ? "fact" : "facts")} to {FactJournal.FileName}.");
+
+                var relations = RelationJournal.Write(connection, home, DateTimeOffset.UtcNow);
+                stdout.WriteLine(
+                    $"Journalled {relations} {(relations == 1 ? "relation" : "relations")} to {RelationJournal.FileName}.");
             }
             catch (Exception exception) when (exception is IOException or Microsoft.Data.Sqlite.SqliteException)
             {
@@ -255,7 +259,8 @@ public static class BackupCommand
             apply,
             $"error: no fact journal at {path}. Run 'engram backup take' to write one.",
             stdout,
-            stderr);
+            stderr,
+            includeRelations: true);
     }
 
     /// <summary>
@@ -269,7 +274,8 @@ public static class BackupCommand
         bool apply,
         string missingFileError,
         TextWriter stdout,
-        TextWriter stderr)
+        TextWriter stderr,
+        bool includeRelations = false)
     {
         if (!File.Exists(path))
         {
@@ -303,9 +309,10 @@ public static class BackupCommand
         using var connection = EngramDatabase.OpenInitialized(home);
 
         ReplayResult result;
+        IReadOnlyDictionary<long, long> idMap;
         try
         {
-            result = FactJournal.Replay(connection, facts, apply);
+            result = FactJournal.Replay(connection, facts, apply, out idMap);
         }
         catch (Microsoft.Data.Sqlite.SqliteException exception)
         {
@@ -334,6 +341,15 @@ public static class BackupCommand
                     + "this journal; those facts kept their end date but not what replaced them.");
         }
 
+        if (includeRelations)
+        {
+            var replayed = ReplayRelations(connection, home, path, facts, idMap, apply, stdout, stderr);
+            if (replayed.HasValue)
+            {
+                return replayed.Value;
+            }
+        }
+
         if (!apply)
         {
             stdout.WriteLine();
@@ -341,6 +357,79 @@ public static class BackupCommand
         }
 
         return 0;
+    }
+
+    /// <summary>
+    /// The relations half of <c>backup replay</c> — not <c>import</c>, which is a legacy JSON-doc
+    /// format with no relation concept. Silent no-op when <c>relations.jsonl</c> is absent, since a
+    /// journal written before conflict verdicts existed is not an error.
+    /// </summary>
+    private static int? ReplayRelations(
+        Microsoft.Data.Sqlite.SqliteConnection connection,
+        EngramHome home,
+        string factsPath,
+        IReadOnlyList<JournalFact> facts,
+        IReadOnlyDictionary<long, long> idMap,
+        bool apply,
+        TextWriter stdout,
+        TextWriter stderr)
+    {
+        var directory = Path.GetDirectoryName(factsPath);
+        var relationsPath = string.IsNullOrEmpty(directory)
+            ? RelationJournal.PathIn(home)
+            : Path.Combine(directory, RelationJournal.FileName);
+
+        if (!File.Exists(relationsPath))
+        {
+            return null;
+        }
+
+        IReadOnlyList<JournalRelation> relations;
+        int skipped;
+        try
+        {
+            relations = RelationJournal.Parse(File.ReadLines(relationsPath), out skipped);
+        }
+        catch (IOException exception)
+        {
+            stderr.WriteLine("error: could not read " + relationsPath + " — " + exception.Message);
+            return 1;
+        }
+
+        if (skipped > 0)
+        {
+            stderr.WriteLine(
+                $"warning: {skipped} unreadable {(skipped == 1 ? "line was" : "lines were")} skipped in {relationsPath}.");
+        }
+
+        if (relations.Count == 0)
+        {
+            return null;
+        }
+
+        RelationReplayResult result;
+        try
+        {
+            result = RelationJournal.Replay(connection, relations, facts, idMap, apply);
+        }
+        catch (Microsoft.Data.Sqlite.SqliteException exception)
+        {
+            stderr.WriteLine("error: relation replay failed and nothing further was written — " + exception.Message);
+            return 1;
+        }
+
+        stdout.WriteLine(
+            $"{(apply ? "Wrote" : "Would write")} {result.Written} {(result.Written == 1 ? "relation" : "relations")}"
+                + $", leaving {result.AlreadyPresent} already in the store.");
+
+        if (result.Unresolved > 0)
+        {
+            stdout.WriteLine(
+                $"  {result.Unresolved} {(result.Unresolved == 1 ? "relation" : "relations")} referenced a fact "
+                    + "outside this journal and were skipped.");
+        }
+
+        return null;
     }
 
     /// <summary>

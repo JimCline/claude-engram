@@ -39,7 +39,7 @@ public class EngramMcpToolsTests
         var session = new McpSessionId("session-a");
 
         var handle = HandleOf(EngramMcpTools.Remember(
-            sandbox.Home, session, Initialized, "The build pipeline retries flaky uploads three times before failing."));
+            sandbox.Home, session, Initialized, NoRuntime(sandbox.Home), "The build pipeline retries flaky uploads three times before failing."));
 
         var result = EngramMcpTools.Recall(sandbox.Home, session, Initialized, NoRuntime(sandbox.Home), "flaky uploads retries");
 
@@ -56,7 +56,7 @@ public class EngramMcpToolsTests
         var reader = new McpSessionId("session-b");
 
         var handle = HandleOf(EngramMcpTools.Remember(
-            sandbox.Home, writer, Initialized, "The build pipeline retries flaky uploads three times before failing."));
+            sandbox.Home, writer, Initialized, NoRuntime(sandbox.Home), "The build pipeline retries flaky uploads three times before failing."));
 
         var result = EngramMcpTools.Recall(sandbox.Home, reader, Initialized, NoRuntime(sandbox.Home), "flaky uploads retries");
 
@@ -74,9 +74,9 @@ public class EngramMcpToolsTests
         var currentSession = new McpSessionId("session-new");
 
         var priorHandle = HandleOf(EngramMcpTools.Remember(
-            sandbox.Home, priorSession, Initialized, "The nightly backup job runs at 2am UTC."));
+            sandbox.Home, priorSession, Initialized, NoRuntime(sandbox.Home), "The nightly backup job runs at 2am UTC."));
         var currentHandle = HandleOf(EngramMcpTools.Remember(
-            sandbox.Home, currentSession, Initialized, "The nightly backup job now also verifies checksums."));
+            sandbox.Home, currentSession, Initialized, NoRuntime(sandbox.Home), "The nightly backup job now also verifies checksums."));
 
         var result = EngramMcpTools.Recall(sandbox.Home, currentSession, Initialized, NoRuntime(sandbox.Home), "nightly backup job");
 
@@ -98,7 +98,7 @@ public class EngramMcpToolsTests
         var session = new McpSessionId("session-a");
 
         var handle = HandleOf(EngramMcpTools.Remember(
-            sandbox.Home, session, Initialized, "The build pipeline retries flaky uploads three times before failing."));
+            sandbox.Home, session, Initialized, NoRuntime(sandbox.Home), "The build pipeline retries flaky uploads three times before failing."));
 
         var response = EngramMcpTools.Forget(sandbox.Home, session, Initialized, handle);
         Assert.Contains("Retracted", response);
@@ -117,7 +117,7 @@ public class EngramMcpToolsTests
         using var sandbox = new SandboxHome();
         var session = new McpSessionId("session-a");
 
-        var response = EngramMcpTools.Remember(sandbox.Home, session, Initialized, "Statement one.");
+        var response = EngramMcpTools.Remember(sandbox.Home, session, Initialized, NoRuntime(sandbox.Home), "Statement one.");
 
         Assert.Matches(@"^\[f\d+\] remembered:", response);
     }
@@ -128,7 +128,7 @@ public class EngramMcpToolsTests
         using var sandbox = new SandboxHome();
         var session = new McpSessionId("session-a");
 
-        EngramMcpTools.Remember(sandbox.Home, session, Initialized, "Ran the migration dry-run against staging.", agent: "migration-worker");
+        EngramMcpTools.Remember(sandbox.Home, session, Initialized, NoRuntime(sandbox.Home), "Ran the migration dry-run against staging.", agent: "migration-worker");
 
         var result = EngramMcpTools.Recall(sandbox.Home, session, Initialized, NoRuntime(sandbox.Home), "migration dry-run staging");
 
@@ -141,7 +141,7 @@ public class EngramMcpToolsTests
         using var sandbox = new SandboxHome(initialize: false);
         var session = new McpSessionId("session-a");
 
-        var response = EngramMcpTools.Remember(sandbox.Home, session, new McpHomeState(false), "Statement one.");
+        var response = EngramMcpTools.Remember(sandbox.Home, session, new McpHomeState(false), NoRuntime(sandbox.Home), "Statement one.");
 
         Assert.DoesNotContain("remembered:", response);
         Assert.False(File.Exists(sandbox.Home.DatabasePath));
@@ -155,7 +155,7 @@ public class EngramMcpToolsTests
         var details = new string('x', 8000);
 
         var response = EngramMcpTools.Remember(
-            sandbox.Home, session, Initialized, "Statement about a rare zebrafish migration pattern.", details: details);
+            sandbox.Home, session, Initialized, NoRuntime(sandbox.Home), "Statement about a rare zebrafish migration pattern.", details: details);
 
         Assert.Contains("2,000-token ceiling", response);
         Assert.Contains("Nothing was stored", response);
@@ -178,7 +178,7 @@ public class EngramMcpToolsTests
         var session = new McpSessionId("session-a");
         var longStatement = new string('w', 8000);
 
-        var response = EngramMcpTools.Remember(sandbox.Home, session, Initialized, longStatement);
+        var response = EngramMcpTools.Remember(sandbox.Home, session, Initialized, NoRuntime(sandbox.Home), longStatement);
 
         Assert.Matches(@"^\[f\d+\] remembered:", response);
     }
@@ -190,11 +190,101 @@ public class EngramMcpToolsTests
         var session = new McpSessionId("session-a");
 
         var handle = HandleOf(EngramMcpTools.Remember(
-            sandbox.Home, session, Initialized, "Short statement.", details: "The depth that didn't fit in the statement."));
+            sandbox.Home, session, Initialized, NoRuntime(sandbox.Home), "Short statement.", details: "The depth that didn't fit in the statement."));
 
         var result = EngramMcpTools.Expand(sandbox.Home, session, Initialized, handle, "details");
 
         Assert.Equal("Short statement.\n\nThe depth that didn't fit in the statement.", result);
+    }
+
+    [Fact]
+    public void Judge_ThenExpandHistory_ShowsTheVerdictFromEitherFactsHandle()
+    {
+        using var sandbox = new SandboxHome();
+        var session = new McpSessionId("session-a");
+
+        var first = HandleOf(EngramMcpTools.Remember(
+            sandbox.Home, session, Initialized, NoRuntime(sandbox.Home), "The nightly backup job runs at 2am UTC."));
+        var second = HandleOf(EngramMcpTools.Remember(
+            sandbox.Home, session, Initialized, NoRuntime(sandbox.Home), "The nightly backup job runs at 2am Pacific."));
+
+        var response = EngramMcpTools.Judge(
+            sandbox.Home, session, Initialized, first, second, "conflicts_with", "disagree on timezone");
+
+        Assert.Contains(first, response, StringComparison.Ordinal);
+        Assert.Contains(second, response, StringComparison.Ordinal);
+        Assert.Contains("conflicts_with", response, StringComparison.Ordinal);
+
+        var fromFirst = EngramMcpTools.Expand(sandbox.Home, session, Initialized, first, "history");
+        var fromSecond = EngramMcpTools.Expand(sandbox.Home, session, Initialized, second, "history");
+
+        Assert.Contains("conflicts_with", fromFirst, StringComparison.Ordinal);
+        Assert.Contains("disagree on timezone", fromFirst, StringComparison.Ordinal);
+        Assert.Contains(second, fromFirst, StringComparison.Ordinal);
+
+        Assert.Contains("conflicts_with", fromSecond, StringComparison.Ordinal);
+        Assert.Contains(first, fromSecond, StringComparison.Ordinal);
+    }
+
+    // "supersedes" is the one directional relation kept — unlike conflicts_with, scoped, and
+    // not_conflict, which read the same from either side. Judged with `first` as fact_id (the
+    // superseding, newer fact) and `second` as related_id (the superseded, older fact),
+    // expanding `first`'s OWN history must not render the literal relation verb, which would
+    // read "[second] supersedes" — implying the older fact superseded the newer one, backwards.
+    [Fact]
+    public void Judge_SupersedesThenExpandTheSupersedingFactsHistory_ReadsTheDirectionCorrectly()
+    {
+        using var sandbox = new SandboxHome();
+        var session = new McpSessionId("session-a");
+
+        var first = HandleOf(EngramMcpTools.Remember(
+            sandbox.Home, session, Initialized, NoRuntime(sandbox.Home), "The nightly backup job now also verifies checksums."));
+        var second = HandleOf(EngramMcpTools.Remember(
+            sandbox.Home, session, Initialized, NoRuntime(sandbox.Home), "The nightly backup job runs at 2am UTC."));
+
+        EngramMcpTools.Judge(
+            sandbox.Home, session, Initialized, first, second, "supersedes", "restated with more detail");
+
+        var fromFirst = EngramMcpTools.Expand(sandbox.Home, session, Initialized, first, "history");
+
+        Assert.Contains("is superseded by", fromFirst, StringComparison.Ordinal);
+        Assert.DoesNotContain($"[{second}] supersedes", fromFirst, StringComparison.Ordinal);
+
+        var fromSecond = EngramMcpTools.Expand(sandbox.Home, session, Initialized, second, "history");
+        Assert.Contains($"[{first}] supersedes", fromSecond, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Judge_WithAnUnrecognizedRelation_RefusesAndRecordsNothing()
+    {
+        using var sandbox = new SandboxHome();
+        var session = new McpSessionId("session-a");
+
+        var first = HandleOf(EngramMcpTools.Remember(sandbox.Home, session, Initialized, NoRuntime(sandbox.Home), "Statement one."));
+        var second = HandleOf(EngramMcpTools.Remember(sandbox.Home, session, Initialized, NoRuntime(sandbox.Home), "Statement two."));
+
+        var response = EngramMcpTools.Judge(sandbox.Home, session, Initialized, first, second, "duplicates", "not a real relation");
+
+        Assert.Contains("not a recognized relation", response, StringComparison.Ordinal);
+
+        var history = EngramMcpTools.Expand(sandbox.Home, session, Initialized, first, "history");
+        Assert.DoesNotContain("duplicates", history, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Judge_AFactAgainstItself_RefusesAndRecordsNothing()
+    {
+        using var sandbox = new SandboxHome();
+        var session = new McpSessionId("session-a");
+
+        var first = HandleOf(EngramMcpTools.Remember(sandbox.Home, session, Initialized, NoRuntime(sandbox.Home), "Statement one."));
+
+        var response = EngramMcpTools.Judge(sandbox.Home, session, Initialized, first, first, "conflicts_with", "not a real relation");
+
+        Assert.Contains("same fact", response, StringComparison.Ordinal);
+
+        var history = EngramMcpTools.Expand(sandbox.Home, session, Initialized, first, "history");
+        Assert.DoesNotContain("conflicts_with", history, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -203,7 +293,7 @@ public class EngramMcpToolsTests
         using var sandbox = new SandboxHome();
         var session = new McpSessionId("session-a");
         var handle = HandleOf(EngramMcpTools.Remember(
-            sandbox.Home, session, Initialized, "The nightly backup job runs at 2am UTC."));
+            sandbox.Home, session, Initialized, NoRuntime(sandbox.Home), "The nightly backup job runs at 2am UTC."));
         var details = new string('x', 8000);
 
         var response = EngramMcpTools.Revise(
@@ -228,7 +318,7 @@ public class EngramMcpToolsTests
         var session = new McpSessionId("session-a");
 
         var original = HandleOf(EngramMcpTools.Remember(
-            sandbox.Home, session, Initialized, "The deploy script targets us-east-1.",
+            sandbox.Home, session, Initialized, NoRuntime(sandbox.Home), "The deploy script targets us-east-1.",
             details: "Config: region=us-east-1, replicas=3."));
 
         var revised = HandleOf(EngramMcpTools.Revise(
@@ -247,7 +337,7 @@ public class EngramMcpToolsTests
         var session = new McpSessionId("session-a");
 
         var handle = HandleOf(EngramMcpTools.Remember(
-            sandbox.Home, session, Initialized, "A fact with no depth beyond its statement."));
+            sandbox.Home, session, Initialized, NoRuntime(sandbox.Home), "A fact with no depth beyond its statement."));
 
         var result = EngramMcpTools.Expand(sandbox.Home, session, Initialized, handle, "details");
 
@@ -261,7 +351,7 @@ public class EngramMcpToolsTests
         using var sandbox = new SandboxHome();
         var session = new McpSessionId("session-a");
 
-        var handle = HandleOf(EngramMcpTools.Remember(sandbox.Home, session, Initialized, "Short."));
+        var handle = HandleOf(EngramMcpTools.Remember(sandbox.Home, session, Initialized, NoRuntime(sandbox.Home), "Short."));
 
         var result = EngramMcpTools.Expand(sandbox.Home, session, Initialized, handle, "details", offset: 9999);
 
@@ -279,7 +369,7 @@ public class EngramMcpToolsTests
 
         const string emoji = "😀";
         var details = new string('a', 356) + emoji + new string('b', 50);
-        var handle = HandleOf(EngramMcpTools.Remember(sandbox.Home, session, Initialized, "s", details: details));
+        var handle = HandleOf(EngramMcpTools.Remember(sandbox.Home, session, Initialized, NoRuntime(sandbox.Home), "s", details: details));
         var fullText = "s\n\n" + details;
 
         var page1 = EngramMcpTools.Expand(sandbox.Home, session, Initialized, handle, "details", budget_tokens: 100);
@@ -306,7 +396,7 @@ public class EngramMcpToolsTests
         var session = new McpSessionId("session-a");
 
         var handle = HandleOf(EngramMcpTools.Remember(
-            sandbox.Home, session, Initialized, "Short.", details: "Some depth."));
+            sandbox.Home, session, Initialized, NoRuntime(sandbox.Home), "Short.", details: "Some depth."));
 
         var result = EngramMcpTools.Expand(sandbox.Home, session, Initialized, handle, "details", budget_tokens: 0);
 
@@ -322,7 +412,7 @@ public class EngramMcpToolsTests
         // Larger than a default-budget page (800 tokens ≈ 2,880 chars) but under the
         // 2,000-token details ceiling, so Remember accepts it.
         var details = new string('w', 5000);
-        var handle = HandleOf(EngramMcpTools.Remember(sandbox.Home, session, Initialized, "s", details: details));
+        var handle = HandleOf(EngramMcpTools.Remember(sandbox.Home, session, Initialized, NoRuntime(sandbox.Home), "s", details: details));
         var fullText = "s\n\n" + details;
 
         var result = EngramMcpTools.Expand(
@@ -354,7 +444,7 @@ public class EngramMcpToolsTests
         }
 
         var details = wordsBuilder.ToString();
-        var handle = HandleOf(EngramMcpTools.Remember(sandbox.Home, session, Initialized, "s", details: details));
+        var handle = HandleOf(EngramMcpTools.Remember(sandbox.Home, session, Initialized, NoRuntime(sandbox.Home), "s", details: details));
         var fullText = "s\n\n" + details;
 
         var rebuilt = new System.Text.StringBuilder();
@@ -461,7 +551,7 @@ public class EngramMcpToolsTests
         var session = new McpSessionId("session-a");
 
         var handle = HandleOf(EngramMcpTools.Remember(
-            sandbox.Home, session, Initialized, "The nightly job now also verifies checksums.",
+            sandbox.Home, session, Initialized, NoRuntime(sandbox.Home), "The nightly job now also verifies checksums.",
             details: "Verification uses SHA-256 and compares against the manifest written at backup time."));
 
         var result = EngramMcpTools.Recall(
@@ -485,7 +575,7 @@ public class EngramMcpToolsTests
         var session = new McpSessionId("session-a");
 
         var handle = HandleOf(EngramMcpTools.Remember(
-            sandbox.Home, session, Initialized, "The build pipeline retries flaky uploads three times before failing."));
+            sandbox.Home, session, Initialized, NoRuntime(sandbox.Home), "The build pipeline retries flaky uploads three times before failing."));
 
         var result = EngramMcpTools.Recall(
             sandbox.Home, session, Initialized, NoRuntime(sandbox.Home), "build pipeline retries flaky uploads");
