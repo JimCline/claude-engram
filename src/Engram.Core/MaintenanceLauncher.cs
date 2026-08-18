@@ -86,7 +86,9 @@ public static class MaintenanceLauncher
             command
                 .Append(engram).Append(" backup take --if-due").Append(home).Append("; ")
                 .Append(engram).Append(" queue compact --apply --if-large").Append(home).Append("; ")
-                .Append(engram).Append(" repair --apply --tokens").Append(home).Append("; ");
+                .Append(engram).Append(" repair --apply --tokens").Append(home).Append("; ")
+                .Append(engram).Append(" sync import --if-new --apply").Append(home).Append("; ")
+                .Append(engram).Append(" sync export --if-due --apply").Append(home).Append("; ");
         }
 
         if (indexRoot is not null)

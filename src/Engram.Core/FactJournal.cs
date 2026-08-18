@@ -630,7 +630,12 @@ public static class FactJournal
         return slash >= 0 && slash < path.Length - 1 ? path[(slash + 1)..] : path;
     }
 
-    private static JsonObject ToJson(JournalFact fact) => new()
+    /// <summary>
+    /// Internal rather than private so <see cref="Sync"/> can reuse this exact serialization for a
+    /// chunk's <c>"t":"fact"</c> lines (docs/gp-adoption/01-sync-spec.md) — "same fields FactJournal
+    /// already emits into facts.jsonl" — without a second implementation of the field mapping.
+    /// </summary>
+    internal static JsonObject ToJson(JournalFact fact) => new()
     {
         ["id"] = fact.Id,
         ["subject"] = fact.Subject,

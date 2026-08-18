@@ -59,6 +59,7 @@ public static class CliApp
             "compact" => CompactCommand.Run(homePath, rest, stdout, stderr),
             "export" => ExportCommand.Run(homePath, rest, stdout, stderr),
             "import" => ImportCommand.Run(homePath, rest, stdout, stderr),
+            "sync" => SyncCommand.Run(homePath, rest, stdout, stderr),
             _ => Usage(stderr),
         };
     }
@@ -109,6 +110,7 @@ public static class CliApp
         writer.WriteLine("  compact [--path <prefix>] [--apply]  prune regenerable code facts: closed ones, or a whole subtree with --path");
         writer.WriteLine("  export [--path <prefix>] [--out <file>]  write facts as a portable JSONL bundle (stdout by default)");
         writer.WriteLine("  import <file> [--apply]            add a bundle's facts; never rewrites or closes what the store already has");
+        writer.WriteLine("  sync <export|import|status> [--apply]  exchange facts with other machines through a shared directory");
         writer.WriteLine();
         writer.WriteLine("queue options:");
         writer.WriteLine("  compact [--apply]                  keep the newest entry per file and delete the rest");
@@ -120,6 +122,13 @@ public static class CliApp
         writer.WriteLine("  restore [name] [--apply]           put a snapshot back, keeping the current store as a new snapshot");
         writer.WriteLine("  replay [file] [--apply]            read facts.jsonl into the store, adding what it does not have");
         writer.WriteLine("  import [dir] [--apply]             bring in user facts from the old user-facts/ JSON directory");
+        writer.WriteLine();
+        writer.WriteLine("sync options:");
+        writer.WriteLine("  export --apply                     write a chunk of this machine's new facts and closes");
+        writer.WriteLine("  export --if-due                    skip if nothing has changed since the last export; what session start runs");
+        writer.WriteLine("  import --apply                     apply every peer machine's pending chunks");
+        writer.WriteLine("  import --if-new                    skip if no peer machine directories exist; what session start runs");
+        writer.WriteLine("  status                              pending chunks per machine, and deferred/stalled/conflicted closes");
         writer.WriteLine();
         writer.WriteLine("repo options:");
         writer.WriteLine("  enroll [path]                       index this checkout now and keep it current as files change");

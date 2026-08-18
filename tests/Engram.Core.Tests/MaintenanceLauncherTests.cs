@@ -57,6 +57,8 @@ public class MaintenanceLauncherTests
     [InlineData("backup take --if-due")]
     [InlineData("queue compact --apply --if-large")]
     [InlineData("repair --apply --tokens")]
+    [InlineData("sync import --if-new --apply")]
+    [InlineData("sync export --if-due --apply")]
     public void EveryJobRunsWithItsOwnIdleGuard(string job) =>
         Assert.Contains(
             job,
@@ -139,6 +141,7 @@ public class MaintenanceLauncherTests
         Assert.DoesNotContain("backup take", script, StringComparison.Ordinal);
         Assert.DoesNotContain("queue compact", script, StringComparison.Ordinal);
         Assert.DoesNotContain("repair", script, StringComparison.Ordinal);
+        Assert.DoesNotContain("sync", script, StringComparison.Ordinal);
     }
 
     /// <summary>

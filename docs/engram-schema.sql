@@ -380,8 +380,39 @@ CREATE TABLE fact_token (
 CREATE INDEX ix_fact_token_fact ON fact_token(fact_id);
 
 
+-- ---------------------------------------------------------------------------
+-- Cross-machine sync (docs/gp-adoption/01-sync-spec.md) — side tables only,
+-- nothing added to `fact`. Both are derived in the weak sense (D8): rebuildable
+-- by re-running `sync import` over the full chunk history, never authored truth.
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE sync_chunk_state (
+  machine_id TEXT NOT NULL,
+  seq        INTEGER NOT NULL,
+  applied_at INTEGER NOT NULL,
+  fact_count INTEGER NOT NULL,
+  close_count INTEGER NOT NULL,
+  PRIMARY KEY (machine_id, seq)
+);
+
+CREATE TABLE sync_deferred_close (
+  subject_path TEXT NOT NULL,
+  predicate    TEXT NOT NULL,
+  body         TEXT NOT NULL,
+  valid_from   INTEGER NOT NULL,
+  valid_to     INTEGER NOT NULL,
+  superseded_by_body TEXT,
+  superseded_by_valid_from INTEGER,
+  status TEXT NOT NULL DEFAULT 'deferred' CHECK (status IN ('deferred','stalled')),
+  retry_count INTEGER NOT NULL DEFAULT 0,
+  first_seen_at INTEGER NOT NULL,
+  source_chunk TEXT NOT NULL,
+  PRIMARY KEY (subject_path, predicate, body, valid_from)
+);
+
+
 CREATE TABLE schema_meta (key TEXT PRIMARY KEY, value TEXT);
-INSERT INTO schema_meta(key, value) VALUES ('schema_version', '8');
+INSERT INTO schema_meta(key, value) VALUES ('schema_version', '9');
 
 -- Built by a fresh CREATE, and pre-stamped ready: an empty table matches whatever
 -- FactTokenIndex.Rebuild would produce over zero facts, so a new store needs no rebuild pass.

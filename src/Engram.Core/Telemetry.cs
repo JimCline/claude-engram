@@ -92,6 +92,18 @@ public static class TelemetryEventKind
     public const string Enrollment = "enrollment";
 
     /// <summary>
+    /// A <c>sync export</c>/<c>sync import</c> run moving between started, finished, and failed
+    /// (docs/gp-adoption/01-sync-spec.md).
+    /// </summary>
+    /// <remarks>
+    /// A kind declared but never emitted reads as a feature switched off (D56), so this exists
+    /// only alongside <see cref="Engram.Cli.SyncCommand"/>, its one emission site. Phases only —
+    /// no counts inside the event (D55); counts live in <c>sync_chunk_state</c> and the CLI's own
+    /// report.
+    /// </remarks>
+    public const string Sync = "sync";
+
+    /// <summary>
     /// Every kind Engram emits.
     /// </summary>
     /// <remarks>
@@ -103,7 +115,7 @@ public static class TelemetryEventKind
     [
         Recall, Remember, Digest, Browse, Expand, Revise,
         SessionStart, ServerStart, ServerStop, SessionOpen, SubagentStart, PreCompact, PostCompact,
-        FileTouched, UserPrompt, MemoryGuard, Index, Embedding, Enrollment,
+        FileTouched, UserPrompt, MemoryGuard, Index, Embedding, Enrollment, Sync,
     ];
 }
 
