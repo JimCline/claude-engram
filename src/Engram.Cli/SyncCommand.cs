@@ -3,7 +3,7 @@ using Engram.Core;
 namespace Engram.Cli;
 
 /// <summary>
-/// <c>engram sync</c> — cross-machine sync (docs/gp-adoption/01-sync-spec.md). <c>export</c> and
+/// <c>engram sync</c> — cross-machine sync (docs/memory-expansion/01-sync-spec.md). <c>export</c> and
 /// <c>import</c> are dry-run by default, requiring <c>--apply</c> to write (D49, matching
 /// <c>backup</c>/<c>repair</c>); <c>status</c> is read-only.
 /// </summary>
@@ -57,6 +57,7 @@ public static class SyncCommand
     {
         var apply = args.Contains("--apply");
         var ifDue = args.Contains("--if-due");
+        var scope = ReadScopeOption(args) ?? settings.Scope;
 
         if (!File.Exists(home.DatabasePath))
         {
@@ -88,7 +89,7 @@ public static class SyncCommand
         SyncExportResult result;
         try
         {
-            result = Sync.Export(connection, syncRoot, machineId, apply);
+            result = Sync.Export(connection, syncRoot, machineId, apply, scope);
         }
         catch (Exception exception) when (exception is IOException or Microsoft.Data.Sqlite.SqliteException)
         {
@@ -96,6 +97,15 @@ public static class SyncCommand
                 Timestamp: DateTimeOffset.UtcNow.ToString("o"), SessionId: CliSessionId,
                 Kind: TelemetryEventKind.Sync, Phase: "failed"));
             stderr.WriteLine("error: export failed and nothing was written — " + exception.Message);
+            return 1;
+        }
+
+        if (result.Error is not null)
+        {
+            Telemetry.Append(home, new TelemetryRecord(
+                Timestamp: DateTimeOffset.UtcNow.ToString("o"), SessionId: CliSessionId,
+                Kind: TelemetryEventKind.Sync, Phase: "failed"));
+            stderr.WriteLine("error: " + result.Error);
             return 1;
         }
 
@@ -124,6 +134,24 @@ public static class SyncCommand
         }
 
         return 0;
+    }
+
+    /// <summary>
+    /// Parses a <c>--scope=&lt;value&gt;</c> argument, if present. Returns <c>null</c> when absent
+    /// so the caller falls back to <c>[sync] scope</c> — this run-only override does not persist.
+    /// </summary>
+    private static string? ReadScopeOption(string[] args)
+    {
+        const string prefix = "--scope=";
+        foreach (var arg in args)
+        {
+            if (arg.StartsWith(prefix, StringComparison.Ordinal))
+            {
+                return arg[prefix.Length..];
+            }
+        }
+
+        return null;
     }
 
     /// <summary>

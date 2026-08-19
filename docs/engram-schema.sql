@@ -381,7 +381,7 @@ CREATE INDEX ix_fact_token_fact ON fact_token(fact_id);
 
 
 -- ---------------------------------------------------------------------------
--- Cross-machine sync (docs/gp-adoption/01-sync-spec.md) — side tables only,
+-- Cross-machine sync (docs/memory-expansion/01-sync-spec.md) — side tables only,
 -- nothing added to `fact`. Both are derived in the weak sense (D8): rebuildable
 -- by re-running `sync import` over the full chunk history, never authored truth.
 -- ---------------------------------------------------------------------------
@@ -428,9 +428,21 @@ CREATE TABLE fact_relation (
 CREATE INDEX ix_fact_relation_fact    ON fact_relation(fact_id);
 CREATE INDEX ix_fact_relation_related ON fact_relation(related_id);
 
+-- ---------------------------------------------------------------------------
+-- Scoped export (docs/memory-expansion/01-sync-spec.md) — an explicit
+-- always-sync opt-in. Not derived from `fact` or the chunk history, so it is
+-- not covered by D8's "derived state is repairable"; losing a row is a real
+-- loss, not a cache eviction.
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE fact_sync_request (
+  fact_id      INTEGER NOT NULL PRIMARY KEY REFERENCES fact(id),
+  requested_at INTEGER NOT NULL
+);
+
 
 CREATE TABLE schema_meta (key TEXT PRIMARY KEY, value TEXT);
-INSERT INTO schema_meta(key, value) VALUES ('schema_version', '10');
+INSERT INTO schema_meta(key, value) VALUES ('schema_version', '11');
 
 -- Built by a fresh CREATE, and pre-stamped ready: an empty table matches whatever
 -- FactTokenIndex.Rebuild would produce over zero facts, so a new store needs no rebuild pass.

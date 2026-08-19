@@ -12,16 +12,20 @@ namespace Engram.Integration.Tests;
 /// </summary>
 public class McpToolSurfaceBudgetTests
 {
-    // Measured 4,571 characters across the eight tools in EngramMcpTools on 2026-08-18, when
-    // engram_judge joined — a verdict between two facts needs its own addressing (two fact
-    // handles, a relation, a reason), which no existing tool can take as a parameter without
-    // conflating remember/expand's own contracts with judgment semantics.
+    // Measured 4,789 characters across the eight tools in EngramMcpTools on 2026-08-18, when
+    // engram_remember and engram_revise each gained a `sync` parameter for scoped export
+    // (docs/memory-expansion/01-sync-spec.md) — engram_remember's carries the D51 trigger
+    // phrase "share engram" verbatim, so it cannot compress past a wording that still reads
+    // as a trigger. Both descriptions are already at a compression floor; this is the
+    // deliberate-feature-addition case the +137 headroom exists to absorb (see
+    // docs/memory-expansion/01-sync-spec.md, Measurements, "MCP tool-surface budget"), not the
+    // silent-drift case the ceiling otherwise guards against, so the headroom is carried
+    // forward re-baselined off this measured actual rather than spent.
     // EngramServerTools's three tools (start/status/stop) are argued as cost in D17 but are
     // not reflected over by ToolMethods() and are not counted in this figure — a separate,
-    // unmeasured gap. The +137 headroom is carried over from the previous ceiling's stated
-    // purpose of "ordinary wording changes"; raising this number is a deliberate edit that
-    // needs a reason in the commit message, not a knob to turn when a description outgrows it.
-    private const int MaxDefinitionChars = 4708;
+    // unmeasured gap. Raising this number is a deliberate edit that needs a reason in the
+    // commit message, not a knob to turn when a description outgrows it.
+    private const int MaxDefinitionChars = 4926;
 
     // 7 -> 8 when engram_judge joined: it records a verdict between two facts, which no
     // existing tool can take as a parameter without changing that tool's own contract.

@@ -1,8 +1,9 @@
 namespace Engram.Core;
 
 /// <summary>
-/// The <c>[sync]</c> section (docs/gp-adoption/01-sync-spec.md): whether cross-machine sync is on,
-/// where the chunk directory lives, and the retry ceiling before a deferred close gives up.
+/// The <c>[sync]</c> section (docs/memory-expansion/01-sync-spec.md): whether cross-machine sync
+/// is on, where the chunk directory lives, the retry ceiling before a deferred close gives up,
+/// and the export scope baseline.
 /// </summary>
 /// <remarks>
 /// Opt-in, unlike <see cref="BackupSettings"/> — sync requires a git repo the user set up
@@ -13,13 +14,15 @@ public sealed record SyncSettings(
     bool Enabled,
     string? Dir,
     int RetryCeiling,
+    string Scope,
     IReadOnlyList<string> Problems)
 {
     public const string Section = "sync";
 
     public const bool DefaultEnabled = false;
 
-    public static SyncSettings Default { get; } = new(DefaultEnabled, null, CloseResolver.DefaultRetryCeiling, []);
+    public static SyncSettings Default { get; } =
+        new(DefaultEnabled, null, CloseResolver.DefaultRetryCeiling, SyncScope.Default, []);
 
     public static SyncSettings Read(ConfigFile config)
     {
@@ -40,10 +43,18 @@ public sealed record SyncSettings(
             }
         }
 
+        var scope = config.String(Section, "scope") ?? SyncScope.Default;
+        if (!SyncScope.TryParse(scope, out _, out _, out var scopeError))
+        {
+            problems.Add($"[{Section}] {scopeError} Using '{SyncScope.Default}'.");
+            scope = SyncScope.Default;
+        }
+
         return new SyncSettings(
             config.Bool(Section, "enabled") ?? DefaultEnabled,
             config.String(Section, "dir"),
             ceiling,
+            scope,
             problems);
     }
 

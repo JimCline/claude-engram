@@ -20,7 +20,7 @@ namespace Engram.Core;
 /// </remarks>
 public static class EngramDatabase
 {
-    public const int SchemaVersion = 10;
+    public const int SchemaVersion = 11;
 
     public const int BusyTimeoutMilliseconds = 5000;
 
@@ -368,7 +368,7 @@ public static class EngramDatabase
 
         if (from < 9)
         {
-            // Cross-machine sync side tables (docs/gp-adoption/01-sync-spec.md) — nothing
+            // Cross-machine sync side tables (docs/memory-expansion/01-sync-spec.md) — nothing
             // added to `fact`. Both are derived in the weak sense (D8): rebuildable by
             // re-running `sync import` over the full chunk history.
             Execute(
@@ -425,6 +425,25 @@ public static class EngramDatabase
                 """);
 
             WriteMeta(connection, null, "schema_version", "10");
+        }
+
+        if (from < 11)
+        {
+            // Scoped export (docs/memory-expansion/01-sync-spec.md) — an authored decision, not
+            // derived from `fact` or from the chunk history (D8's "derived state is repairable"
+            // does not cover this table), so it is insert-only like fact_relation rather than a
+            // column on `fact`.
+            Execute(
+                connection,
+                null,
+                """
+                CREATE TABLE fact_sync_request (
+                  fact_id      INTEGER NOT NULL PRIMARY KEY REFERENCES fact(id),
+                  requested_at INTEGER NOT NULL
+                );
+                """);
+
+            WriteMeta(connection, null, "schema_version", "11");
         }
     }
 

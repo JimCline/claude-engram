@@ -60,6 +60,8 @@ Engram's durable memory, and where anything worth keeping goes even when another
   Your own name, if you are a subagent recording this fact rather than the main agent.
   param: supersedes
   The bracketed id of a raw user-statement capture this restates, e.g. "f42". Closes that capture so the rewritten version replaces it instead of duplicating it.
+  param: sync
+  Flags for sync. Triggered by "share engram" plus content.
 
 tool: engram_revise
 Replace a stored belief with a corrected statement, recording why. The old fact is closed, never erased, and the new one takes its place in recall. Use it when the user or fresh evidence contradicts something stored; engram_forget retracts without a replacement.
@@ -73,4 +75,6 @@ Replace a stored belief with a corrected statement, recording why. The old fact 
   Where the correction came from — a file, PR, or the user's words.
   param: details
   Depth for the corrected fact. Does not carry forward from the old version — restate it or drop it deliberately.
+  param: sync
+  Sync flag; omit inherits, else overrides.
 

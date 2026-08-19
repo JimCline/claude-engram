@@ -225,6 +225,29 @@ public class BackupStoreTests
         Assert.True(BackupStore.Due(sandbox.Home, connection, Settings(), T0.AddHours(2)).ShouldTake);
     }
 
+    /// <summary>
+    /// The same bug class commit 770519d fixed for <c>fact_relation</c> (<see
+    /// cref="Due_AfterAJudgeOnlySession_IsTrue"/>), applied here before it can be rediscovered
+    /// for sync-request-only sessions: flagging a fact touches no fact, entity, or edge, so a
+    /// fingerprint blind to <c>fact_sync_request</c> would call this session "nothing changed."
+    /// </summary>
+    [Fact]
+    public void Due_AfterAFactIsFlaggedForSyncOnly_IsTrue()
+    {
+        using var sandbox = new SandboxHome(initialize: false);
+        using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
+        var a = Write(connection, "/knowledge/testing/kestrel", "It binds loopback only.", T0);
+        BackupStore.Take(connection, sandbox.Home, T0);
+
+        using (var transaction = EngramDatabase.BeginWrite(connection))
+        {
+            FactSyncRequests.Insert(connection, transaction, a, T0.AddHours(1).ToUnixTimeSeconds());
+            transaction.Commit();
+        }
+
+        Assert.True(BackupStore.Due(sandbox.Home, connection, Settings(), T0.AddHours(2)).ShouldTake);
+    }
+
     [Fact]
     public void Due_WhenDisabled_IsFalse()
     {

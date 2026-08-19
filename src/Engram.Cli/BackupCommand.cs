@@ -106,6 +106,11 @@ public static class BackupCommand
                 var relations = RelationJournal.Write(connection, home, DateTimeOffset.UtcNow);
                 stdout.WriteLine(
                     $"Journalled {relations} {(relations == 1 ? "relation" : "relations")} to {RelationJournal.FileName}.");
+
+                var syncRequests = SyncRequestJournal.Write(connection, home, DateTimeOffset.UtcNow);
+                stdout.WriteLine(
+                    $"Journalled {syncRequests} sync {(syncRequests == 1 ? "request" : "requests")} to "
+                        + $"{SyncRequestJournal.FileName}.");
             }
             catch (Exception exception) when (exception is IOException or Microsoft.Data.Sqlite.SqliteException)
             {
@@ -260,7 +265,8 @@ public static class BackupCommand
             $"error: no fact journal at {path}. Run 'engram backup take' to write one.",
             stdout,
             stderr,
-            includeRelations: true);
+            includeRelations: true,
+            includeSyncRequests: true);
     }
 
     /// <summary>
@@ -275,7 +281,8 @@ public static class BackupCommand
         string missingFileError,
         TextWriter stdout,
         TextWriter stderr,
-        bool includeRelations = false)
+        bool includeRelations = false,
+        bool includeSyncRequests = false)
     {
         if (!File.Exists(path))
         {
@@ -344,6 +351,15 @@ public static class BackupCommand
         if (includeRelations)
         {
             var replayed = ReplayRelations(connection, home, path, facts, idMap, apply, stdout, stderr);
+            if (replayed.HasValue)
+            {
+                return replayed.Value;
+            }
+        }
+
+        if (includeSyncRequests)
+        {
+            var replayed = ReplaySyncRequests(connection, home, path, facts, idMap, apply, stdout, stderr);
             if (replayed.HasValue)
             {
                 return replayed.Value;
@@ -426,6 +442,83 @@ public static class BackupCommand
         {
             stdout.WriteLine(
                 $"  {result.Unresolved} {(result.Unresolved == 1 ? "relation" : "relations")} referenced a fact "
+                    + "outside this journal and were skipped.");
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// The sync-requests half of <c>backup replay</c> — not <c>import</c>, which is a legacy
+    /// JSON-doc format with no sync-request concept. Silent no-op when
+    /// <c>sync_requests.jsonl</c> is absent, since a journal written before always-sync flags
+    /// existed is not an error. Independent of <see cref="ReplayRelations"/>: neither table
+    /// references the other, so there is no ordering constraint between the two.
+    /// </summary>
+    private static int? ReplaySyncRequests(
+        Microsoft.Data.Sqlite.SqliteConnection connection,
+        EngramHome home,
+        string factsPath,
+        IReadOnlyList<JournalFact> facts,
+        IReadOnlyDictionary<long, long> idMap,
+        bool apply,
+        TextWriter stdout,
+        TextWriter stderr)
+    {
+        var directory = Path.GetDirectoryName(factsPath);
+        var syncRequestsPath = string.IsNullOrEmpty(directory)
+            ? SyncRequestJournal.PathIn(home)
+            : Path.Combine(directory, SyncRequestJournal.FileName);
+
+        if (!File.Exists(syncRequestsPath))
+        {
+            return null;
+        }
+
+        IReadOnlyList<JournalSyncRequest> requests;
+        int skipped;
+        try
+        {
+            requests = SyncRequestJournal.Parse(File.ReadLines(syncRequestsPath), out skipped);
+        }
+        catch (IOException exception)
+        {
+            stderr.WriteLine("error: could not read " + syncRequestsPath + " — " + exception.Message);
+            return 1;
+        }
+
+        if (skipped > 0)
+        {
+            stderr.WriteLine(
+                $"warning: {skipped} unreadable {(skipped == 1 ? "line was" : "lines were")} skipped in "
+                    + $"{syncRequestsPath}.");
+        }
+
+        if (requests.Count == 0)
+        {
+            return null;
+        }
+
+        SyncRequestReplayResult result;
+        try
+        {
+            result = SyncRequestJournal.Replay(connection, requests, facts, idMap, apply);
+        }
+        catch (Microsoft.Data.Sqlite.SqliteException exception)
+        {
+            stderr.WriteLine(
+                "error: sync-request replay failed and nothing further was written — " + exception.Message);
+            return 1;
+        }
+
+        stdout.WriteLine(
+            $"{(apply ? "Wrote" : "Would write")} {result.Written} sync {(result.Written == 1 ? "request" : "requests")}"
+                + $", leaving {result.AlreadyPresent} already in the store.");
+
+        if (result.Unresolved > 0)
+        {
+            stdout.WriteLine(
+                $"  {result.Unresolved} sync {(result.Unresolved == 1 ? "request" : "requests")} referenced a fact "
                     + "outside this journal and were skipped.");
         }
 

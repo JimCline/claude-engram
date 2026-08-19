@@ -32,7 +32,8 @@ public readonly record struct BackupFingerprint(
     long Aliases,
     long Supersessions,
     long Edges,
-    long Relations)
+    long Relations,
+    long SyncRequests)
 {
     public bool IsEmpty => Facts == 0 && Entities == 0 && Edges == 0;
 
@@ -50,7 +51,8 @@ public readonly record struct BackupFingerprint(
                    (SELECT COUNT(*) FROM entity_alias),
                    (SELECT COUNT(*) FROM supersession),
                    (SELECT COUNT(*) FROM edge),
-                   (SELECT COUNT(*) FROM fact_relation);
+                   (SELECT COUNT(*) FROM fact_relation),
+                   (SELECT COUNT(*) FROM fact_sync_request);
             """;
 
         using var reader = command.ExecuteReader();
@@ -67,7 +69,8 @@ public readonly record struct BackupFingerprint(
             reader.GetInt64(4),
             reader.GetInt64(5),
             reader.GetInt64(6),
-            reader.GetInt64(7));
+            reader.GetInt64(7),
+            reader.GetInt64(8));
     }
 }
 
@@ -545,7 +548,7 @@ public static class BackupStore
         {
             // An unreadable snapshot is not a reason to skip taking a good one. Returning a
             // fingerprint that cannot match any live store says exactly that.
-            return new BackupFingerprint(-1, -1, -1, -1, -1, -1, -1, -1);
+            return new BackupFingerprint(-1, -1, -1, -1, -1, -1, -1, -1, -1);
         }
     }
 

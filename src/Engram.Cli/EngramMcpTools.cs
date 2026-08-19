@@ -99,7 +99,8 @@ public sealed class EngramMcpTools
         [Description("Your own name, if you are a subagent recording this fact rather than the main agent.")] string? agent = null,
         [Description(
             "The bracketed id of a raw user-statement capture this restates, e.g. \"f42\". Closes that "
-                + "capture so the rewritten version replaces it instead of duplicating it.")] string? supersedes = null)
+                + "capture so the rewritten version replaces it instead of duplicating it.")] string? supersedes = null,
+        [Description("Flags for sync. Triggered by \"share engram\" plus content.")] bool sync = false)
     {
         if (!homeState.Initialized)
         {
@@ -125,7 +126,7 @@ public sealed class EngramMcpTools
 
             using var connection = EngramDatabase.OpenInitialized(home);
             var replacementId = UserFacts.Restate(
-                connection, targetId, statement, session.Value, DateTimeOffset.UtcNow, details: details);
+                connection, targetId, statement, session.Value, DateTimeOffset.UtcNow, details: details, sync: sync);
 
             if (replacementId is null)
             {
@@ -145,7 +146,7 @@ public sealed class EngramMcpTools
         using (var connection = EngramDatabase.OpenInitialized(home))
         {
             factId = SessionFacts.Append(
-                connection, session.Value, statement, subject, evidence, agent, DateTimeOffset.UtcNow, details);
+                connection, session.Value, statement, subject, evidence, agent, DateTimeOffset.UtcNow, details, sync);
         }
 
         Telemetry.Append(home, new TelemetryRecord(
@@ -354,7 +355,8 @@ public sealed class EngramMcpTools
         [Description("The corrected statement, short and self-contained.")] string statement,
         [Description("Why the belief changed.")] string reason,
         [Description("Where the correction came from — a file, PR, or the user's words.")] string? evidence = null,
-        [Description("Depth for the corrected fact. Does not carry forward from the old version — restate it or drop it deliberately.")] string? details = null)
+        [Description("Depth for the corrected fact. Does not carry forward from the old version — restate it or drop it deliberately.")] string? details = null,
+        [Description("Sync flag; omit inherits, else overrides.")] bool? sync = null)
     {
         if (!homeState.Initialized)
         {
@@ -392,24 +394,44 @@ public sealed class EngramMcpTools
         var now = DateTimeOffset.UtcNow;
         var sessionId = SessionStore.EnsureSession(connection, null, session.Value, now);
 
-        // The store's own collision rule does the revision: one live fact per
-        // (subject, predicate), so remembering the correction closes the incumbent and
-        // records the reason on the supersession row.
-        var result = FactStore.Remember(
-            connection,
-            new FactWrite(
-                target.SubjectPath,
-                "concept",
-                target.Predicate,
-                statement.Trim(),
-                target.Scope,
-                "stated",
-                evidence,
-                Regenerable: false,
-                SessionId: sessionId,
-                Details: details),
-            now,
-            reason.Trim());
+        // Read before Remember closes the incumbent: FactSyncRequests keys on fact_id, and the
+        // old row stays exactly what it was (the flag never moves to a closed fact).
+        var carriesSyncFlag = sync ?? FactSyncRequests.IsFlagged(connection, null, factId);
+
+        RememberResult result;
+        using (var transaction = EngramDatabase.BeginWrite(connection))
+        {
+            // The store's own collision rule does the revision: one live fact per
+            // (subject, predicate), so remembering the correction closes the incumbent and
+            // records the reason on the supersession row.
+            result = FactStore.Remember(
+                connection,
+                transaction,
+                new FactWrite(
+                    target.SubjectPath,
+                    "concept",
+                    target.Predicate,
+                    statement.Trim(),
+                    target.Scope,
+                    "stated",
+                    evidence,
+                    Regenerable: false,
+                    SessionId: sessionId,
+                    Details: details),
+                now,
+                reason.Trim());
+
+            // Without this, a fact someone deliberately flagged to always sync would silently
+            // stop syncing the moment they revised it (docs/memory-expansion/01-sync-spec.md,
+            // "Per-fact opt-in") — landed in the same transaction as the write it flags, so a
+            // crash between the two can never leave one without the other.
+            if (carriesSyncFlag)
+            {
+                FactSyncRequests.Insert(connection, transaction, result.FactId, now.ToUnixTimeSeconds());
+            }
+
+            transaction.Commit();
+        }
 
         Telemetry.Append(home, new TelemetryRecord(
             Timestamp: DateTime.UtcNow.ToString("o"),

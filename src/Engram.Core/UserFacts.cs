@@ -180,7 +180,8 @@ public static class UserFacts
         string? sessionExternalId,
         DateTimeOffset now,
         string reason = "restated so it stands on its own",
-        string? details = null)
+        string? details = null,
+        bool sync = false)
     {
         var target = FactStore.ReadById(connection, targetFactId);
         if (target is null || target.ValidTo is not null)
@@ -210,6 +211,11 @@ public static class UserFacts
                 Details: details),
             now,
             reason);
+
+        if (sync)
+        {
+            FactSyncRequests.Insert(connection, transaction, result.FactId, now.ToUnixTimeSeconds());
+        }
 
         transaction.Commit();
         return result.FactId;

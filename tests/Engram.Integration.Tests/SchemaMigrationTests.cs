@@ -122,6 +122,18 @@ public class SchemaMigrationTests
         Execute(connection, "DROP TABLE fact_relation;");
     }
 
+    /// <summary>
+    /// The structural half of making a downgrade fixture version-N-shaped (N &lt; 11) for the
+    /// per-fact always-sync opt-in (docs/memory-expansion/01-sync-spec.md, "Per-fact opt-in") —
+    /// every fixture below version 11 needs this the same way <see cref="DropFactRelationTable"/>
+    /// covers version 10's table, so the version-11 migration's unconditional <c>CREATE TABLE</c>
+    /// cannot silently no-op against a fixture that still has it (D60).
+    /// </summary>
+    private static void DropFactSyncRequestTable(SqliteConnection connection)
+    {
+        Execute(connection, "DROP TABLE fact_sync_request;");
+    }
+
     /// <summary>Builds a store at version 1 holding one fact, and closes it.</summary>
     private static long WriteVersion1Store(SandboxHome sandbox, string path, string body)
     {
@@ -137,6 +149,7 @@ public class SchemaMigrationTests
         DropSuppressionColumn(connection);
         DropSyncTables(connection);
         DropFactRelationTable(connection);
+        DropFactSyncRequestTable(connection);
         Execute(connection, "DROP TABLE repo_enrollment;");
         Assert.Equal(1, EngramDatabase.ReadSchemaVersion(connection));
         return id;
@@ -168,6 +181,7 @@ public class SchemaMigrationTests
         DropSuppressionColumn(connection);
         DropSyncTables(connection);
         DropFactRelationTable(connection);
+        DropFactSyncRequestTable(connection);
         Execute(connection, "DROP TABLE repo_enrollment;");
         Execute(connection, "UPDATE schema_meta SET value = '5' WHERE key = 'schema_version';");
         Assert.Equal(5, EngramDatabase.ReadSchemaVersion(connection));
@@ -195,6 +209,7 @@ public class SchemaMigrationTests
         DropSuppressionColumn(connection);
         DropSyncTables(connection);
         DropFactRelationTable(connection);
+        DropFactSyncRequestTable(connection);
         Execute(connection, "DROP TABLE repo_enrollment;");
         Execute(connection, "UPDATE schema_meta SET value = '6' WHERE key = 'schema_version';");
         Assert.Equal(6, EngramDatabase.ReadSchemaVersion(connection));
@@ -228,12 +243,13 @@ public class SchemaMigrationTests
         DropSuppressionColumn(connection);
         DropSyncTables(connection);
         DropFactRelationTable(connection);
+        DropFactSyncRequestTable(connection);
         Execute(connection, "UPDATE schema_meta SET value = '7' WHERE key = 'schema_version';");
         Assert.Equal(7, EngramDatabase.ReadSchemaVersion(connection));
     }
 
     /// <summary>
-    /// Version 9 added the cross-machine sync side tables (docs/gp-adoption/01-sync-spec.md) as
+    /// Version 9 added the cross-machine sync side tables (docs/memory-expansion/01-sync-spec.md) as
     /// two brand new <c>CREATE TABLE</c>s, not an <c>ALTER</c> — the same shape as version 7's
     /// <c>repo_enrollment</c> (<see cref="WriteVersion6Store"/>): "version-8-shaped" means the
     /// tables are outright absent, dropped after the current-schema store is opened so the
@@ -250,6 +266,7 @@ public class SchemaMigrationTests
 
         DropSyncTables(connection);
         DropFactRelationTable(connection);
+        DropFactSyncRequestTable(connection);
         Execute(connection, "UPDATE schema_meta SET value = '8' WHERE key = 'schema_version';");
         Assert.Equal(8, EngramDatabase.ReadSchemaVersion(connection));
     }
@@ -270,8 +287,30 @@ public class SchemaMigrationTests
             + "('/projects/acme/code/api', 'github.com/acme/api', '/tmp/api', 0);");
 
         DropFactRelationTable(connection);
+        DropFactSyncRequestTable(connection);
         Execute(connection, "UPDATE schema_meta SET value = '9' WHERE key = 'schema_version';");
         Assert.Equal(9, EngramDatabase.ReadSchemaVersion(connection));
+    }
+
+    /// <summary>
+    /// Version 11 added <c>fact_sync_request</c> as a brand new <c>CREATE TABLE</c>, the same shape
+    /// as version 10's <c>fact_relation</c> (<see cref="WriteVersion9Store"/>): "version-10-shaped"
+    /// means <c>fact_relation</c> is present (it exists as of version 10) but
+    /// <c>fact_sync_request</c> is outright absent, dropped after the current-schema store is
+    /// opened so the migration's unconditional <c>CREATE TABLE</c> cannot silently no-op against a
+    /// fixture that still has it (D60).
+    /// </summary>
+    private static void WriteVersion10Store(SandboxHome sandbox)
+    {
+        using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
+        Execute(
+            connection,
+            "INSERT INTO repo_registry (repo_path, identity, disk_path, created_at) VALUES "
+            + "('/projects/acme/code/api', 'github.com/acme/api', '/tmp/api', 0);");
+
+        DropFactSyncRequestTable(connection);
+        Execute(connection, "UPDATE schema_meta SET value = '10' WHERE key = 'schema_version';");
+        Assert.Equal(10, EngramDatabase.ReadSchemaVersion(connection));
     }
 
     /// <summary>Builds a store at version 2 holding one live fact and one closed one.</summary>
@@ -294,6 +333,7 @@ public class SchemaMigrationTests
         DropSuppressionColumn(connection);
         DropSyncTables(connection);
         DropFactRelationTable(connection);
+        DropFactSyncRequestTable(connection);
         Execute(connection, "DROP TABLE repo_enrollment;");
         Assert.Equal(2, EngramDatabase.ReadSchemaVersion(connection));
         return (live, closed);
@@ -604,6 +644,42 @@ public class SchemaMigrationTests
         {
             command.CommandText =
                 "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'fact_relation';";
+            Assert.Equal(1L, (long)command.ExecuteScalar()!);
+        }
+
+        using (var command = reopened.CreateCommand())
+        {
+            command.CommandText = "SELECT identity FROM repo_registry WHERE identity = 'github.com/acme/api';";
+            Assert.Equal("github.com/acme/api", (string)command.ExecuteScalar()!);
+        }
+
+        var snapshot = Assert.Single(BackupStore.List(sandbox.Home));
+        Assert.Contains("pre-v" + EngramDatabase.SchemaVersion, snapshot.Name, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Falsified by temporarily removing the migration's <c>if (from &lt; 11)</c> block so no
+    /// <c>CREATE TABLE</c> runs: confirmed red — <c>OpenInitialized</c> throws
+    /// <c>InvalidOperationException</c> ("Database schema version 10 does not match the 11 this
+    /// binary was built for. Refusing to open it rather than reading it wrongly.") because
+    /// <c>ReadSchemaVersion</c> never advances past 10 while
+    /// <see cref="EngramDatabase.SchemaVersion"/> is 11 — then restored.
+    /// </summary>
+    [Fact]
+    public void Migrating_AVersion10Store_CreatesTheFactSyncRequestTableWithoutTouchingExistingRows()
+    {
+        using var sandbox = new SandboxHome(initialize: false);
+        WriteVersion10Store(sandbox);
+        SqliteConnection.ClearAllPools();
+
+        using var reopened = EngramDatabase.OpenInitialized(sandbox.Home);
+
+        Assert.Equal(EngramDatabase.SchemaVersion, EngramDatabase.ReadSchemaVersion(reopened));
+
+        using (var command = reopened.CreateCommand())
+        {
+            command.CommandText =
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'fact_sync_request';";
             Assert.Equal(1L, (long)command.ExecuteScalar()!);
         }
 

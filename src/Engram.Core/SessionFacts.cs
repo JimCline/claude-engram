@@ -91,7 +91,8 @@ public static class SessionFacts
         string? evidence,
         string? agent,
         DateTimeOffset now,
-        string? details = null)
+        string? details = null,
+        bool sync = false)
     {
         using var transaction = EngramDatabase.BeginWrite(connection);
 
@@ -145,6 +146,11 @@ public static class SessionFacts
             // rather than the address it happened to land at.
             FactTokenIndex.Remove(connection, transaction, result.FactId);
             FactTokenIndex.Add(connection, transaction, result.FactId);
+        }
+
+        if (sync)
+        {
+            FactSyncRequests.Insert(connection, transaction, result.FactId, createdAt);
         }
 
         transaction.Commit();

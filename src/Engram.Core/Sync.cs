@@ -8,7 +8,7 @@ namespace Engram.Core;
 /// The portable, content-addressed identity of a fact: subject path, predicate, body and
 /// <c>valid_from</c> — the same 4-tuple <see cref="FactJournal"/> already uses to decide whether a
 /// journalled fact is one the target already holds (D32). Sync reuses it rather than inventing a
-/// machine-id+local-id identity, per docs/gp-adoption/01-sync-spec.md's "Identity decision".
+/// machine-id+local-id identity, per docs/memory-expansion/01-sync-spec.md's "Identity decision".
 /// </summary>
 public readonly record struct FactIdentity(string Subject, string Predicate, string Body, long ValidFrom);
 
@@ -32,7 +32,7 @@ public sealed record SyncCloseRecord(
 public readonly record struct LocalFactRow(string Body, long ValidFrom, bool IsLive);
 
 /// <summary>
-/// The four-case close-resolution decision (docs/gp-adoption/01-sync-spec.md, "Close-record
+/// The four-case close-resolution decision (docs/memory-expansion/01-sync-spec.md, "Close-record
 /// semantics (precise)"), plus the retry-ceiling-to-stalled transition. Both are pure functions
 /// over a caller-supplied local-fact table, deliberately: this is the piece the spec's tier-1 tests
 /// exercise without a database.
@@ -116,8 +116,13 @@ public sealed record SyncImportResult(
     int Stalled,
     int ChunksApplied);
 
-/// <summary>What one <c>sync export</c> wrote, or would write.</summary>
-public sealed record SyncExportResult(int FactCount, int CloseCount, string? ChunkPath);
+/// <summary>
+/// What one <c>sync export</c> wrote, or would write. <see cref="Error"/> is set instead when the
+/// requested <c>[sync] scope</c>/<c>--scope</c> value could not be resolved (bad syntax, or a
+/// <c>repo:&lt;value&gt;</c> matching zero or more than one enrolled repo) — nothing is scanned or
+/// written in that case.
+/// </summary>
+public sealed record SyncExportResult(int FactCount, int CloseCount, string? ChunkPath, string? Error = null);
 
 /// <summary>
 /// Per-machine, per-remote pending-import counts and deferred/stalled/conflict totals for
@@ -130,7 +135,7 @@ public sealed record SyncStatus(
     int ConflictCount);
 
 /// <summary>
-/// Cross-machine sync (docs/gp-adoption/01-sync-spec.md): a chunk is a slice of the existing
+/// Cross-machine sync (docs/memory-expansion/01-sync-spec.md): a chunk is a slice of the existing
 /// journal format (D32) plus close records, written to <c>&lt;home&gt;/sync/&lt;machine-id&gt;/&lt;seq&gt;.jsonl</c>.
 /// Applying a chunk's fact lines is a call to the unchanged <see cref="FactJournal.Replay"/>; close
 /// lines resolve through <see cref="CloseResolver"/>. Not a second replay implementation (D32).
@@ -206,15 +211,49 @@ public static class Sync
     /// bookkeeping) — which is what "the directory listing... is the index" means for the writer,
     /// not only the reader.
     /// </summary>
+    /// <param name="scope">
+    /// The <c>[sync] scope</c> baseline ("all" | "user" | "repo:&lt;value&gt;") this export
+    /// restricts new fact records to, OR'd with every <c>fact_sync_request</c>-flagged fact
+    /// regardless of scope. Defaults to "all" — unchanged behavior for anyone not opting in.
+    /// Close-selection is unaffected by this value (docs/memory-expansion/01-sync-spec.md, "Where
+    /// this hooks into Sync.Export()") since it only ever re-emits a close for a fact this machine
+    /// has already exported.
+    /// </param>
     public static SyncExportResult Export(
         SqliteConnection connection,
         string syncRoot,
         string machineId,
-        bool apply)
+        bool apply,
+        string scope = SyncScope.Default)
     {
         ArgumentNullException.ThrowIfNull(connection);
         ArgumentNullException.ThrowIfNull(syncRoot);
         ArgumentNullException.ThrowIfNull(machineId);
+        ArgumentNullException.ThrowIfNull(scope);
+
+        if (!SyncScope.TryParse(scope, out var scopeKind, out var repoValue, out var scopeParseError))
+        {
+            return new SyncExportResult(0, 0, ChunkPath: null, Error: scopeParseError);
+        }
+
+        string? resolvedRepoPath = null;
+        if (scopeKind == SyncScopeKind.Repo)
+        {
+            var registryRows = ReadRepoRegistry(connection);
+            var match = SyncScope.ResolveRepo(registryRows, repoValue!);
+            if (!match.Found)
+            {
+                var error = match.AmbiguousRepoPaths.Count > 0
+                    ? $"'{repoValue}' matches more than one enrolled repo ({string.Join(", ", match.AmbiguousRepoPaths)}); use the full identity instead of the short form."
+                    : $"no enrolled repo matches '{repoValue}'; run 'engram repo list' to see what's enrolled.";
+                return new SyncExportResult(0, 0, ChunkPath: null, Error: error);
+            }
+
+            resolvedRepoPath = match.RepoPath;
+        }
+
+        var (scopeClause, scopeRepoPath) = SyncScope.Clause(scopeKind, resolvedRepoPath);
+        var scopeEligible = ReadScopeEligible(connection, scopeClause, scopeRepoPath);
 
         var chunkDir = Path.Combine(syncRoot, machineId);
         var (allExported, openAtExport, closedExported) = ScanOwnChunks(chunkDir);
@@ -223,7 +262,7 @@ public static class Sync
         foreach (var fact in FactJournal.Read(connection))
         {
             var identity = new FactIdentity(fact.Subject, fact.Predicate, fact.Body, fact.ValidFrom);
-            if (!allExported.Contains(identity))
+            if (!allExported.Contains(identity) && scopeEligible.Contains(identity))
             {
                 factsToExport.Add(fact);
             }
@@ -323,6 +362,58 @@ public static class Sync
         }
 
         return (all, open, closed);
+    }
+
+    /// <summary>
+    /// Every fact whose identity is scope-eligible for export: it matches <paramref name="clause"/>
+    /// (the resolved <c>[sync] scope</c> baseline) or carries a live <c>fact_sync_request</c> row.
+    /// Selects <c>se.path</c> — the entity's canonical path, joined rather than read from the
+    /// denormalized <c>fact.path</c> the clause itself matches against — so the identity this
+    /// returns lines up with the one <see cref="FactJournal.Read"/> already produces for the
+    /// <c>allExported</c>/<c>scopeEligible</c> intersection in <see cref="Export"/>.
+    /// </summary>
+    private static HashSet<FactIdentity> ReadScopeEligible(SqliteConnection connection, string clause, string? repoPath)
+    {
+        var eligible = new HashSet<FactIdentity>();
+
+        using var command = connection.CreateCommand();
+        command.CommandText =
+            $"""
+            SELECT se.path, f.predicate, f.body, f.valid_from
+            FROM fact f
+            JOIN entity se ON se.id = f.subject_id
+            WHERE ({clause}) OR EXISTS (SELECT 1 FROM fact_sync_request WHERE fact_id = f.id);
+            """;
+        if (repoPath is not null)
+        {
+            command.Parameters.AddWithValue("$scopeRepoPath", repoPath);
+        }
+
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            eligible.Add(new FactIdentity(
+                reader.GetString(0), reader.GetString(1), reader.GetString(2), reader.GetInt64(3)));
+        }
+
+        return eligible;
+    }
+
+    /// <summary>Every enrolled repo's <c>(repo_path, identity)</c> pair, for <see cref="SyncScope.ResolveRepo"/>.</summary>
+    private static IReadOnlyList<(string RepoPath, string Identity)> ReadRepoRegistry(SqliteConnection connection)
+    {
+        var rows = new List<(string RepoPath, string Identity)>();
+
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT repo_path, identity FROM repo_registry;";
+
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            rows.Add((reader.GetString(0), reader.GetString(1)));
+        }
+
+        return rows;
     }
 
     private static int NextSeq(string chunkDir)
