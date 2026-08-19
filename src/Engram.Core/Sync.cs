@@ -488,7 +488,7 @@ public static class Sync
             }
         }
 
-        MergeSameBatchClosesIntoFactLines(factLines, closesByIdentity);
+        MergeSameBatchClosesIntoFactLines(connection, factLines, closesByIdentity);
         var facts = FactJournal.Parse(factLines, out _);
 
         var applied = 0;
@@ -664,6 +664,7 @@ public static class Sync
     /// resolution instead.
     /// </summary>
     private static void MergeSameBatchClosesIntoFactLines(
+        SqliteConnection connection,
         List<string> factLines,
         IReadOnlyDictionary<FactIdentity, SyncCloseRecord> closesByIdentity)
     {
@@ -692,6 +693,17 @@ public static class Sync
         {
             if (!lineIdentities.TryGetValue(identity, out var predecessor))
             {
+                continue;
+            }
+
+            if (LookupExact(connection, identity) is not null)
+            {
+                // Already replicated in an earlier import (only compact's consolidated chunk can
+                // put a predecessor's own fact line back in the same batch as its close for an
+                // identity a peer may already hold — ordinary Export never re-emits an
+                // already-exported fact line). Replay leaves an existing row's own closure alone
+                // (D8), so folding the close in here would silently drop it; the two-pass
+                // CloseResolver resolution below is what actually closes it.
                 continue;
             }
 
@@ -1265,6 +1277,280 @@ public static class Sync
         }
 
         return conflicts;
+    }
+
+    // ------------------------------------------------------------------
+    // staleness
+    // ------------------------------------------------------------------
+
+    /// <summary>
+    /// Gathers <c>(machineId, lastObservedUtc?)</c> for every known peer — every subdirectory of
+    /// <paramref name="syncRoot"/> other than <paramref name="ownMachineId"/> — for
+    /// <see cref="SyncStaleness.Evaluate"/>. Last-observed is the later of this machine's newest
+    /// <c>sync_chunk_state.applied_at</c> for that peer and the newest filesystem mtime under its
+    /// chunk directory, including <c>.partial</c> files still mid-write
+    /// (docs/memory-expansion/01-sync-spec.md, "Staleness/liveness detection").
+    /// </summary>
+    public static IReadOnlyList<PeerObservation> GatherPeerObservations(
+        SqliteConnection connection, string syncRoot, string ownMachineId)
+    {
+        ArgumentNullException.ThrowIfNull(connection);
+        ArgumentNullException.ThrowIfNull(syncRoot);
+        ArgumentNullException.ThrowIfNull(ownMachineId);
+
+        var observations = new List<PeerObservation>();
+        if (!Directory.Exists(syncRoot))
+        {
+            return observations;
+        }
+
+        var appliedMax = ReadMaxAppliedAtByMachine(connection);
+
+        foreach (var machineDir in Directory.EnumerateDirectories(syncRoot).OrderBy(d => d, StringComparer.Ordinal))
+        {
+            var machineId = Path.GetFileName(machineDir);
+            if (string.Equals(machineId, ownMachineId, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            DateTimeOffset? lastObserved = appliedMax.TryGetValue(machineId, out var appliedAt)
+                ? DateTimeOffset.FromUnixTimeSeconds(appliedAt)
+                : null;
+
+            foreach (var file in Directory.EnumerateFiles(machineDir))
+            {
+                var mtime = new DateTimeOffset(File.GetLastWriteTimeUtc(file), TimeSpan.Zero);
+                if (lastObserved is null || mtime > lastObserved)
+                {
+                    lastObserved = mtime;
+                }
+            }
+
+            observations.Add(new PeerObservation(machineId, lastObserved));
+        }
+
+        return observations;
+    }
+
+    private static Dictionary<string, long> ReadMaxAppliedAtByMachine(SqliteConnection connection)
+    {
+        var result = new Dictionary<string, long>();
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT machine_id, MAX(applied_at) FROM sync_chunk_state GROUP BY machine_id;";
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            result[reader.GetString(0)] = reader.GetInt64(1);
+        }
+
+        return result;
+    }
+
+    // ------------------------------------------------------------------
+    // sync compact
+    // ------------------------------------------------------------------
+
+    /// <summary>
+    /// Chunk-file count and byte totals below which <c>sync compact --if-large</c> is a no-op,
+    /// mirroring <c>queue compact --if-large</c>'s own gate (D41): the threshold exists so the
+    /// automatic session-start pass stays free when there is nothing worth rewriting, not to
+    /// refuse a person who typed the command outright. Unmeasured, like
+    /// <see cref="CloseResolver.DefaultRetryCeiling"/> — a product default rather than evidence.
+    /// </summary>
+    public const int CompactThreshold = 20;
+
+    /// <summary>What one <c>sync compact</c> did, or would do, to this machine's own chunk history.</summary>
+    public sealed record CompactResult(
+        int ChunkFilesBefore,
+        int ChunkFilesAfter,
+        long BytesBefore,
+        long BytesAfter,
+        int LiveCount,
+        int RetainedClosedCount,
+        IReadOnlyList<FactIdentity> Dropped,
+        string? ChunkPath);
+
+    /// <summary>
+    /// Rewrites this machine's own chunk history (<c>&lt;syncRoot&gt;/&lt;machineId&gt;/</c> only —
+    /// never a peer's, per the ownership invariant D57-style: a machine only ever deletes chunk
+    /// files it owns) into one fresh consolidated chunk, then deletes every chunk file it
+    /// supersedes. Live facts are always kept; closed facts are kept only if closed within
+    /// <paramref name="retain"/> of <paramref name="now"/> (see <see cref="SyncCompaction"/>).
+    /// Never bare-deletes: on a dry run (<paramref name="apply"/> false) nothing is written or
+    /// removed, only counted.
+    /// </summary>
+    public static CompactResult Compact(string syncRoot, string machineId, bool apply, TimeSpan retain, DateTimeOffset now)
+    {
+        ArgumentNullException.ThrowIfNull(syncRoot);
+        ArgumentNullException.ThrowIfNull(machineId);
+
+        var chunkDir = Path.Combine(syncRoot, machineId);
+        var (facts, closes, filesBefore, bytesBefore) = ScanOwnChunksFull(chunkDir);
+
+        var openAtExport = new HashSet<FactIdentity>();
+        var closedAt = new Dictionary<FactIdentity, DateTimeOffset>();
+        foreach (var (identity, fact) in facts)
+        {
+            if (fact.ValidTo is null)
+            {
+                openAtExport.Add(identity);
+            }
+            else
+            {
+                closedAt[identity] = DateTimeOffset.FromUnixTimeSeconds(fact.ValidTo.Value);
+            }
+        }
+
+        foreach (var (identity, close) in closes)
+        {
+            // A separate close record, when one exists, is the more direct source of closure
+            // time for this identity than its own (possibly still-open-looking) fact line.
+            closedAt[identity] = DateTimeOffset.FromUnixTimeSeconds(close.ValidTo);
+        }
+
+        var buckets = SyncCompaction.Partition(facts.Keys, openAtExport, closedAt, now, retain);
+
+        var liveIdentities = new List<FactIdentity>();
+        var retainedIdentities = new List<FactIdentity>();
+        var droppedIdentities = new List<FactIdentity>();
+        foreach (var (identity, bucket) in buckets)
+        {
+            var target = bucket switch
+            {
+                SyncRetentionBucket.Live => liveIdentities,
+                SyncRetentionBucket.RetainedClosed => retainedIdentities,
+                _ => droppedIdentities,
+            };
+            target.Add(identity);
+        }
+
+        if (!apply)
+        {
+            return new CompactResult(
+                filesBefore, filesBefore, bytesBefore, bytesBefore,
+                liveIdentities.Count, retainedIdentities.Count, droppedIdentities, ChunkPath: null);
+        }
+
+        Directory.CreateDirectory(chunkDir);
+        var seq = NextSeq(chunkDir);
+        var final = Path.Combine(chunkDir, seq + ChunkExtension);
+        var partial = final + PartialSuffix;
+
+        using (var stream = new FileStream(partial, FileMode.Create, FileAccess.Write, FileShare.None))
+        using (var writer = new StreamWriter(stream))
+        {
+            foreach (var identity in liveIdentities)
+            {
+                var line = FactJournal.ToJson(facts[identity]);
+                line["t"] = "fact";
+                writer.WriteLine(line.ToJsonString());
+            }
+
+            foreach (var identity in retainedIdentities)
+            {
+                var line = FactJournal.ToJson(facts[identity]);
+                line["t"] = "fact";
+                writer.WriteLine(line.ToJsonString());
+
+                if (closes.TryGetValue(identity, out var close))
+                {
+                    writer.WriteLine(ToJson(close).ToJsonString());
+                }
+            }
+        }
+
+        // Same never-rewrites-an-existing-chunk reasoning as Export: a collision means NextSeq
+        // raced another compact/export of this same machine, which a single-process CLI verb
+        // does not do to itself.
+        File.Move(partial, final, overwrite: false);
+        var bytesAfter = new FileInfo(final).Length;
+
+        // Delete every prior own-machine chunk the new one supersedes. Enumerating after the move
+        // is deliberate: it naturally excludes the file just written (its own seq is not < seq).
+        foreach (var (existingSeq, _) in EnumerateChunkFiles(chunkDir))
+        {
+            if (existingSeq < seq)
+            {
+                File.Delete(Path.Combine(chunkDir, existingSeq + ChunkExtension));
+            }
+        }
+
+        return new CompactResult(
+            filesBefore, 1, bytesBefore, bytesAfter,
+            liveIdentities.Count, retainedIdentities.Count, droppedIdentities, ChunkPath: final);
+    }
+
+    /// <summary>
+    /// Like <see cref="ScanOwnChunks"/>, but keeps full record content rather than just identities
+    /// — what <see cref="Compact"/> needs to re-emit a fact or close line byte-faithful to the
+    /// original rather than re-synthesizing one. Where the same identity appears in more than one
+    /// chunk (append-only history, D8), the first one scanned wins; by construction every copy of
+    /// a given identity's record is content-identical, so which one wins is not observable.
+    /// </summary>
+    private static (
+        Dictionary<FactIdentity, JournalFact> Facts,
+        Dictionary<FactIdentity, SyncCloseRecord> Closes,
+        int FileCount,
+        long TotalBytes)
+        ScanOwnChunksFull(string chunkDir)
+    {
+        var facts = new Dictionary<FactIdentity, JournalFact>();
+        var closes = new Dictionary<FactIdentity, SyncCloseRecord>();
+        var fileCount = 0;
+        long totalBytes = 0;
+
+        if (!Directory.Exists(chunkDir))
+        {
+            return (facts, closes, fileCount, totalBytes);
+        }
+
+        foreach (var file in Directory.EnumerateFiles(chunkDir, "*" + ChunkExtension))
+        {
+            if (!int.TryParse(Path.GetFileNameWithoutExtension(file), out _))
+            {
+                continue;
+            }
+
+            fileCount++;
+            totalBytes += new FileInfo(file).Length;
+        }
+
+        foreach (var (_, lines) in EnumerateChunkFiles(chunkDir))
+        {
+            foreach (var line in lines)
+            {
+                var node = TryParseLine(line);
+                if (node is not JsonObject record)
+                {
+                    continue;
+                }
+
+                var tag = record.TryGetPropertyValue("t", out var t) ? t?.GetValue<string>() : null;
+                if (tag == "fact")
+                {
+                    var parsed = FactJournal.Parse([line], out _);
+                    if (parsed.Count != 1)
+                    {
+                        continue;
+                    }
+
+                    var identity = new FactIdentity(parsed[0].Subject, parsed[0].Predicate, parsed[0].Body, parsed[0].ValidFrom);
+                    facts.TryAdd(identity, parsed[0]);
+                }
+                else if (tag == "close")
+                {
+                    var close = FromJson(record);
+                    if (close is not null)
+                    {
+                        var identity = new FactIdentity(close.Subject, close.Predicate, close.Body, close.ValidFrom);
+                        closes.TryAdd(identity, close);
+                    }
+                }
+            }
+        }
+
+        return (facts, closes, fileCount, totalBytes);
     }
 
     // ------------------------------------------------------------------

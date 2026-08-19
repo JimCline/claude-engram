@@ -379,4 +379,283 @@ public sealed class SyncTests
             }
         }
     }
+
+    /// <summary>
+    /// End-to-end staleness (docs/memory-expansion/01-sync-spec.md, "Staleness/liveness
+    /// detection"): a peer just imported reads Ok, and the same peer reads Warn once this
+    /// machine's own knowledge of it — both <c>sync_chunk_state.applied_at</c> and the chunk
+    /// file's own mtime — is older than <c>stale_after_days</c>. Backdates those two inputs
+    /// directly rather than sleeping the test; both feed <see cref="Sync.GatherPeerObservations"/>,
+    /// which <see cref="Diagnostics"/>' sync check compares against the real
+    /// <see cref="DateTimeOffset.UtcNow"/>.
+    /// </summary>
+    [Fact]
+    public void Staleness_APeerReadsOkThenWarnOncePastTheThreshold()
+    {
+        var syncRoot = NewSyncRoot();
+        try
+        {
+            using var a = new SandboxHome(initialize: false);
+            using var b = new SandboxHome(initialize: false);
+            using var connA = EngramDatabase.OpenInitialized(a.Home);
+            using var connB = EngramDatabase.OpenInitialized(b.Home);
+
+            File.AppendAllText(
+                b.Home.ConfigPath,
+                $"\n[sync]\nenabled = true\ndir = \"{syncRoot.Replace("\\", "\\\\")}\"\nstale_after_days = 14\n");
+
+            Write(connA, "/project/x", "the first thing", T0);
+            var machineA = Sync.ResolveMachineId(syncRoot);
+            Sync.Export(connA, syncRoot, machineA, apply: true);
+            Sync.Import(connB, syncRoot, "b-machine", DateTimeOffset.UtcNow, apply: true, CloseResolver.DefaultRetryCeiling);
+
+            var freshReport = Diagnostics.Run(b.Home, _ => null, reachOut: false);
+            var freshSync = freshReport.Checks.Single(c => c.Name == "sync");
+            Assert.Equal(DiagnosisState.Ok, freshSync.State);
+
+            var backdated = DateTimeOffset.UtcNow.AddDays(-15);
+            using (var update = connB.CreateCommand())
+            {
+                update.CommandText = "UPDATE sync_chunk_state SET applied_at = $at WHERE machine_id = $m;";
+                update.Parameters.AddWithValue("$at", backdated.ToUnixTimeSeconds());
+                update.Parameters.AddWithValue("$m", machineA);
+                update.ExecuteNonQuery();
+            }
+
+            var chunkFile = Directory.EnumerateFiles(Path.Combine(syncRoot, machineA), "*.jsonl").Single();
+            File.SetLastWriteTimeUtc(chunkFile, backdated.UtcDateTime);
+
+            var staleReport = Diagnostics.Run(b.Home, _ => null, reachOut: false);
+            var staleSync = staleReport.Checks.Single(c => c.Name == "sync");
+            Assert.Equal(DiagnosisState.Warn, staleSync.State);
+            Assert.Contains(machineA, staleSync.Detail, StringComparison.Ordinal);
+        }
+        finally
+        {
+            if (Directory.Exists(syncRoot))
+            {
+                Directory.Delete(syncRoot, recursive: true);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Falsification for the "never observed is never stale" half of the same rule, exercised
+    /// end-to-end: a freshly enrolled peer directory with no chunks and no
+    /// <c>sync_chunk_state</c> row yet must read Ok, never Warn — there is nothing to compare
+    /// against.
+    /// </summary>
+    [Fact]
+    public void Staleness_AFreshlyEnrolledPeerWithNoChunksYet_IsNotStale()
+    {
+        var syncRoot = NewSyncRoot();
+        try
+        {
+            using var b = new SandboxHome(initialize: false);
+            using var connB = EngramDatabase.OpenInitialized(b.Home);
+
+            File.AppendAllText(
+                b.Home.ConfigPath,
+                $"\n[sync]\nenabled = true\ndir = \"{syncRoot.Replace("\\", "\\\\")}\"\nstale_after_days = 14\n");
+
+            Directory.CreateDirectory(Path.Combine(syncRoot, "brand-new-peer"));
+
+            var report = Diagnostics.Run(b.Home, _ => null, reachOut: false);
+            var sync = report.Checks.Single(c => c.Name == "sync");
+            Assert.Equal(DiagnosisState.Ok, sync.State);
+        }
+        finally
+        {
+            if (Directory.Exists(syncRoot))
+            {
+                Directory.Delete(syncRoot, recursive: true);
+            }
+        }
+    }
+
+    /// <summary>
+    /// The core hazard <c>sync compact</c> exists to handle safely (docs/memory-expansion/
+    /// 01-sync-spec.md, "Chunk retention/pruning"): A closes one fact well inside
+    /// <c>retain_days</c> and another well past it, B fully imports before A ever compacts, then
+    /// A compacts and a brand-new machine C imports only the post-compaction chunk. C's live set
+    /// must match B's, and C must never receive the fact A dropped — while B, which already
+    /// caught up, keeps it forever, since compact only ever rewrites A's own outgoing history.
+    /// </summary>
+    [Fact]
+    public void Compact_ALiveFactSurvives_AndDroppedClosedHistoryNeverReachesALateJoiningPeer()
+    {
+        var syncRoot = NewSyncRoot();
+        try
+        {
+            using var a = new SandboxHome(initialize: false);
+            using var b = new SandboxHome(initialize: false);
+            using var c = new SandboxHome(initialize: false);
+            using var connA = EngramDatabase.OpenInitialized(a.Home);
+            using var connB = EngramDatabase.OpenInitialized(b.Home);
+            using var connC = EngramDatabase.OpenInitialized(c.Home);
+
+            var machineA = Sync.ResolveMachineId(syncRoot);
+
+            Write(connA, "/project/live", "live body", T0);
+            Write(connA, "/project/recent-closed", "recent-closed v1", T0);
+            Write(connA, "/project/old-closed", "old-closed v1", T0);
+            Sync.Export(connA, syncRoot, machineA, apply: true);
+
+            Sync.Import(connB, syncRoot, "b-machine", T0.AddMinutes(1), apply: true, CloseResolver.DefaultRetryCeiling);
+
+            // Closed well inside retain_days (90d), relative to the compact `now` below.
+            Write(connA, "/project/old-closed", "old-closed v2", T0.AddDays(5));
+            Write(connA, "/project/recent-closed", "recent-closed v2", T0.AddDays(89));
+            Sync.Export(connA, syncRoot, machineA, apply: true);
+
+            var beforeCompact = Sync.Compact(syncRoot, machineA, apply: false, TimeSpan.FromDays(90), T0.AddDays(100));
+            Assert.Equal(2, beforeCompact.ChunkFilesBefore);
+
+            var compacted = Sync.Compact(syncRoot, machineA, apply: true, TimeSpan.FromDays(90), T0.AddDays(100));
+            Assert.Equal(1, compacted.ChunkFilesAfter);
+            Assert.Contains(compacted.Dropped, i => i.Body == "old-closed v1");
+            Assert.DoesNotContain(compacted.Dropped, i => i.Body == "recent-closed v1");
+
+            Sync.Import(connC, syncRoot, "c-machine", T0.AddDays(101), apply: true, CloseResolver.DefaultRetryCeiling);
+
+            // B, which already caught up before compaction, keeps the dropped history forever —
+            // compact only ever rewrites A's own outgoing directory.
+            Assert.NotNull(FactId(connB, "/project/old-closed", "old-closed v1", liveOnly: false));
+
+            // C, joining only after compaction, never receives it at all.
+            Assert.Null(FactId(connC, "/project/old-closed", "old-closed v1", liveOnly: false));
+
+            // C's live set matches what actually survived compaction.
+            Assert.Equal("live body", BodyOf(connC, "/project/live"));
+            Assert.Equal("old-closed v2", BodyOf(connC, "/project/old-closed"));
+            Assert.Equal("recent-closed v2", BodyOf(connC, "/project/recent-closed"));
+            Assert.Equal(3, CountLive(connC));
+
+            // And the retained-but-closed identity's history is intact on C too.
+            Assert.NotNull(FactId(connC, "/project/recent-closed", "recent-closed v1", liveOnly: false));
+        }
+        finally
+        {
+            if (Directory.Exists(syncRoot))
+            {
+                Directory.Delete(syncRoot, recursive: true);
+            }
+        }
+    }
+
+    /// <summary>
+    /// The idempotent-replay hazard (D32) applied to compaction: B imports a fact while it is
+    /// still open, then A closes it and compacts before B ever sees the close (the chunk that
+    /// would have carried it standalone gets deleted along with everything else A rewrites). B's
+    /// later import must still resolve the close correctly against its own already-live copy —
+    /// the consolidated chunk carries the fact's original open-form line byte-faithfully (so it
+    /// resolves as already-present rather than a fresh insert) alongside the close record.
+    /// </summary>
+    [Fact]
+    public void Compact_APeerMidFlightOnAnAsYetUnseenClose_StillResolvesItCorrectlyAfterCompaction()
+    {
+        var syncRoot = NewSyncRoot();
+        try
+        {
+            using var a = new SandboxHome(initialize: false);
+            using var b = new SandboxHome(initialize: false);
+            using var connA = EngramDatabase.OpenInitialized(a.Home);
+            using var connB = EngramDatabase.OpenInitialized(b.Home);
+
+            var machineA = Sync.ResolveMachineId(syncRoot);
+
+            Write(connA, "/project/y", "v1 body", T0);
+            Sync.Export(connA, syncRoot, machineA, apply: true);
+            Sync.Import(connB, syncRoot, "b-machine", T0.AddMinutes(1), apply: true, CloseResolver.DefaultRetryCeiling);
+            Assert.Equal("v1 body", BodyOf(connB, "/project/y"));
+
+            // A closes v1 and exports the close — B has not imported this chunk yet.
+            Write(connA, "/project/y", "v2 body", T0.AddDays(10));
+            Sync.Export(connA, syncRoot, machineA, apply: true);
+
+            // A compacts before B ever fetches that chunk: both of A's chunks are deleted and
+            // replaced by one consolidated chunk B has never seen either.
+            Sync.Compact(syncRoot, machineA, apply: true, TimeSpan.FromDays(90), T0.AddDays(20));
+
+            var result = Sync.Import(connB, syncRoot, "b-machine", T0.AddDays(21), apply: true, CloseResolver.DefaultRetryCeiling);
+
+            Assert.Equal(0, result.Conflicted);
+            Assert.Equal("v2 body", BodyOf(connB, "/project/y"));
+            Assert.Equal(1, CountLive(connB));
+
+            var successorId = FactId(connB, "/project/y", "v2 body", liveOnly: true);
+            var predecessorSupersededBy = SupersededByOf(connB, "/project/y", "v1 body");
+            Assert.NotNull(successorId);
+            Assert.Equal(successorId, predecessorSupersededBy);
+        }
+        finally
+        {
+            if (Directory.Exists(syncRoot))
+            {
+                Directory.Delete(syncRoot, recursive: true);
+            }
+        }
+    }
+
+    /// <summary>
+    /// The load-bearing invariant the spec calls out explicitly: <c>sync compact</c> rewrites and
+    /// deletes only files under this machine's own <c>&lt;syncRoot&gt;/&lt;machineId&gt;/</c> —
+    /// never a peer's. Folder-sync transports propagate a peer-directory deletion back to that
+    /// peer in near-real-time, unlike git, so a violation here is not cosmetic.
+    /// </summary>
+    [Fact]
+    public void Compact_NeverTouchesAnyPathOutsideItsOwnMachineDirectory()
+    {
+        var syncRoot = NewSyncRoot();
+        try
+        {
+            using var a = new SandboxHome(initialize: false);
+            using var connA = EngramDatabase.OpenInitialized(a.Home);
+
+            var machineA = Sync.ResolveMachineId(syncRoot);
+            Write(connA, "/project/x", "v1", T0);
+            Sync.Export(connA, syncRoot, machineA, apply: true);
+            Write(connA, "/project/x", "v2", T0.AddDays(200));
+            Sync.Export(connA, syncRoot, machineA, apply: true);
+
+            var peerDir = Path.Combine(syncRoot, "peer-machine");
+            Directory.CreateDirectory(peerDir);
+            var peerFile = Path.Combine(peerDir, "1.jsonl");
+            File.WriteAllText(peerFile, "{\"t\":\"fact\"}\n");
+
+            var before = SnapshotOutside(syncRoot, machineA);
+
+            Sync.Compact(syncRoot, machineA, apply: true, TimeSpan.FromDays(90), T0.AddDays(300));
+
+            var after = SnapshotOutside(syncRoot, machineA);
+
+            Assert.Equal(before, after);
+            Assert.True(File.Exists(peerFile));
+        }
+        finally
+        {
+            if (Directory.Exists(syncRoot))
+            {
+                Directory.Delete(syncRoot, recursive: true);
+            }
+        }
+    }
+
+    private static Dictionary<string, (long Size, DateTime Mtime)> SnapshotOutside(string syncRoot, string excludeMachineId)
+    {
+        var snapshot = new Dictionary<string, (long, DateTime)>();
+        foreach (var file in Directory.EnumerateFiles(syncRoot, "*", SearchOption.AllDirectories))
+        {
+            var relative = Path.GetRelativePath(syncRoot, file);
+            if (relative.StartsWith(excludeMachineId + Path.DirectorySeparatorChar, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            var info = new FileInfo(file);
+            snapshot[relative] = (info.Length, info.LastWriteTimeUtc);
+        }
+
+        return snapshot;
+    }
 }

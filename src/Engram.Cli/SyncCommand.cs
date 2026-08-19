@@ -37,7 +37,7 @@ public static class SyncCommand
 
         if (args.Length == 0 || args[0].StartsWith('-'))
         {
-            stderr.WriteLine("error: expected a subcommand (export, import, status).");
+            stderr.WriteLine("error: expected a subcommand (export, import, status, compact).");
             return 1;
         }
 
@@ -49,6 +49,7 @@ public static class SyncCommand
             "export" => Export(home, settings, rest, stdout, stderr),
             "import" => Import(home, settings, rest, stdout, stderr),
             "status" => Status(home, settings, stdout, stderr),
+            "compact" => Compact(home, settings, rest, stdout, stderr),
             _ => Unknown(subcommand, stderr),
         };
     }
@@ -344,12 +345,121 @@ public static class SyncCommand
         stdout.WriteLine($"Stalled closes: {status.StalledCount}.");
         stdout.WriteLine($"Conflicted closes: {status.ConflictCount}.");
 
+        var observations = Sync.GatherPeerObservations(connection, syncRoot, machineId ?? string.Empty);
+        var staleness = SyncStaleness.Evaluate(observations, DateTimeOffset.UtcNow, TimeSpan.FromDays(settings.StaleAfterDays));
+
+        if (staleness.Count == 0)
+        {
+            stdout.WriteLine("No known peer machines.");
+        }
+        else
+        {
+            stdout.WriteLine($"Peers (stale past {settings.StaleAfterDays}d):");
+            foreach (var peer in staleness)
+            {
+                var seen = peer.LastObservedUtc is { } observed
+                    ? $"last observed {FormatAge(DateTimeOffset.UtcNow - observed)} ago"
+                    : "never observed";
+                stdout.WriteLine($"  {peer.MachineId}: {seen}{(peer.IsStale ? " STALE" : string.Empty)}");
+            }
+        }
+
         return 0;
     }
 
+    private static int Compact(EngramHome home, SyncSettings settings, string[] args, TextWriter stdout, TextWriter stderr)
+    {
+        var apply = args.Contains("--apply");
+        var ifLarge = args.Contains("--if-large");
+
+        var syncRoot = settings.ResolveDir(home);
+        // Same D49 reasoning as Export/Import: no write on a dry run, including the id file itself.
+        var machineId = apply ? Sync.ResolveMachineId(home.SyncDir) : Sync.TryReadMachineId(home.SyncDir) ?? Sync.GenerateMachineId();
+        var retain = TimeSpan.FromDays(settings.RetainDays);
+        var now = DateTimeOffset.UtcNow;
+
+        if (ifLarge)
+        {
+            var probe = Sync.Compact(syncRoot, machineId, apply: false, retain, now);
+            if (probe.ChunkFilesBefore <= Sync.CompactThreshold)
+            {
+                stdout.WriteLine("Skipped: this machine's own chunk history is not large enough to compact yet.");
+                return 0;
+            }
+        }
+
+        Telemetry.Append(home, new TelemetryRecord(
+            Timestamp: now.ToString("o"), SessionId: CliSessionId,
+            Kind: TelemetryEventKind.Sync, Phase: "started"));
+
+        Sync.CompactResult result;
+        try
+        {
+            result = Sync.Compact(syncRoot, machineId, apply, retain, now);
+        }
+        catch (IOException exception)
+        {
+            Telemetry.Append(home, new TelemetryRecord(
+                Timestamp: DateTimeOffset.UtcNow.ToString("o"), SessionId: CliSessionId,
+                Kind: TelemetryEventKind.Sync, Phase: "failed"));
+            stderr.WriteLine("error: compact failed and nothing was written — " + exception.Message);
+            return 1;
+        }
+
+        Telemetry.Append(home, new TelemetryRecord(
+            Timestamp: DateTimeOffset.UtcNow.ToString("o"), SessionId: CliSessionId,
+            Kind: TelemetryEventKind.Sync, Phase: "finished"));
+
+        stdout.WriteLine(
+            $"{(apply ? "Chunk files" : "Would rewrite chunk files")}: {result.ChunkFilesBefore} -> {result.ChunkFilesAfter} "
+                + $"({FormatBytes(result.BytesBefore)} -> {FormatBytes(result.BytesAfter)}) as machine {machineId}.");
+        stdout.WriteLine(
+            $"  {result.LiveCount} live fact(s) kept, {result.RetainedClosedCount} closed fact(s) within "
+                + $"{settings.RetainDays}d kept, {result.Dropped.Count} closed fact(s) older than {settings.RetainDays}d dropped.");
+
+        if (result.Dropped.Count > 0)
+        {
+            stdout.WriteLine(
+                "  Dropped from this machine's future sync history (a peer that already caught up keeps "
+                    + "them locally forever; a peer reconnecting after longer than retain_days will not receive them):");
+            foreach (var identity in result.Dropped)
+            {
+                stdout.WriteLine($"    {identity.Subject} / {identity.Predicate} = \"{identity.Body}\"");
+            }
+        }
+
+        if (!apply)
+        {
+            stdout.WriteLine();
+            stdout.WriteLine("Dry run only — nothing was written. Re-run with --apply to compact.");
+        }
+
+        return 0;
+    }
+
+    /// <summary>Coarse day/hour/minute/second age, matching the granularity <c>doctor</c> reports elsewhere.</summary>
+    private static string FormatAge(TimeSpan age)
+    {
+        if (age < TimeSpan.Zero)
+        {
+            age = TimeSpan.Zero;
+        }
+
+        return age.TotalDays >= 1 ? $"{(int)age.TotalDays}d"
+            : age.TotalHours >= 1 ? $"{(int)age.TotalHours}h"
+            : age.TotalMinutes >= 1 ? $"{(int)age.TotalMinutes}m"
+            : $"{(int)age.TotalSeconds}s";
+    }
+
+    private static string FormatBytes(long bytes) =>
+        bytes >= 1024L * 1024 * 1024 ? $"{bytes / 1024.0 / 1024 / 1024:0.0} GB"
+        : bytes >= 1024 * 1024 ? $"{bytes / 1024.0 / 1024:0.0} MB"
+        : bytes >= 1024 ? $"{bytes / 1024.0:0} KB"
+        : $"{bytes} B";
+
     private static int Unknown(string subcommand, TextWriter stderr)
     {
-        stderr.WriteLine($"error: unknown sync subcommand '{subcommand}'. Expected export, import, or status.");
+        stderr.WriteLine($"error: unknown sync subcommand '{subcommand}'. Expected export, import, status, or compact.");
         return 1;
     }
 }

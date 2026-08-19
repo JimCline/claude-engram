@@ -125,6 +125,7 @@ public static class Diagnostics
         Try(checks, "token index", list => list.Add(CheckTokenIndex(connection)));
         Try(checks, "metal", list => CheckMetal(home, embedding, list));
         Try(checks, "backups", list => list.Add(CheckBackups(home, connection, config)));
+        Try(checks, "sync", list => list.Add(CheckSync(home, connection, config)));
         Try(checks, "edit queue", list => list.Add(CheckQueue(home)));
         Try(checks, "webhook", list => CheckWebhook(config, list));
         Try(checks, "code analysis", list => list.Add(CheckRoslyn(environment)));
@@ -867,6 +868,72 @@ public static class Diagnostics
         }
 
         return new Diagnosis("backups", DiagnosisState.Ok, detail);
+    }
+
+    /// <summary>
+    /// Cross-machine sync (docs/memory-expansion/01-sync-spec.md, "Staleness/liveness detection"):
+    /// Off when not enabled, Warn for any stale peer or for <c>retain_days</c> configured shorter
+    /// than <c>stale_after_days</c>, never Broken for staleness itself — a quiet peer is not this
+    /// instance's fault (D37).
+    /// </summary>
+    private static Diagnosis CheckSync(EngramHome home, SqliteConnection? connection, ConfigFile config)
+    {
+        var settings = SyncSettings.Read(config);
+
+        foreach (var problem in settings.Problems)
+        {
+            return new Diagnosis("sync", DiagnosisState.Broken, problem, "edit [sync] in config.toml");
+        }
+
+        if (!settings.Enabled)
+        {
+            return new Diagnosis(
+                "sync",
+                DiagnosisState.Off,
+                "enabled = false — no cross-machine replication configured",
+                "set enabled = true under [sync]");
+        }
+
+        if (settings.RetainDays < settings.StaleAfterDays)
+        {
+            return new Diagnosis(
+                "sync",
+                DiagnosisState.Warn,
+                $"[sync] retain_days ({settings.RetainDays}) is less than stale_after_days ({settings.StaleAfterDays}) "
+                    + "— a peer could be pruned out of this machine's own chunk history before you'd be warned it went stale",
+                "raise retain_days to at least stale_after_days in config.toml");
+        }
+
+        if (connection is null)
+        {
+            return new Diagnosis("sync", DiagnosisState.Ok, "on, and there is no store yet to check peer staleness against");
+        }
+
+        var syncRoot = settings.ResolveDir(home);
+        var ownMachineId = Sync.TryReadMachineId(home.SyncDir) ?? string.Empty;
+        var observations = Sync.GatherPeerObservations(connection, syncRoot, ownMachineId);
+        var staleness = SyncStaleness.Evaluate(observations, DateTimeOffset.UtcNow, TimeSpan.FromDays(settings.StaleAfterDays));
+
+        var stalePeers = staleness.Where(peer => peer.IsStale).ToList();
+        if (stalePeers.Count == 0)
+        {
+            return new Diagnosis(
+                "sync",
+                DiagnosisState.Ok,
+                observations.Count == 0
+                    ? "on, no known peers yet"
+                    : $"on, {Plural(observations.Count, "known peer")}, none stale");
+        }
+
+        var names = string.Join(
+            ", ",
+            stalePeers.Select(peer => $"{peer.MachineId} ({Age(DateTimeOffset.UtcNow - peer.LastObservedUtc!.Value)} since last seen)"));
+
+        return new Diagnosis(
+            "sync",
+            DiagnosisState.Warn,
+            $"{Plural(stalePeers.Count, "peer")} stale past {settings.StaleAfterDays}d: {names}",
+            "check that peer's folder-sync client is running, then run 'engram sync import' there");
     }
 
     /// <summary>

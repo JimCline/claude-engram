@@ -15,14 +15,34 @@ public sealed record SyncSettings(
     string? Dir,
     int RetryCeiling,
     string Scope,
+    int StaleAfterDays,
+    int RetainDays,
     IReadOnlyList<string> Problems)
 {
     public const string Section = "sync";
 
     public const bool DefaultEnabled = false;
 
-    public static SyncSettings Default { get; } =
-        new(DefaultEnabled, null, CloseResolver.DefaultRetryCeiling, SyncScope.Default, []);
+    /// <summary>
+    /// Default age past which a peer with no observed activity reads as stale
+    /// (docs/memory-expansion/01-sync-spec.md, "Staleness/liveness detection").
+    /// </summary>
+    public const int DefaultStaleAfterDays = 14;
+
+    /// <summary>
+    /// Default age past which a closed fact is dropped from this machine's own consolidated chunk
+    /// by <c>sync compact</c> (docs/memory-expansion/01-sync-spec.md, "Chunk retention/pruning").
+    /// </summary>
+    public const int DefaultRetainDays = 90;
+
+    public static SyncSettings Default { get; } = new(
+        DefaultEnabled,
+        null,
+        CloseResolver.DefaultRetryCeiling,
+        SyncScope.Default,
+        DefaultStaleAfterDays,
+        DefaultRetainDays,
+        []);
 
     public static SyncSettings Read(ConfigFile config)
     {
@@ -50,11 +70,41 @@ public sealed record SyncSettings(
             scope = SyncScope.Default;
         }
 
+        var staleAfterDaysRaw = config.Int(Section, "stale_after_days");
+        var staleAfterDays = DefaultStaleAfterDays;
+        if (staleAfterDaysRaw is not null)
+        {
+            if (staleAfterDaysRaw < 1)
+            {
+                problems.Add($"[{Section}] stale_after_days must be at least 1; using {staleAfterDays}.");
+            }
+            else
+            {
+                staleAfterDays = staleAfterDaysRaw.Value;
+            }
+        }
+
+        var retainDaysRaw = config.Int(Section, "retain_days");
+        var retainDays = DefaultRetainDays;
+        if (retainDaysRaw is not null)
+        {
+            if (retainDaysRaw < 1)
+            {
+                problems.Add($"[{Section}] retain_days must be at least 1; using {retainDays}.");
+            }
+            else
+            {
+                retainDays = retainDaysRaw.Value;
+            }
+        }
+
         return new SyncSettings(
             config.Bool(Section, "enabled") ?? DefaultEnabled,
             config.String(Section, "dir"),
             ceiling,
             scope,
+            staleAfterDays,
+            retainDays,
             problems);
     }
 

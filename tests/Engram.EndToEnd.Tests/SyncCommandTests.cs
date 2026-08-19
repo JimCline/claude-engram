@@ -229,6 +229,158 @@ public class SyncCommandTests
         }
     }
 
+    /// <summary>
+    /// docs/memory-expansion/01-sync-spec.md's Tier-3 line covers <c>compact</c> alongside
+    /// export/import: a real export, a real compact against the AOT binary's own JSON chunk
+    /// writer/reader, and a real import against a second home that has never seen the
+    /// pre-compaction chunks at all — only the consolidated one. Seeds A with an
+    /// already-closed-and-superseded pair in one bundle (the same shape a real backup/replay
+    /// produces) so the single export already exercises the "exported already-closed" fact-line
+    /// form compact must re-emit byte-faithfully.
+    /// </summary>
+    [Fact]
+    public void ExportCompactThenImport_ThroughTheBinary_RoundTripsTheConsolidatedChunk()
+    {
+        Assert.SkipUnless(EndToEndBinary.Path is not null, EndToEndBinary.SkipReason);
+
+        using var a = new TestHome();
+        using var b = new TestHome();
+        var syncRoot = Path.Combine(Path.GetTempPath(), "engram-e2e-sync-compact-" + Guid.NewGuid().ToString("N"));
+
+        try
+        {
+            AppendSyncDir(a.Root, syncRoot);
+            AppendSyncDir(b.Root, syncRoot);
+
+            // sync compact's retention window is measured from real wall-clock time (D-unnamed, see
+            // SyncCompaction), so v1's close has to stay recent relative to whenever this test
+            // actually runs rather than a fixed calendar date the retain window would eventually
+            // age past.
+            var closeMoment = DateTimeOffset.UtcNow;
+            var v1From = closeMoment.AddHours(-2).ToUnixTimeSeconds();
+            var v1To = closeMoment.AddHours(-1).ToUnixTimeSeconds();
+            var v2From = v1To;
+
+            var bundlePath = Path.Combine(Path.GetTempPath(), "engram-e2e-sync-compact-bundle-" + Guid.NewGuid().ToString("N") + ".jsonl");
+            File.WriteAllLines(bundlePath,
+            [
+                """{"format":"engram-facts","format_version":1,"schema_version":9,"written_at":"2026-08-17T00:00:00Z"}""",
+                $$"""{"id":1,"subject":"/project/x","kind":"note","predicate":"states","body":"v1 body","object":null,"object_kind":null,"scope":"project","learned_via":"stated","regenerable":false,"evidence":null,"valid_from":{{v1From}},"valid_to":{{v1To}},"superseded_by":2,"reason":null,"created_at":{{v1From}},"details":null}""",
+                $$"""{"id":2,"subject":"/project/x","kind":"note","predicate":"states","body":"v2 body","object":null,"object_kind":null,"scope":"project","learned_via":"stated","regenerable":false,"evidence":null,"valid_from":{{v2From}},"valid_to":null,"superseded_by":null,"reason":null,"created_at":{{v2From}},"details":null}""",
+            ]);
+
+            var (seedCode, _, seedErr) = EngramProcess.Run(a.Root, "import", bundlePath, "--apply");
+            Assert.True(seedCode == 0, $"seed import exited {seedCode}: {seedErr}");
+
+            var (exportCode, _, exportErr) = EngramProcess.Run(a.Root, "sync", "export", "--apply");
+            Assert.True(exportCode == 0, $"sync export exited {exportCode}: {exportErr}");
+
+            var (compactCode, compactOut, compactErr) = EngramProcess.Run(a.Root, "sync", "compact", "--apply");
+            Assert.True(compactCode == 0, $"sync compact exited {compactCode}: {compactErr}");
+            Assert.Contains("Chunk files", compactOut, StringComparison.Ordinal);
+
+            var (importCode, _, importErr) = EngramProcess.Run(b.Root, "sync", "import", "--apply");
+            Assert.True(importCode == 0, $"sync import exited {importCode}: {importErr}");
+
+            var (statusCode, statusOut, _) = EngramProcess.Run(b.Root, "sync", "status");
+            Assert.Equal(0, statusCode);
+            Assert.Contains("No pending chunks", statusOut, StringComparison.Ordinal);
+
+            using var connection = new SqliteConnection($"Data Source={Path.Combine(b.Root, "engram.db")}");
+            connection.Open();
+
+            using (var live = connection.CreateCommand())
+            {
+                live.CommandText =
+                    """
+                    SELECT COUNT(*) FROM fact f JOIN entity e ON e.id = f.subject_id
+                    WHERE e.path = '/project/x' AND f.body = 'v2 body' AND f.valid_to IS NULL;
+                    """;
+                Assert.Equal(1L, (long)live.ExecuteScalar()!);
+            }
+
+            using (var closed = connection.CreateCommand())
+            {
+                closed.CommandText =
+                    """
+                    SELECT f2.body FROM fact f1
+                    JOIN entity e ON e.id = f1.subject_id
+                    JOIN fact f2 ON f2.id = f1.superseded_by
+                    WHERE e.path = '/project/x' AND f1.body = 'v1 body';
+                    """;
+                Assert.Equal("v2 body", (string)closed.ExecuteScalar()!);
+            }
+
+            File.Delete(bundlePath);
+        }
+        finally
+        {
+            if (Directory.Exists(syncRoot))
+            {
+                Directory.Delete(syncRoot, recursive: true);
+            }
+        }
+    }
+
+    /// <summary>
+    /// docs/memory-expansion/01-sync-spec.md's Tier-3 line, the file-snapshot half: "nothing
+    /// outside the sync directory and the target DB changes". <paramref name="syncRoot"/> already
+    /// lives outside <c>home.Root</c> (see <see cref="AppendSyncDir"/>), so a snapshot of
+    /// <c>home.Root</c> alone covers "outside the sync directory" by construction; the store's own
+    /// files and telemetry (written by every sync verb on every run, D55/D56 — the same allowance
+    /// <see cref="Export_WithoutApply_DoesNotCreateMachineId"/> documents) are excluded rather than
+    /// asserting the whole home untouched, since compact is expected to touch neither.
+    /// </summary>
+    [Fact]
+    public void Compact_WritesNothingOutsideTheSyncDirAndTheStore()
+    {
+        Assert.SkipUnless(EndToEndBinary.Path is not null, EndToEndBinary.SkipReason);
+
+        using var home = new TestHome();
+        var syncRoot = Path.Combine(Path.GetTempPath(), "engram-e2e-sync-compact-snap-" + Guid.NewGuid().ToString("N"));
+
+        try
+        {
+            AppendSyncDir(home.Root, syncRoot);
+
+            var bundlePath = Path.Combine(Path.GetTempPath(), "engram-e2e-sync-compact-snap-bundle-" + Guid.NewGuid().ToString("N") + ".jsonl");
+            File.WriteAllLines(bundlePath,
+            [
+                """{"format":"engram-facts","format_version":1,"schema_version":9,"written_at":"2026-08-17T00:00:00Z"}""",
+                """{"id":1,"subject":"/project/x","kind":"note","predicate":"states","body":"the first thing","object":null,"object_kind":null,"scope":"project","learned_via":"stated","regenerable":false,"evidence":null,"valid_from":1755388800,"valid_to":null,"superseded_by":null,"reason":null,"created_at":1755388800,"details":null}""",
+            ]);
+            var (seedCode, _, seedErr) = EngramProcess.Run(home.Root, "import", bundlePath, "--apply");
+            Assert.True(seedCode == 0, $"seed import exited {seedCode}: {seedErr}");
+
+            var (exportCode, _, exportErr) = EngramProcess.Run(home.Root, "sync", "export", "--apply");
+            Assert.True(exportCode == 0, $"sync export exited {exportCode}: {exportErr}");
+
+            var before = Snapshot(home.Root);
+            var (compactCode, _, compactErr) = EngramProcess.Run(home.Root, "sync", "compact", "--apply");
+            var after = Snapshot(home.Root);
+
+            Assert.True(compactCode == 0, $"sync compact exited {compactCode}: {compactErr}");
+
+            var excluded = new[] { "engram.db", "engram.db-wal", "engram.db-shm", "telemetry.jsonl" };
+            var moved = before.Keys.Union(after.Keys)
+                .Where(path => !excluded.Contains(path, StringComparer.Ordinal))
+                .Where(path => before.GetValueOrDefault(path) != after.GetValueOrDefault(path))
+                .Select(path => $"{path}: {before.GetValueOrDefault(path) ?? "(absent)"} -> {after.GetValueOrDefault(path) ?? "(absent)"}")
+                .ToList();
+
+            Assert.True(moved.Count == 0, "sync compact changed something outside the sync dir and the store:\n  " + string.Join("\n  ", moved));
+
+            File.Delete(bundlePath);
+        }
+        finally
+        {
+            if (Directory.Exists(syncRoot))
+            {
+                Directory.Delete(syncRoot, recursive: true);
+            }
+        }
+    }
+
     private static SortedDictionary<string, string> Snapshot(string root)
     {
         var files = new SortedDictionary<string, string>(StringComparer.Ordinal);
