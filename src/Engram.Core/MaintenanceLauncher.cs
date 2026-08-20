@@ -46,6 +46,7 @@ public static class MaintenanceLauncher
     public static void Spawn(
         string executablePath,
         string homeRoot,
+        bool syncEnabled,
         string? indexRoot = null,
         MaintenanceJobs jobs = MaintenanceJobs.SessionStart)
     {
@@ -55,7 +56,7 @@ public static class MaintenanceLauncher
             CreateNoWindow = true,
         };
         startInfo.ArgumentList.Add("-c");
-        startInfo.ArgumentList.Add(BuildScript(executablePath, homeRoot, indexRoot, jobs));
+        startInfo.ArgumentList.Add(BuildScript(executablePath, homeRoot, syncEnabled, indexRoot, jobs));
 
         using var process = Process.Start(startInfo);
     }
@@ -67,6 +68,7 @@ public static class MaintenanceLauncher
     internal static string BuildScript(
         string executablePath,
         string homeRoot,
+        bool syncEnabled,
         string? indexRoot,
         MaintenanceJobs jobs = MaintenanceJobs.SessionStart)
     {
@@ -86,10 +88,20 @@ public static class MaintenanceLauncher
             command
                 .Append(engram).Append(" backup take --if-due").Append(home).Append("; ")
                 .Append(engram).Append(" queue compact --apply --if-large").Append(home).Append("; ")
-                .Append(engram).Append(" repair --apply --tokens").Append(home).Append("; ")
-                .Append(engram).Append(" sync import --if-new --apply").Append(home).Append("; ")
-                .Append(engram).Append(" sync export --if-due --apply").Append(home).Append("; ")
-                .Append(engram).Append(" sync compact --apply --if-large").Append(home).Append("; ");
+                .Append(engram).Append(" repair --apply --tokens").Append(home).Append("; ");
+
+            // [sync] enabled defaults to false and creates nothing on its own; gating this is the
+            // only thing standing between "never touched [sync]" and a full unfiltered export
+            // landing in <home>/sync/<machine-id>/1.jsonl at the next session start (spec, "[sync]
+            // enabled gates MaintenanceLauncher's automatic invocation"). An explicit `sync
+            // export/import/compact --apply` typed by hand is never gated — only this ambient path.
+            if (syncEnabled)
+            {
+                command
+                    .Append(engram).Append(" sync import --if-new --apply").Append(home).Append("; ")
+                    .Append(engram).Append(" sync export --if-due --apply").Append(home).Append("; ")
+                    .Append(engram).Append(" sync compact --apply --if-large").Append(home).Append("; ");
+            }
         }
 
         if (indexRoot is not null)

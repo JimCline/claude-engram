@@ -10,7 +10,21 @@ chunk retention/pruning via `sync compact` designed (fork 2), dir preflight vali
 closed as blind lazy-create (fork 3); extended 2026-08-19 — Jim resolved fork 2's residual
 sub-fork: time-window retention confirmed over ack-based, both defaults confirmed as
 proposed (`stale_after_days=14`, `retain_days=90`) — forks 1 and 2 are now both fully
-settled, no open forks remain for this transport work).
+settled, no open forks remain for this transport work; extended 2026-08-19 — closed a
+review-found implementation gap: none of `sync export/import/compact` checked `[sync]
+enabled` before writing, so a disabled-by-default install got a full, unfiltered fact
+export written to `<home>/sync/` at its first session start after this shipped, not merely
+a marker file — two-layer fix designed (`MaintenanceLauncher` stops invoking sync when
+disabled; each CLI handler also refuses `--apply` when disabled) plus a `doctor` warning
+for installs that already have stray content, 2 new product-decision forks flagged: open
+questions 14 and 15; extended 2026-08-19 — Jim resolved both forks: fork 14 — mirror the
+`index`/`--auto` precedent, gating only `MaintenanceLauncher`'s ambient invocation, not the
+CLI handlers, so an explicitly typed `sync export/import/compact --apply` bypasses `[sync]
+enabled`; fork 15 — no backward-compatibility handling needed, since this fix ships before
+the gap reached any real install, so there is no stray pre-fix export anywhere to warn
+about or clean up, and the `doctor`/`CheckSync` `Warn`-upgrade design is dropped entirely
+— the fix is now a single gate at `MaintenanceLauncher`, no open forks remain for this
+fix).
 Parent: `docs/memory-expansion-spec.md` row 1.
 
 ## Amendment note
@@ -734,15 +748,126 @@ of a risk that isn't actually removed. Both defaults confirmed as proposed: `sta
 defaults already written in this section are final, not provisional. See Open question 11,
 below.
 
-**Hook impact**: `sync import --if-new` (cheap directory-mtime check first) and
-`sync export --if-due` (mirrors `backup take --if-due`) ride `MaintenanceLauncher`'s
-detached session-start child, alongside `backup take`, `queue compact`, `repair --tokens`.
-`sync compact --if-large --apply` (Chunk retention/pruning, above) joins the same detached
-child, gated the same way `queue compact --if-large` is — a size/count threshold on this
-machine's own chunk directory, not a time-based cadence. Not on the `file-touched` path —
-D4's 10 ms/never-opens-DB rule does not apply here, but a measurement plan is still required
-(NEEDS-EVIDENCE below), matching how every other `MaintenanceLauncher` job was measured
-before being added.
+**`[sync] enabled` gates `MaintenanceLauncher`'s automatic invocation — decided (closing a
+gap review found; explicit CLI invocation bypasses it, mirroring the `index`/`--auto`
+precedent).** `engram-reviewer` found, while reviewing the staleness/retention work above,
+that none of the four `sync` CLI handlers (`SyncCommand.cs`) check `settings.Enabled`
+anywhere. This subsection was scoped narrowly to closing that one gap — not reopening sync
+design generally — and was investigated against source before designing anything, per that
+scoping.
+
+*The gap, and how much worse it is than a marker file, found by tracing the mechanism rather
+than assumed.* Confirmed: zero matches for `settings.Enabled` anywhere in `SyncCommand.cs`.
+`Export`, `Import`, and `Compact` (`SyncCommand.cs:57-138`, `:185-275`, `:370-438`) each
+compute `machineId = apply ? Sync.ResolveMachineId(home.SyncDir) : Sync.TryReadMachineId(...)
+?? Sync.GenerateMachineId()` before doing anything else, and `Sync.ResolveMachineId`
+(`Sync.cs:153-171`) `Directory.CreateDirectory(syncRoot)`s and writes a `machine-id` file on
+first call, unconditionally, whenever `apply` is `true` — none of the three handlers consult
+`settings.Enabled` first. `MaintenanceLauncher.BuildScript` (`MaintenanceLauncher.cs:67-125`)
+appends `sync import --if-new --apply`, `sync export --if-due --apply`, and `sync compact
+--apply --if-large` to every session-start script unconditionally for
+`MaintenanceJobs.SessionStart` — the method's own handling of `--auto`/
+`auto_index_on_session_start` for the adjacent index job, a few lines above, shows this
+codebase already has the vocabulary for "ambient work gated by a setting"; it was simply
+never applied to sync's three lines. Net effect: a user who has never touched `[sync]` (the
+default: `enabled = false`) gets `<home>/sync/machine-id` written at their very next session
+start after this shipped, with no action on their part.
+
+That much matches what review reported. Tracing the mechanism further adds one thing review
+did not characterize: **`Export`'s first run does not stop at a marker file.** `Export`
+(`Sync.cs:222-318`) computes `factsToExport` from every fact not yet in this machine's own
+(empty, first-run) chunk history and scope-eligible under `[sync] scope` — default
+`SyncScope.Default = "all"` (`SyncScope.cs:36`), whose `Clause` resolves to the literal SQL
+`"1=1"` for `SyncScopeKind.All` (`SyncScope.cs:105-116`), i.e. unfiltered, every fact in the
+store. `--if-due` does not prevent this: `IsExportDue` (`SyncCommand.cs:164-183`) returns
+`true` whenever the machine's own chunk directory does not exist yet, which is exactly the
+first-run case. So for any installation with live facts, the first automatic `sync export
+--if-due --apply` since this shipped has already written a full, unfiltered copy of that
+store's fact content to `<home>/sync/<machine-id>/1.jsonl` — an actual export, not an empty
+scaffold — regardless of `[sync] enabled`. `sync compact`'s own exposure is smaller only
+because it runs after export/import in the same script and reuses the machine-id file they
+already created (`ResolveMachineId` re-reads rather than re-writes when the file already
+exists); its `--if-large` threshold (20 chunk files) is never reached on a first run, so it
+contributes no additional chunk rewrite of its own — this matches what review already
+confirmed. `sync status` was never implicated: it already uses the read-only
+`Sync.TryReadMachineId` (`Sync.cs:188-200`) by design, and creates nothing.
+
+*Design: one gate, at the ambient-invocation boundary.*
+
+1. **`MaintenanceLauncher` stops asking.** `Spawn`/`BuildScript` (`MaintenanceLauncher.cs:46-
+   125`) gain a new required `bool syncEnabled` parameter, placed before the existing
+   optional `indexRoot`/`jobs` parameters so every call site must be touched — a parameter
+   with a silent default here is exactly the shape of bug being fixed, so this spec
+   deliberately gives it none. Inside `BuildScript`'s `jobs == MaintenanceJobs.SessionStart`
+   block, the three `sync import`/`sync export`/`sync compact` `.Append` calls move inside a
+   new `if (syncEnabled) { ... }`, following the same conditional-block shape the method
+   already uses a few lines below for `if (indexRoot is not null)`. Two call sites need
+   updating:
+   - `HookCommand.cs:430` (the session-start job — the call that matters here) passes the
+     real value: read `SyncSettings.Read(config).Enabled` for the already-in-scope `home`
+     before calling `Spawn`, reusing an already-loaded `ConfigFile`/`SyncSettings` if the
+     enclosing method has one nearby rather than loading a second copy.
+   - `RepoCommand.cs:418` (`TrySpawnFirstIndex`, `MaintenanceJobs.EnrollmentIndex`) passes a
+     literal `syncEnabled: false` — inert by construction, since the sync lines live strictly
+     inside the `SessionStart`-only block and this call always passes `EnrollmentIndex`, but
+     the parameter must still be supplied.
+
+   This closes the actual reported defect: a user who has never touched `[sync]` (the
+   default) gets nothing written to `<home>/sync/` at session start, ever. It is also the
+   cheapest, most precise regression test available: a Tier-1 assertion on `BuildScript`'s
+   returned *string* (no process, no filesystem) that it contains none of `"sync
+   import"`/`"sync export"`/`"sync compact"` when `syncEnabled: false`.
+
+   `sync status` also gains one informational line, not a gate — status is already
+   read-only: immediately before its existing `"This machine: ..."` output, print `"[sync]
+   enabled = false — automatic export/import/compact are off; this machine will not send or
+   receive updates until it is turned on."` when `!settings.Enabled`, matching D37's "off is
+   a supported configuration" framing rather than treating the state as an error.
+
+**Considered and rejected: a second, handler-level gate inside `Export`/`Import`/`Compact`,
+independent of how they were invoked.** The design originally proposed here (2026-08-19) had
+each handler additionally refuse `--apply` whenever `[sync] enabled` was false, reasoned from
+`SyncSettings`'s own doc comment calling the feature "opt-in... requires the user to have
+already set up *some* replication mechanism... which nothing here creates or manages" — the
+argument being that a user who hasn't enabled sync has, overwhelmingly, also not pointed
+`[sync] dir` at anything real, so an explicit `--apply` for them would write a full export
+into an unconfigured default directory nobody is going to sync anywhere. Flagged as Open
+question 14 rather than committed, because it was a deliberate departure from this codebase's
+own `index`/`--auto` precedent (`repo enroll` legitimately bypasses
+`auto_index_on_session_start` — indexing a named repo is self-contained and meaningful
+regardless of any ambient-work setting, `IndexCommand.cs:93-105`), not a forced conclusion
+from the code.
+
+**Jim's decision (relayed 2026-08-19): mirror the `index`/`--auto` precedent instead.** A
+user who explicitly types `sync export`/`import`/`compact --apply` should go through even
+with `[sync] enabled = false`, the same way `repo enroll` bypasses
+`auto_index_on_session_start` — an explicit, human-typed command is a deliberate act, and the
+opt-in reasoning above governs *ambient* invocation, not a command someone chose to run.
+`SyncCommand.cs`'s `Export`/`Import`/`Compact` handlers therefore get **no**
+`settings.Enabled` check of any kind; they behave exactly as they did before this fix when
+invoked directly, whatever the flag's value. Only `MaintenanceLauncher`'s `syncEnabled`
+parameter (item 1, above) gates anything, by omitting the sync lines from the generated
+script rather than by refusing a write once asked for.
+
+*Backward compatibility — not needed.* A `doctor`-warning design for pre-existing stray sync
+content was also drafted alongside the above (a `CheckSync` upgrade from `DiagnosisState.Off`
+to `Warn` when `[sync] enabled = false` and `home.SyncDir` has content, flagged as Open
+question 15) and is dropped in full: Jim's word on it (relayed 2026-08-19) — "This is not an
+issue. No one has [hit it]" — because this fix ships before the gap it addresses reached any
+real install, so there is no stray pre-fix export anywhere to warn about or clean up.
+`CheckSync` (`Diagnostics.cs:879-937`) is unchanged by this spec.
+
+**Hook impact**: gated by `[sync] enabled` as of the decision immediately above — the three
+sync lines below are appended to `MaintenanceLauncher`'s generated script only when it is
+`true`; the rest of this paragraph describes their placement once that condition holds.
+`sync import --if-new` (cheap directory-mtime check first) and `sync export --if-due`
+(mirrors `backup take --if-due`) ride `MaintenanceLauncher`'s detached session-start child,
+alongside `backup take`, `queue compact`, `repair --tokens`. `sync compact --if-large --apply`
+(Chunk retention/pruning, above) joins the same detached child, gated the same way `queue
+compact --if-large` is — a size/count threshold on this machine's own chunk directory, not a
+time-based cadence. Not on the `file-touched` path — D4's 10 ms/never-opens-DB rule does not
+apply here, but a measurement plan is still required (NEEDS-EVIDENCE below), matching how
+every other `MaintenanceLauncher` job was measured before being added.
 
 **Telemetry**: new kind `TelemetryEventKind.Sync = "sync"`, phases started/finished/failed
 (D55 shape, matches Index/Embedding). No counts inside the event (D55); counts live in
@@ -758,17 +883,21 @@ already follow.
 **Config**: new `[sync]` section — `enabled` (bool, default `false`, opt-in since it requires
 the user to have already set up *some* replication mechanism for the directory themselves —
 git, iCloud Drive, Google Drive, Dropbox; Engram is agnostic to which, see Folder-sync
-transport, above), `dir` (path override — must be an absolute, already-expanded path, no `~`;
-see Folder-sync transport, above, for why), **`scope`** (string, default `all` —
-`all | user | repo:<value>`; see the Scoped export subsection above for the `repo:<value>`
-resolution algorithm), **`stale_after_days`** (int, default `14` — see Staleness/liveness
-detection, above, for the reasoning), and **`retain_days`** (int, default `90`, must be `>=
-stale_after_days`; see Chunk retention/pruning, above). `scope` is a sync-only enumeration,
-independent of the `fact.scope` column (`user | project | code | session`) — the two happen
-to share the value `user` because they mean the same fact property there, but `repo:<value>`
-and `all` have no `fact.scope` equivalent; don't conflate the two axes when reading either
-one. All five keys are edited via `ConfigEditor` with the `# written by engram` marker (D33),
-the same convention this section has used from the start.
+transport, above; as of the gating decision above, `false` gates `MaintenanceLauncher`'s
+automatic session-start invocation only — an explicitly typed `sync export/import/compact
+--apply` bypasses it, mirroring the `index`/`auto_index_on_session_start` precedent; see the
+Design subsection above), `dir` (path override — must be
+an absolute, already-expanded path, no `~`; see Folder-sync transport, above, for why),
+**`scope`** (string, default `all` — `all | user | repo:<value>`; see the Scoped export
+subsection above for the `repo:<value>` resolution algorithm), **`stale_after_days`** (int,
+default `14` — see Staleness/liveness detection, above, for the reasoning), and
+**`retain_days`** (int, default `90`, must be `>= stale_after_days`; see Chunk
+retention/pruning, above). `scope` is a sync-only enumeration, independent of the `fact.scope`
+column (`user | project | code | session`) — the two happen to share the value `user` because
+they mean the same fact property there, but `repo:<value>` and `all` have no `fact.scope`
+equivalent; don't conflate the two axes when reading either one. All five keys are edited via
+`ConfigEditor` with the `# written by engram` marker (D33), the same convention this section
+has used from the start.
 
 ## Invariants preserved
 
@@ -792,6 +921,15 @@ the same convention this section has used from the start.
   this codebase; its automated `--if-large` path bakes in `--apply` the same way `queue
   compact --if-large`'s does, on the same "the human already opted in by configuring the
   maintenance launcher" reasoning.
+- **New: `[sync] enabled` gates `MaintenanceLauncher`'s ambient session-start invocation,
+  not explicit CLI invocation.** `MaintenanceLauncher` never appends `sync
+  import`/`export`/`compact` to the generated script when `[sync] enabled` is false (see the
+  `[sync] enabled` gating design, above); `SyncCommand`'s `Export`/`Import`/`Compact`
+  handlers carry no `settings.Enabled` check and run exactly as before this fix when typed
+  directly — the same `index`/`--auto` precedent that lets `repo enroll` bypass
+  `auto_index_on_session_start`. This mirrors an existing pattern rather than introducing a
+  new one; the boundary (ambient-only, never commanded) is the point, and it does not license
+  gating another verb's handlers this loosely without its own argument.
 - **D4**: no work added to `file-touched`; new hook work rides the existing detached child.
 - **D42 (one home resolver)**: the folder-sync transport (Folder-sync transport, above) adds
   no new path resolution — `SyncSettings.ResolveDir`/`EngramHome.SyncDir` already split
@@ -839,7 +977,12 @@ the same convention this section has used from the start.
   branch and confirm a test asserting "a still-live fact is retained regardless of how old
   its original export was" starts failing; falsify separately by deleting the
   within-window-retain branch and confirm a test asserting "a fact closed 1 day ago is
-  retained even though it's closed" starts failing.
+  retained even though it's closed" starts failing. `MaintenanceLauncher.BuildScript` with
+  `syncEnabled: false` and `jobs: MaintenanceJobs.SessionStart`: assert the returned script
+  string contains none of `"sync import"`/`"sync export"`/`"sync compact"`; with
+  `syncEnabled: true`, assert it contains all three, in the existing order. Falsify: delete
+  the new `if (syncEnabled)` guard and confirm the `false`-case assertion starts failing (the
+  sync lines are present even when disabled).
 - **Tier 2**: two `SandboxHome` instances simulate two machines. Export from A, import into
   B, assert fact sets match. Revise on A, export, import into B, assert B's copy closes.
   Seed an independently-authored fact on B for the same slot *before* importing A's chunk,
@@ -883,10 +1026,30 @@ the same convention this section has used from the start.
   invariant: assert `sync compact --apply` never creates, modifies, or deletes any path
   outside `<dir>/<the running machine's own machine-id>/` — snapshot every file under `[sync]
   dir` outside that one subdirectory before and after, by size and mtime, and assert nothing
-  moved (mirroring `doctor`'s own end-to-end file-snapshot pattern).
+  moved (mirroring `doctor`'s own end-to-end file-snapshot pattern). `[sync] enabled` gating —
+  ambient path: with `MaintenanceLauncher`'s `syncEnabled: false` (the actual gate — see
+  Tier 1), drive the detached session-start child against a `SandboxHome` holding live facts;
+  assert `home.SyncDir` does not exist afterward. Explicit-bypass proof — the direct
+  falsification of fork 14's resolution: with `[sync] enabled` unset/false, call
+  `SyncCommand`'s `Export`/`Import`/`Compact` handlers directly (the CLI surface, not through
+  `MaintenanceLauncher`) against a `SandboxHome` holding live facts; assert `home.SyncDir`
+  **does** exist afterward with the same chunk content as the `enabled = true` case, proving
+  the handlers are unaffected by the flag — mirroring the existing bypass proof for `repo
+  enroll` vs. `auto_index_on_session_start`. Falsify: add a `settings.Enabled` check into any
+  handler and confirm this test starts failing (the explicit invocation stops writing).
+  `sync status` with `enabled = false`: assert it still reports normally and now also prints
+  the disabled-state note. Mechanical fallout, not a behavior regression: every existing call
+  site of `MaintenanceLauncher.Spawn`/`BuildScript` must now pass the new `syncEnabled`
+  parameter (`HookCommand.cs:430`, `RepoCommand.cs:418` — see Design, above) — a
+  compile-time-forced update, not a test needing new assertions.
 - **Tier 3**: end-to-end `sync export`/`import`/`compact` against the published binary and
   two real home directories; file-snapshot invariant (nothing outside the sync dir and the
-  target DB changes) mirroring `doctor`'s own end-to-end pattern.
+  target DB changes) mirroring `doctor`'s own end-to-end pattern. `[sync] enabled` gating,
+  end-to-end: a fresh real home directory, `[sync] enabled` absent from config (default), a
+  populated store with live facts, drive the actual session-start maintenance path; assert
+  `home.SyncDir` does not exist on disk afterward. This is the direct falsification of the
+  originally reported defect, matching D9's tier-3 discipline that CI passing on the JIT
+  build proves nothing about what ships.
 
 ## Measurements
 
@@ -1022,3 +1185,22 @@ the same convention this section has used from the start.
     chunks spanning months). Decides whether `--if-large`'s threshold needs to be tuned
     tighter or looser than a naive guess, the same way items 1-2 gate `sync import`/`export`'s
     hook placement.
+14. **RESOLVED.** Originally raised as: should `export`/`import`/`compact --apply` hard-refuse
+    when `[sync] enabled = false` even for a command typed directly by a user, or instead
+    mirror the `index`/`--auto` precedent exactly — gate only `MaintenanceLauncher`'s ambient
+    invocation and let an explicit CLI invocation bypass the flag, the same way `repo enroll`
+    bypasses `auto_index_on_session_start`. Jim decided (relayed 2026-08-19): mirror the
+    `index`/`--auto` precedent — a user who explicitly types `sync export/import/compact
+    --apply` should go through even with `[sync] enabled = false`. `SyncCommand`'s
+    `Export`/`Import`/`Compact` handlers carry no `settings.Enabled` check; only
+    `MaintenanceLauncher`'s `syncEnabled` parameter gates anything, by omitting the sync
+    lines from the generated session-start script. See the Design subsection above, revised
+    accordingly.
+15. **RESOLVED.** Originally raised as: is `doctor`'s `Warn` row sufficient for existing
+    installations that likely already have a full fact export sitting in
+    `<home>/sync/<machine-id>/1.jsonl` from before this fix, or does that warrant an active,
+    explicit, dry-run-first cleanup verb? Jim decided (relayed 2026-08-19): not needed — this
+    fix ships before the gap it addresses has reached any real install, so there is no stray
+    pre-fix export anywhere to clean up or warn about. The `CheckSync`/`doctor` `Warn`-upgrade
+    design is dropped entirely; `CheckSync` (`Diagnostics.cs:879-937`) is unchanged by this
+    spec. See "Backward compatibility — not needed," above.

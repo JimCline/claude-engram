@@ -327,6 +327,13 @@ public static class SyncCommand
         using var connection = EngramDatabase.OpenInitialized(home);
         var status = Sync.Status(connection, syncRoot, machineId ?? string.Empty);
 
+        if (!settings.Enabled)
+        {
+            stdout.WriteLine(
+                "[sync] enabled = false — automatic export/import/compact are off; this machine "
+                    + "will not send or receive updates until it is turned on.");
+        }
+
         stdout.WriteLine("This machine: " + (machineId ?? "(not yet exported)") + " (" + syncRoot + ")");
 
         if (status.PendingByMachine.Count == 0)

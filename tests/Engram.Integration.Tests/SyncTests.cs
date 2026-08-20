@@ -92,6 +92,79 @@ public sealed class SyncTests
         File.AppendAllText(home.ConfigPath, $"\n[sync]\ndir = \"{sharedDir.Replace("\\", "\\\\")}\"\n");
     }
 
+    /// <summary>
+    /// Falsifies fork 14's resolution (spec, "[sync] enabled gates MaintenanceLauncher's automatic
+    /// invocation"): only <see cref="MaintenanceLauncher"/>'s ambient session-start script is gated
+    /// by <c>[sync] enabled</c>. <see cref="SyncCommand"/>'s Export/Import/Compact handlers carry no
+    /// <c>settings.Enabled</c> check of their own, so a command a person typed by hand still runs —
+    /// the same precedent <c>repo enroll</c> already sets against <c>auto_index_on_session_start</c>.
+    /// Falsify: add a <c>settings.Enabled</c> check into any handler and this test starts failing.
+    /// </summary>
+    [Fact]
+    public void SyncEnabled_DoesNotGateAnExplicitlyInvokedExport()
+    {
+        var syncRoot = NewSyncRoot();
+        try
+        {
+            using var home = new SandboxHome(initialize: false);
+            using (var connection = EngramDatabase.OpenInitialized(home.Home))
+            {
+                Write(connection, "/project/x", "explicit export body", T0);
+            }
+
+            // [sync] enabled is never written here, so it stays at its documented default
+            // (SyncSettings.DefaultEnabled = false).
+            WriteSharedDirConfig(home.Home, syncRoot);
+
+            var stdout = new StringWriter();
+            Assert.Equal(0, SyncCommand.Run(home.Home.Root, ["export", "--apply"], stdout, new StringWriter()));
+
+            Assert.True(
+                Directory.Exists(home.Home.SyncDir),
+                "an explicit `sync export --apply` must write <home>/sync even with [sync] enabled left at its false default");
+            var machineId = File.ReadAllText(Path.Combine(home.Home.SyncDir, "machine-id"));
+            var chunkPath = Path.Combine(syncRoot, machineId, "1.jsonl");
+            Assert.True(File.Exists(chunkPath), $"expected a chunk at {chunkPath}");
+            Assert.Contains("explicit export body", File.ReadAllText(chunkPath), StringComparison.Ordinal);
+        }
+        finally
+        {
+            if (Directory.Exists(syncRoot))
+            {
+                Directory.Delete(syncRoot, recursive: true);
+            }
+        }
+    }
+
+    /// <summary>
+    /// The disabled-state note is advisory only (spec, resolved Open question 14) — it must not
+    /// change <c>sync status</c>'s exit code or suppress its other reporting.
+    /// </summary>
+    [Fact]
+    public void SyncStatus_WithSyncDisabled_StillReportsAndAddsTheDisabledNote()
+    {
+        var syncRoot = NewSyncRoot();
+        try
+        {
+            using var home = new SandboxHome(initialize: true);
+            WriteSharedDirConfig(home.Home, syncRoot);
+
+            var stdout = new StringWriter();
+            Assert.Equal(0, SyncCommand.Run(home.Home.Root, ["status"], stdout, new StringWriter()));
+
+            var output = stdout.ToString();
+            Assert.Contains("[sync] enabled = false", output, StringComparison.Ordinal);
+            Assert.Contains("This machine:", output, StringComparison.Ordinal);
+        }
+        finally
+        {
+            if (Directory.Exists(syncRoot))
+            {
+                Directory.Delete(syncRoot, recursive: true);
+            }
+        }
+    }
+
     [Fact]
     public void ExportThenImport_RoundTripsTheFactSet()
     {

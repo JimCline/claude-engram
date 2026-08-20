@@ -422,19 +422,20 @@ internal static class HookCommand
         // the spawn costs 1.6-3.4 ms and the ordering is worth no part of it. It stays here
         // because a fork is never more expensive for happening while the parent is small.
         var startDirectory = payload?.Cwd ?? Directory.GetCurrentDirectory();
+        var config = TryLoadConfig(home);
 
         try
         {
             if (Environment.ProcessPath is { Length: > 0 } executable)
             {
-                MaintenanceLauncher.Spawn(executable, home.Root, startDirectory);
+                var syncEnabled = config is not null && SyncSettings.Read(config).Enabled;
+                MaintenanceLauncher.Spawn(executable, home.Root, syncEnabled, startDirectory);
             }
         }
         catch
         {
         }
 
-        var config = TryLoadConfig(home);
         var (summary, offerEnrollment) = SessionStartPrimerInputs(home, config, startDirectory);
         var primer = PrimerBuilder.Build(summary, Precedence(config), offerEnrollment);
 
