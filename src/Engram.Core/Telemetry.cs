@@ -180,7 +180,15 @@ public sealed record TelemetryRecord(
     /// resulted, and <c>reset</c> produces no resulting state at all — it deletes the row.
     /// Harmonizing the two vocabularies would make <c>reset</c> unrepresentable, so do not.
     /// </remarks>
-    [property: JsonPropertyName("decision")] string? Decision = null);
+    [property: JsonPropertyName("decision")] string? Decision = null,
+
+    /// <summary>
+    /// How many directives a primer delivered. Only <see cref="TelemetryEventKind.SessionStart"/>
+    /// and <see cref="TelemetryEventKind.SubagentStart"/> set it, and never alongside
+    /// <see cref="FactCount"/> — a primer record's <see cref="FactCount"/> stays null (D46), and
+    /// this is a distinct number for a distinct delivery channel (D-1), not a substitute for it.
+    /// </summary>
+    [property: JsonPropertyName("directive_count")] int? DirectiveCount = null);
 
 [JsonSerializable(typeof(TelemetryRecord))]
 internal sealed partial class TelemetryJsonContext : JsonSerializerContext;

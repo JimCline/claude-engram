@@ -24,6 +24,7 @@ public static class PrimerBuilder
         "enroll it, and record their answer — a no as well as a yes.";
 
     private const string ExamplesHeader = "Examples:";
+    private const string DirectivesHeader = "Standing directives (complete; memory path /directives):";
     private const int MaxClusters = 5;
 
     // Internal because PrimerSummary sizes its candidate query against it: the superset it
@@ -57,6 +58,8 @@ public static class PrimerBuilder
 
         TryAppendLine(lines, ref tokens, MemorySettings.PrimerLine(precedence));
 
+        AppendDirectives(lines, summary.Directives);
+
         if (offerEnrollment)
         {
             TryAppendLine(lines, ref tokens, EnrollmentLine);
@@ -89,6 +92,9 @@ public static class PrimerBuilder
         var tokens = TokenEstimator.Estimate(SubagentInstruction);
 
         TryAppendLine(lines, ref tokens, MemorySettings.PrimerLine(precedence));
+
+        AppendDirectives(lines, summary.Directives);
+
         TryAppendLine(lines, ref tokens, CoverageLine(summary.FactCount, summary.TopicCounts));
 
         return string.Join('\n', lines);
@@ -113,6 +119,30 @@ public static class PrimerBuilder
 
         lines.Add(line);
         tokens += lineTokens;
+    }
+
+    /// <summary>
+    /// Appends every live directive, unconditionally and without a budget check (D-1). A
+    /// directive was authored deliberately, through its own CLI verb, by someone who chose to
+    /// pay for it at every reset — <see cref="TryAppendLine"/>'s silent drop is for content a
+    /// caller merely offered, and applying it here would make a directive exactly the kind of
+    /// thing D-1 exists to rule out. The bound instead lives at write time, as
+    /// <see cref="DirectiveFacts.MaxDirectiveTokens"/> — enforced by <c>engram directive add</c>,
+    /// never here. No-ops entirely, appending nothing, when there are no directives: an install
+    /// with none must render byte-identical to a primer built before this feature existed.
+    /// </summary>
+    private static void AppendDirectives(List<string> lines, IReadOnlyList<string> directives)
+    {
+        if (directives.Count == 0)
+        {
+            return;
+        }
+
+        lines.Add(DirectivesHeader);
+        foreach (var directive in directives)
+        {
+            lines.Add($"- {directive}");
+        }
     }
 
     private static string? CoverageLine(int factCount, IReadOnlyDictionary<string, int> topicCounts)

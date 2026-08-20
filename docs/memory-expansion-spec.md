@@ -42,6 +42,19 @@ store, and this document names the pieces worth bringing over.
 | 4 | **Lifecycle primitives** | A review-due marker, a persistent pin, and named scopes (project/personal/global) | A review-due marker (side table, optional `review_after` on remember/revise) and a per-session in-memory pin, never on the fact row's authored columns. Scopes need no change: `fact.scope` already exists (D27: user/project/code/session). Automatic per-type decay and a durable global pin, both seen elsewhere, are explicitly not adopted. | `memory-expansion/04-lifecycle-spec.md` |
 | 5 | **Browse & timeline surface** | An interactive terminal browser and a chronological timeline view keyed to one entry | `engram timeline <fact-id>` and an interactive browse over the entity tree using the existing `Tui.Render` (D52 row budget), read-only. | `memory-expansion/05-browse-tui-spec.md` |
 | 6 | **Export to notes** | A JSON export, plus a beta Obsidian-vault export | `engram export --obsidian <dir>`: one note per entity path, facts as dated bullets, supersession as strikethrough/links. Derived output, regenerable, never read back. | `memory-expansion/06-export-spec.md` |
+| 7 | **Standing directives** | — (Jim's own request, 2026-08-19, not from the comparable-tool review) | A user-authored tier of standing instruction, on par with CLAUDE.md: unconditional, undroppable delivery in the primer at session-start/subagent-start, CLI-authored only (`engram directive add "<text>"`, no promotion path from passive capture — D-10), excluded from ranked recall, enumerated via `engram_browse`. | `memory-expansion/07-directives-spec.md` |
+
+## Backlog (not scheduled)
+
+- **Passive-capture precision for `requires`.** E-6's census for spec 07 (2026-08-20) found 152
+  live facts with predicate `requires` (the existing `UserStatementClassifier` "always/never/from
+  now on/remember that" capture) across ~14 projects, of which only ~5–15 read as genuine standing
+  behavioral rules — the remaining ~92% (140 of 152) are ordinary technical prose (defect reports,
+  review comments, spec decisions) that happened to contain a trigger phrase. This is what made the
+  spec-07 promotion surface (`directive add --from <fact-id>`) not worth building (D-10): a
+  152-candidate list can't help fill an 8-slot directive budget the user already knows by heart.
+  The classifier itself is still live and still misfiring at that rate on every qualifying
+  statement — nobody has scoped a fix. Not spec'd, not estimated, no owner yet.
 
 ## Explicitly not adopted
 

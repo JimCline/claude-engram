@@ -60,6 +60,7 @@ public static class CliApp
             "export" => ExportCommand.Run(homePath, rest, stdout, stderr),
             "import" => ImportCommand.Run(homePath, rest, stdout, stderr),
             "sync" => SyncCommand.Run(homePath, rest, stdout, stderr),
+            "directive" => DirectiveCommand.Run(homePath, rest, stdout, stderr),
             _ => Usage(stderr),
         };
     }

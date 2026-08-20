@@ -399,6 +399,7 @@ public static class RecallRanker
     private static string BuildStatementText(bool overlapAvailable, bool vectorAvailable, string vecTable)
     {
         var sessionPrefix = SessionFacts.Root + "/"; // "/sessions/" — kept in sync with the C# constant
+        var directivePrefix = DirectiveFacts.Root + "/"; // "/directives/" — kept in sync with the C# constant
         var rrfK = RecallEngine.RrfK.ToString(CultureInfo.InvariantCulture);
 
         var sb = new StringBuilder();
@@ -547,7 +548,12 @@ public static class RecallRanker
         }
 
         sb.Append("  LEFT JOIN prior_sessions ps ON ps.session_id = f.session_id\n");
-        sb.Append("  WHERE f.valid_to IS NULL\n),\n\n");
+        // A directive is delivered unconditionally by the primer (D-1) and answers a
+        // class-addressed question through engram_browse, not a content-addressed one through
+        // recall (D-5) — excluded here, where the candidate set drawn from every lane is
+        // materialized, rather than at any one lane's own query, so it can never surface
+        // regardless of which lane matched it, and never inflates matched/corroborated counts.
+        sb.Append($"  WHERE f.valid_to IS NULL\n    AND substr(e.path, 1, {directivePrefix.Length}) <> '{directivePrefix}'\n),\n\n");
 
         sb.Append(
             """

@@ -8,7 +8,7 @@ public enum UserFactKind
     PersonalStatement,
 
     /// <summary>A standing instruction: "always", "never", "from now on", "remember that".</summary>
-    Directive,
+    Instruction,
 }
 
 public sealed record UserStatementCandidate(string Text, UserFactKind Kind);
@@ -73,7 +73,7 @@ public static partial class UserStatementClassifier
 
             if (Directive().IsMatch(sentence))
             {
-                candidates.Add(new UserStatementCandidate(sentence, UserFactKind.Directive));
+                candidates.Add(new UserStatementCandidate(sentence, UserFactKind.Instruction));
                 continue;
             }
 
