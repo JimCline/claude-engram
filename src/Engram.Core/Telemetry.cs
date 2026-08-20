@@ -188,7 +188,16 @@ public sealed record TelemetryRecord(
     /// <see cref="FactCount"/> — a primer record's <see cref="FactCount"/> stays null (D46), and
     /// this is a distinct number for a distinct delivery channel (D-1), not a substitute for it.
     /// </summary>
-    [property: JsonPropertyName("directive_count")] int? DirectiveCount = null);
+    [property: JsonPropertyName("directive_count")] int? DirectiveCount = null,
+
+    /// <summary>
+    /// The tool profile this connection registered under (<c>default</c> or <c>full</c>). Only
+    /// <see cref="TelemetryEventKind.SessionOpen"/> sets it, stamped from the same config read
+    /// that selected the profile for the connection rather than a fresh read at record-write
+    /// time — the two can disagree if config changes in between, and a stamp that disagrees with
+    /// the live connection is worse than no stamp (docs/memory-expansion/03-tool-profiles-spec.md).
+    /// </summary>
+    [property: JsonPropertyName("tool_profile")] string? ToolProfile = null);
 
 [JsonSerializable(typeof(TelemetryRecord))]
 internal sealed partial class TelemetryJsonContext : JsonSerializerContext;

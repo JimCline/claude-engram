@@ -20,6 +20,13 @@ namespace Engram.Integration.Tests;
 /// A diff here is not a failure to fix by refreshing the golden. It is the signal to ask
 /// whether the new wording is better, since the answer decides how often a model reaches
 /// for memory at all — which is the entire M0 measurement.
+///
+/// <para>This file describes exactly the <c>default</c> tool profile
+/// (docs/memory-expansion/03-tool-profiles-spec.md): it reflects only over
+/// <see cref="EngramMcpTools"/>, which after that spec's D-5 is precisely the set of tools
+/// <c>default</c> advertises. <c>EngramServerTools</c>'s three lifecycle tools
+/// (start/status/stop, advertised only under <c>full</c>) are unguarded by this golden file —
+/// a pre-existing D17 gap that spec 03 deliberately leaves deferred rather than widening here.</para>
 /// </remarks>
 public class McpToolDescriptionGoldenTests
 {

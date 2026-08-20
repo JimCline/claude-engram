@@ -157,6 +157,12 @@ public partial class PluginCommandTests
         var port = FreeTcpPort.Next();
         var cancellationToken = TestContext.Current.CancellationToken;
 
+        // This check is drift detection against the whole tool surface, not against any one
+        // profile — commands legitimately name lifecycle tools (start.md, status.md), which
+        // `default` no longer advertises (docs/memory-expansion/03-tool-profiles-spec.md, D-5).
+        var (setExit, _, setErr) = EngramProcess.Run(home.Root, "profile", "set", "full");
+        Assert.True(setExit == 0, $"engram profile set full failed: {setErr}");
+
         var (startExit, _, startErr) = EngramProcess.Run(home.Root, "start", "--port", port.ToString());
         Assert.True(startExit == 0, $"engram start failed: {startErr}");
 

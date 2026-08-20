@@ -39,6 +39,11 @@ internal static class ServeCommand
         var resolvedPort = ServerPort.Resolve(port);
         var home = EngramHome.ResolveFromProcess(homePath);
 
+        // Read once, here, rather than wherever a tool decision or a telemetry record needs it —
+        // this is the value every registration and stamp in this method must agree with for the
+        // life of the connection, even if config.toml changes mid-run (Hazard 6).
+        var toolProfile = ToolProfileSettings.Read(ConfigFile.Load(home.ConfigPath)).Profile;
+
         // Built once, before the server starts accepting requests, so a store that predates
         // fact_token — or one whose tokenizer version fell behind this build — is never served
         // against a stale or missing index. Cheap in the ordinary case: EnsureBuilt reads one
@@ -93,7 +98,7 @@ internal static class ServeCommand
         builder.Services.AddSingleton(home);
         builder.Services.AddSingleton(identity);
         builder.Services.AddTransient(_ => new McpHomeState(File.Exists(home.ConfigPath)));
-        builder.Services.AddTransient(services => ResolveSessionId(services, home, openedSessions));
+        builder.Services.AddTransient(services => ResolveSessionId(services, home, openedSessions, toolProfile));
 
         // Registered even when no model will ever be asked for, because constructing it starts
         // nothing — the first Open does. Held by the container so the child process it may spawn
@@ -117,16 +122,33 @@ internal static class ServeCommand
         // every other producer of these events is a hook on a latency budget.
         builder.Services.AddHostedService<WebhookService>();
 
-        builder.Services.AddMcpServer()
+        // The generic WithTools<T>() calls below are load-bearing, not a style choice: the SDK's
+        // own non-generic WithTools(IEnumerable<Type>, ...) carries
+        // [RequiresUnreferencedCode("... might not work in Native AOT. Use the generic WithTools
+        // method instead.")], and does not — an AOT-published server registered zero tools
+        // through it, discovered by ToolProfileEndToEndTests and McpServerTests failing against
+        // the published binary while every JIT-run Tier 2 test still passed. So the type
+        // arguments stay compile-time literals; what stays single-sourced is which of them run,
+        // read from ToolTypesFor rather than re-deriving the profile switch here.
+        var registered = ToolTypesFor(toolProfile);
+        var mcpBuilder = builder.Services.AddMcpServer()
             // The SDK defaults HttpServerTransportOptions.Stateless to true as of the
             // 2026-07-28 protocol revision (SEP-2567), which mints no Mcp-Session-Id at
             // all. D14's session-keyed working memory and the session-open adoption
             // metric both depend on that header existing and being stable for a
             // session's lifetime, so this must stay false. Do not "simplify" this to
             // the default — that silently drops session identity with no error anywhere.
-            .WithHttpTransport(options => options.Stateless = false)
-            .WithTools<EngramMcpTools>()
-            .WithTools<EngramServerTools>();
+            .WithHttpTransport(options => options.Stateless = false);
+
+        if (registered.Contains(typeof(EngramMcpTools)))
+        {
+            mcpBuilder = mcpBuilder.WithTools<EngramMcpTools>();
+        }
+
+        if (registered.Contains(typeof(EngramServerTools)))
+        {
+            mcpBuilder = mcpBuilder.WithTools<EngramServerTools>();
+        }
 
         var app = builder.Build();
 
@@ -197,7 +219,8 @@ internal static class ServeCommand
         return 0;
     }
 
-    private static McpSessionId ResolveSessionId(IServiceProvider services, EngramHome home, ConcurrentDictionary<string, byte> openedSessions)
+    private static McpSessionId ResolveSessionId(
+        IServiceProvider services, EngramHome home, ConcurrentDictionary<string, byte> openedSessions, ToolProfile toolProfile)
     {
         var accessor = services.GetRequiredService<IHttpContextAccessor>();
         var header = accessor.HttpContext?.Request.Headers["Mcp-Session-Id"].ToString();
@@ -211,12 +234,24 @@ internal static class ServeCommand
         // real Mcp-Session-Id, since a daemon mints many sessions over its lifetime.
         if (File.Exists(home.ConfigPath) && openedSessions.TryAdd(header, 0))
         {
-            Telemetry.Append(home, new TelemetryRecord(
-                Timestamp: DateTime.UtcNow.ToString("o"),
-                SessionId: header,
-                Kind: TelemetryEventKind.SessionOpen));
+            Telemetry.Append(home, BuildSessionOpenRecord(header, toolProfile));
         }
 
         return new McpSessionId(header);
     }
+
+    /// <summary>The tool types this profile registers — <c>EngramMcpTools</c> always, and
+    /// <c>EngramServerTools</c> only under <see cref="ToolProfile.Full"/> (D-5).</summary>
+    internal static IReadOnlyList<Type> ToolTypesFor(ToolProfile profile) => profile switch
+    {
+        ToolProfile.Full => [typeof(EngramMcpTools), typeof(EngramServerTools)],
+        _ => [typeof(EngramMcpTools)],
+    };
+
+    internal static TelemetryRecord BuildSessionOpenRecord(string sessionId, ToolProfile toolProfile) =>
+        new(
+            Timestamp: DateTime.UtcNow.ToString("o"),
+            SessionId: sessionId,
+            Kind: TelemetryEventKind.SessionOpen,
+            ToolProfile: ToolProfileSettings.ToText(toolProfile));
 }

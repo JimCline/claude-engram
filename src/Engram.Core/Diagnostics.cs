@@ -120,6 +120,7 @@ public static class Diagnostics
         Try(checks, "server", list => list.Add(CheckServer(home, lifecycle, executablePath)));
         Try(checks, "claude code", list => list.Add(CheckClaudeCode(claudeSettingsPath ?? home.ClaudeSettingsPath)));
         Try(checks, "memory", list => list.Add(CheckMemory(config)));
+        Try(checks, "tool profile", list => list.Add(CheckToolProfile(config)));
         Try(checks, "embedding", list => CheckEmbedding(home, embedding, environment, reachOut, client, list));
         Try(checks, "vector index", list => list.Add(CheckIndex(home, connection, embedding)));
         Try(checks, "token index", list => list.Add(CheckTokenIndex(connection)));
@@ -219,6 +220,43 @@ public static class Diagnostics
                 DiagnosisState.Ok,
                 $"precedence {MemorySettings.ToText(settings.Precedence)}"),
         };
+    }
+
+    /// <summary>
+    /// Which MCP tools a server connection advertises (docs/memory-expansion/03-tool-profiles-spec.md).
+    /// </summary>
+    /// <remarks>
+    /// Reads config directly and nothing else — no live connection is opened, so this reports
+    /// what the next <c>engram start</c> would register rather than what a running server already
+    /// did (D37). A malformed value warns the same way <see cref="CheckMemory"/> does, since the
+    /// fallback to <c>default</c> is silent otherwise. <c>default</c> and <c>full</c> are both
+    /// <see cref="DiagnosisState.Ok"/> — unlike an enabled/disabled axis such as sync or memory
+    /// precedence, neither profile is a deviation from a norm to flag: both are fully-supported,
+    /// deliberately-chosen configurations, and a diagnostic that reports a choice as a fault is
+    /// one people stop reading (D37).
+    /// </remarks>
+    private static Diagnosis CheckToolProfile(ConfigFile config)
+    {
+        var settings = ToolProfileSettings.Read(config);
+
+        if (settings.Problems.Count > 0)
+        {
+            return new Diagnosis(
+                "tool profile",
+                DiagnosisState.Warn,
+                settings.Problems[0],
+                $"engram profile set {string.Join('|', ToolProfileSettings.Names)}");
+        }
+
+        return settings.Profile == ToolProfile.Full
+            ? new Diagnosis(
+                "tool profile",
+                DiagnosisState.Ok,
+                "full — the MCP server also registers engram_start/engram_status/engram_stop")
+            : new Diagnosis(
+                "tool profile",
+                DiagnosisState.Ok,
+                "default — 8 tools; lifecycle tools (start/status/stop) are not registered");
     }
 
     /// <summary>
