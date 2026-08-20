@@ -440,9 +440,22 @@ CREATE TABLE fact_sync_request (
   requested_at INTEGER NOT NULL
 );
 
+-- ---------------------------------------------------------------------------
+-- Review-due marker (docs/memory-expansion/04-lifecycle-spec.md) — an
+-- explicit, caller-supplied reminder date. Side-table, not derived (D8's
+-- "derived from fact" sense does not apply: nothing in a fact's body encodes
+-- a chosen reminder date).
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE fact_review (
+  fact_id      INTEGER PRIMARY KEY REFERENCES fact(id),
+  review_after INTEGER NOT NULL,
+  set_at       INTEGER NOT NULL
+);
+
 
 CREATE TABLE schema_meta (key TEXT PRIMARY KEY, value TEXT);
-INSERT INTO schema_meta(key, value) VALUES ('schema_version', '11');
+INSERT INTO schema_meta(key, value) VALUES ('schema_version', '12');
 
 -- Built by a fresh CREATE, and pre-stamped ready: an empty table matches whatever
 -- FactTokenIndex.Rebuild would produce over zero facts, so a new store needs no rebuild pass.

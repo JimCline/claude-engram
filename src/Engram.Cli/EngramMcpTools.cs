@@ -24,6 +24,7 @@ public sealed class EngramMcpTools
         McpSessionId session,
         McpHomeState homeState,
         LocalRuntime local,
+        SessionPinStore pins,
         [Description("What you want to know, as a few keywords or a short question.")] string query,
         [Description("Maximum tokens to spend on the response. Defaults to 500.")] int? budget_tokens = null)
     {
@@ -47,7 +48,8 @@ public sealed class EngramMcpTools
         var vectorQuery = VectorLane.PrepareQuery(
             connection, home, EmbeddingSettings.Read(config), query, Environment.GetEnvironmentVariable, local);
 
-        var result = RecallRanker.Pack(connection, query, budget, settings.SeedK, currentSessionId, now, vectorQuery);
+        var result = RecallRanker.Pack(
+            connection, query, budget, settings.SeedK, currentSessionId, now, vectorQuery, pins.PinnedFor(session));
 
         if (homeState.Initialized)
         {
@@ -100,7 +102,8 @@ public sealed class EngramMcpTools
         [Description(
             "The bracketed id of a raw user-statement capture this restates, e.g. \"f42\". Closes that "
                 + "capture so the rewritten version replaces it instead of duplicating it.")] string? supersedes = null,
-        [Description("Flags for sync. Triggered by \"share engram\" plus content.")] bool sync = false)
+        [Description("Flags for sync. Triggered by \"share engram\" plus content.")] bool sync = false,
+        [Description("When to revisit this: a relative duration ('3d', '2w', '12h') or an ISO date. Surfaces in 'engram review list' and doctor once it passes.")] string? review_after = null)
     {
         if (!homeState.Initialized)
         {
@@ -110,6 +113,11 @@ public sealed class EngramMcpTools
         if (DetailsCeilingError(details) is { } ceilingError)
         {
             return ceilingError;
+        }
+
+        if (ReviewAfterError(review_after, out var reviewAfterUnix) is { } reviewAfterError)
+        {
+            return reviewAfterError;
         }
 
         // A restatement of something the user said replaces the capture in place — same
@@ -124,15 +132,25 @@ public sealed class EngramMcpTools
                 return $"'{supersedes}' is not a fact handle; they look like 'f42'. Nothing was saved.";
             }
 
+            var restateNow = DateTimeOffset.UtcNow;
             using var connection = EngramDatabase.OpenInitialized(home);
+            using var restateTransaction = EngramDatabase.BeginWrite(connection);
             var replacementId = UserFacts.Restate(
-                connection, targetId, statement, session.Value, DateTimeOffset.UtcNow, details: details, sync: sync);
+                connection, restateTransaction, targetId, statement, session.Value, restateNow, details: details, sync: sync);
 
             if (replacementId is null)
             {
+                restateTransaction.Rollback();
                 return $"No live fact with id '{supersedes}' to restate — it may already have been "
                     + "superseded or forgotten. Nothing was saved; call engram_recall to see what stands.";
             }
+
+            if (reviewAfterUnix is { } restateReviewAfter)
+            {
+                FactReview.Set(connection, restateTransaction, replacementId.Value, restateReviewAfter, restateNow.ToUnixTimeSeconds());
+            }
+
+            restateTransaction.Commit();
 
             Telemetry.Append(home, new TelemetryRecord(
                 Timestamp: DateTime.UtcNow.ToString("o"),
@@ -145,8 +163,32 @@ public sealed class EngramMcpTools
         long factId;
         using (var connection = EngramDatabase.OpenInitialized(home))
         {
-            factId = SessionFacts.Append(
-                connection, session.Value, statement, subject, evidence, agent, DateTimeOffset.UtcNow, details, sync);
+            var rememberNow = DateTimeOffset.UtcNow;
+            using var rememberTransaction = EngramDatabase.BeginWrite(connection);
+            bool isRepeat;
+            (factId, isRepeat) = SessionFacts.Append(
+                connection, rememberTransaction, session.Value, statement, subject, evidence, agent, rememberNow, details, sync);
+
+            if (isRepeat)
+            {
+                // Nothing new was written, so there is no fresh row for a review marker to be
+                // atomic with — set it as its own statement, same as before this fix.
+                rememberTransaction.Rollback();
+
+                if (reviewAfterUnix is { } repeatReviewAfter)
+                {
+                    FactReview.Set(connection, null, factId, repeatReviewAfter, rememberNow.ToUnixTimeSeconds());
+                }
+            }
+            else
+            {
+                if (reviewAfterUnix is { } factReviewAfter)
+                {
+                    FactReview.Set(connection, rememberTransaction, factId, factReviewAfter, rememberNow.ToUnixTimeSeconds());
+                }
+
+                rememberTransaction.Commit();
+            }
         }
 
         Telemetry.Append(home, new TelemetryRecord(
@@ -356,7 +398,8 @@ public sealed class EngramMcpTools
         [Description("Why the belief changed.")] string reason,
         [Description("Where the correction came from — a file, PR, or the user's words.")] string? evidence = null,
         [Description("Depth for the corrected fact. Does not carry forward from the old version — restate it or drop it deliberately.")] string? details = null,
-        [Description("Sync flag; omit inherits, else overrides.")] bool? sync = null)
+        [Description("Sync flag; omit inherits, else overrides.")] bool? sync = null,
+        [Description("When to revisit this: a relative duration ('3d', '2w', '12h') or an ISO date. Does not carry forward from the old version.")] string? review_after = null)
     {
         if (!homeState.Initialized)
         {
@@ -376,6 +419,11 @@ public sealed class EngramMcpTools
         if (DetailsCeilingError(details) is { } ceilingError)
         {
             return ceilingError;
+        }
+
+        if (ReviewAfterError(review_after, out var reviewAfterUnix) is { } reviewAfterError)
+        {
+            return reviewAfterError;
         }
 
         using var connection = EngramDatabase.OpenInitialized(home);
@@ -428,6 +476,11 @@ public sealed class EngramMcpTools
             if (carriesSyncFlag)
             {
                 FactSyncRequests.Insert(connection, transaction, result.FactId, now.ToUnixTimeSeconds());
+            }
+
+            if (reviewAfterUnix is { } revisedReviewAfter)
+            {
+                FactReview.Set(connection, transaction, result.FactId, revisedReviewAfter, now.ToUnixTimeSeconds());
             }
 
             transaction.Commit();
@@ -566,6 +619,46 @@ public sealed class EngramMcpTools
 
         return $"[{fact_id}] {normalizedRelation} [{related_id}]: {reason.Trim()}. "
             + "Recorded as a standalone verdict — neither fact was changed or closed.";
+    }
+
+    [McpServerTool(Name = "engram_pin")]
+    [Description(
+        "Pin a fact for this session: engram_recall guarantees it top position whenever the query " +
+        "matches it, without pulling it into results it would not otherwise match. Use it to keep a " +
+        "fact from being crowded out of the digest for the rest of a task where it keeps mattering. " +
+        "The pin does not persist past this session — engram_unpin releases it early.")]
+    public static string Pin(
+        SessionPinStore pins,
+        McpSessionId session,
+        [Description("The bracketed id of the fact to pin, e.g. \"f42\".")] string fact_id)
+    {
+        if (!FactCatalog.TryParseHandle(fact_id, out var factId))
+        {
+            return $"'{fact_id}' is not a fact handle; they look like 'f42'. Nothing was pinned.";
+        }
+
+        var added = pins.Pin(session, factId);
+        return added
+            ? $"[{fact_id}] pinned for this session."
+            : $"[{fact_id}] was already pinned for this session.";
+    }
+
+    [McpServerTool(Name = "engram_unpin")]
+    [Description("Release a fact pinned earlier this session with engram_pin. Pins that are never released end with the session anyway.")]
+    public static string Unpin(
+        SessionPinStore pins,
+        McpSessionId session,
+        [Description("The bracketed id of the fact to unpin, e.g. \"f42\".")] string fact_id)
+    {
+        if (!FactCatalog.TryParseHandle(fact_id, out var factId))
+        {
+            return $"'{fact_id}' is not a fact handle; they look like 'f42'. Nothing was unpinned.";
+        }
+
+        var removed = pins.Unpin(session, factId);
+        return removed
+            ? $"[{fact_id}] unpinned."
+            : $"[{fact_id}] was not pinned for this session. Nothing changed.";
     }
 
     private static void AppendChildren(System.Text.StringBuilder builder, BrowseNode node, string indent)
@@ -716,6 +809,27 @@ public sealed class EngramMcpTools
                 + "document; store where to find it (evidence, a path) rather than its contents. Nothing "
                 + "was stored."
             : null;
+    }
+
+    // Shared by engram_remember and engram_revise, mirroring DetailsCeilingError's shape: validated
+    // before any write so a bad review_after never leaves a partial save behind.
+    private static string? ReviewAfterError(string? reviewAfter, out long? reviewAfterUnix)
+    {
+        reviewAfterUnix = null;
+
+        if (reviewAfter is null)
+        {
+            return null;
+        }
+
+        if (!DurationParsing.TryParse(reviewAfter, DateTimeOffset.UtcNow, out var unixSeconds))
+        {
+            return $"'{reviewAfter}' is not a recognized duration or date — try e.g. '3d', '2w', '12h', "
+                + "or an ISO date. Nothing was saved.";
+        }
+
+        reviewAfterUnix = unixSeconds;
+        return null;
     }
 
     private static string ExpandDetails(StoredFact fact, int budgetTokens, int offset)

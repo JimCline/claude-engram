@@ -111,6 +111,10 @@ public static class BackupCommand
                 stdout.WriteLine(
                     $"Journalled {syncRequests} sync {(syncRequests == 1 ? "request" : "requests")} to "
                         + $"{SyncRequestJournal.FileName}.");
+
+                var reviews = ReviewJournal.Write(connection, home, DateTimeOffset.UtcNow);
+                stdout.WriteLine(
+                    $"Journalled {reviews} review {(reviews == 1 ? "marker" : "markers")} to {ReviewJournal.FileName}.");
             }
             catch (Exception exception) when (exception is IOException or Microsoft.Data.Sqlite.SqliteException)
             {
@@ -266,7 +270,8 @@ public static class BackupCommand
             stdout,
             stderr,
             includeRelations: true,
-            includeSyncRequests: true);
+            includeSyncRequests: true,
+            includeReview: true);
     }
 
     /// <summary>
@@ -282,7 +287,8 @@ public static class BackupCommand
         TextWriter stdout,
         TextWriter stderr,
         bool includeRelations = false,
-        bool includeSyncRequests = false)
+        bool includeSyncRequests = false,
+        bool includeReview = false)
     {
         if (!File.Exists(path))
         {
@@ -366,6 +372,15 @@ public static class BackupCommand
             }
         }
 
+        if (includeReview)
+        {
+            var replayed = ReplayReview(connection, home, path, facts, idMap, apply, stdout, stderr);
+            if (replayed.HasValue)
+            {
+                return replayed.Value;
+            }
+        }
+
         if (!apply)
         {
             stdout.WriteLine();
@@ -373,6 +388,81 @@ public static class BackupCommand
         }
 
         return 0;
+    }
+
+    /// <summary>
+    /// The review-marker half of <c>backup replay</c> — not <c>import</c>, which is a legacy
+    /// JSON-doc format with no review concept. Silent no-op when <c>review.jsonl</c> is absent,
+    /// since a journal written before spec 04 existed is not an error. Independent of
+    /// <see cref="ReplayRelations"/> and <see cref="ReplaySyncRequests"/>: no table references
+    /// another, so there is no ordering constraint between them.
+    /// </summary>
+    private static int? ReplayReview(
+        Microsoft.Data.Sqlite.SqliteConnection connection,
+        EngramHome home,
+        string factsPath,
+        IReadOnlyList<JournalFact> facts,
+        IReadOnlyDictionary<long, long> idMap,
+        bool apply,
+        TextWriter stdout,
+        TextWriter stderr)
+    {
+        var directory = Path.GetDirectoryName(factsPath);
+        var reviewPath = string.IsNullOrEmpty(directory)
+            ? ReviewJournal.PathIn(home)
+            : Path.Combine(directory, ReviewJournal.FileName);
+
+        if (!File.Exists(reviewPath))
+        {
+            return null;
+        }
+
+        IReadOnlyList<JournalReview> reviews;
+        int skipped;
+        try
+        {
+            reviews = ReviewJournal.Parse(File.ReadLines(reviewPath), out skipped);
+        }
+        catch (IOException exception)
+        {
+            stderr.WriteLine("error: could not read " + reviewPath + " — " + exception.Message);
+            return 1;
+        }
+
+        if (skipped > 0)
+        {
+            stderr.WriteLine(
+                $"warning: {skipped} unreadable {(skipped == 1 ? "line was" : "lines were")} skipped in {reviewPath}.");
+        }
+
+        if (reviews.Count == 0)
+        {
+            return null;
+        }
+
+        ReviewReplayResult result;
+        try
+        {
+            result = ReviewJournal.Replay(connection, reviews, facts, idMap, apply);
+        }
+        catch (Microsoft.Data.Sqlite.SqliteException exception)
+        {
+            stderr.WriteLine("error: review replay failed and nothing further was written — " + exception.Message);
+            return 1;
+        }
+
+        stdout.WriteLine(
+            $"{(apply ? "Wrote" : "Would write")} {result.Written} review {(result.Written == 1 ? "marker" : "markers")}"
+                + $", leaving {result.AlreadyPresent} already in the store.");
+
+        if (result.Unresolved > 0)
+        {
+            stdout.WriteLine(
+                $"  {result.Unresolved} review {(result.Unresolved == 1 ? "marker" : "markers")} referenced a fact "
+                    + "outside this journal and were skipped.");
+        }
+
+        return null;
     }
 
     /// <summary>

@@ -95,14 +95,46 @@ public static class SessionFacts
         bool sync = false)
     {
         using var transaction = EngramDatabase.BeginWrite(connection);
+        var (factId, isRepeat) = Append(
+            connection, transaction, sessionExternalId, statement, subject, evidence, agent, now, details, sync);
 
+        if (isRepeat)
+        {
+            transaction.Rollback();
+        }
+        else
+        {
+            transaction.Commit();
+        }
+
+        return factId;
+    }
+
+    /// <summary>
+    /// Writes a note inside a caller-supplied transaction, so it can land atomically with
+    /// another write — e.g. a review-due marker (docs/memory-expansion/04-lifecycle-spec.md).
+    /// The caller commits; <c>IsRepeat</c> tells it whether anything was actually written, since
+    /// a caller composing further writes onto this one has nothing new to make atomic with a
+    /// repeat, unlike the convenience overload above, which rolls itself back entirely.
+    /// </summary>
+    public static (long FactId, bool IsRepeat) Append(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        string sessionExternalId,
+        string statement,
+        string? subject,
+        string? evidence,
+        string? agent,
+        DateTimeOffset now,
+        string? details = null,
+        bool sync = false)
+    {
         var sessionId = SessionStore.EnsureSession(connection, transaction, sessionExternalId, now);
         var path = PathFor(sessionId, agent, statement);
 
         if (FactStore.FindLiveFactId(connection, transaction, path, Predicate) is { } existing)
         {
-            transaction.Rollback();
-            return existing;
+            return (existing, true);
         }
 
         var createdAt = now.ToUnixTimeSeconds();
@@ -153,8 +185,7 @@ public static class SessionFacts
             FactSyncRequests.Insert(connection, transaction, result.FactId, createdAt);
         }
 
-        transaction.Commit();
-        return result.FactId;
+        return (result.FactId, false);
     }
 
     /// <summary>

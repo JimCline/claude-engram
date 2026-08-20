@@ -17,15 +17,15 @@ namespace Engram.Integration.Tests;
 public class ToolProfileRegistrationTests
 {
     [Fact]
-    public void Default_RegistersExactlyEightTools()
+    public void Default_RegistersExactlyTenTools()
     {
-        Assert.Equal(8, ToolCountFor(ToolProfile.Default));
+        Assert.Equal(10, ToolCountFor(ToolProfile.Default));
     }
 
     [Fact]
-    public void Full_RegistersExactlyElevenTools()
+    public void Full_RegistersExactlyThirteenTools()
     {
-        Assert.Equal(11, ToolCountFor(ToolProfile.Full));
+        Assert.Equal(13, ToolCountFor(ToolProfile.Full));
     }
 
     // Falsify: hardcode ToolTypesFor to always return both types regardless of profile, confirm

@@ -39,6 +39,11 @@ Record a verdict on how two facts relate: supersedes, conflicts_with, scoped, or
   param: reason
   Why this verdict — what distinguishes or reconciles the two facts.
 
+tool: engram_pin
+Pin a fact for this session: engram_recall guarantees it top position whenever the query matches it, without pulling it into results it would not otherwise match. Use it to keep a fact from being crowded out of the digest for the rest of a task where it keeps mattering. The pin does not persist past this session — engram_unpin releases it early.
+  param: fact_id
+  The bracketed id of the fact to pin, e.g. "f42".
+
 tool: engram_recall
 Check memory BEFORE reading files or exploring the repo. Searches Engram's stored facts (decisions, conventions, gotchas, contracts) and returns a token-budgeted, ranked digest with fact handles and a coverage estimate. Call this first for any question about how this project works, what was decided, or why something is the way it is — it is far cheaper than rediscovering the answer by reading source.
   param: query
@@ -62,6 +67,8 @@ Engram's durable memory, and where anything worth keeping goes even when another
   The bracketed id of a raw user-statement capture this restates, e.g. "f42". Closes that capture so the rewritten version replaces it instead of duplicating it.
   param: sync
   Flags for sync. Triggered by "share engram" plus content.
+  param: review_after
+  When to revisit this: a relative duration ('3d', '2w', '12h') or an ISO date. Surfaces in 'engram review list' and doctor once it passes.
 
 tool: engram_revise
 Replace a stored belief with a corrected statement, recording why. The old fact is closed, never erased, and the new one takes its place in recall. Use it when the user or fresh evidence contradicts something stored; engram_forget retracts without a replacement.
@@ -77,4 +84,11 @@ Replace a stored belief with a corrected statement, recording why. The old fact 
   Depth for the corrected fact. Does not carry forward from the old version — restate it or drop it deliberately.
   param: sync
   Sync flag; omit inherits, else overrides.
+  param: review_after
+  When to revisit this: a relative duration ('3d', '2w', '12h') or an ISO date. Does not carry forward from the old version.
+
+tool: engram_unpin
+Release a fact pinned earlier this session with engram_pin. Pins that are never released end with the session anyway.
+  param: fact_id
+  The bracketed id of the fact to unpin, e.g. "f42".
 

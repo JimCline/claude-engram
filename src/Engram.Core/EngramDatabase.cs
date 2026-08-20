@@ -20,7 +20,7 @@ namespace Engram.Core;
 /// </remarks>
 public static class EngramDatabase
 {
-    public const int SchemaVersion = 11;
+    public const int SchemaVersion = 12;
 
     public const int BusyTimeoutMilliseconds = 5000;
 
@@ -444,6 +444,25 @@ public static class EngramDatabase
                 """);
 
             WriteMeta(connection, null, "schema_version", "11");
+        }
+
+        if (from < 12)
+        {
+            // Review-due marker (docs/memory-expansion/04-lifecycle-spec.md) — nothing added to
+            // `fact` (D8). A reminder date is an explicit, caller-supplied side fact, not derived
+            // from anything a fact's body already encodes.
+            Execute(
+                connection,
+                null,
+                """
+                CREATE TABLE fact_review (
+                  fact_id      INTEGER PRIMARY KEY REFERENCES fact(id),
+                  review_after INTEGER NOT NULL,
+                  set_at       INTEGER NOT NULL
+                );
+                """);
+
+            WriteMeta(connection, null, "schema_version", "12");
         }
     }
 

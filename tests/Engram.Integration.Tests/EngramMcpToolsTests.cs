@@ -23,7 +23,7 @@ public class EngramMcpToolsTests
         using var sandbox = new SandboxHome();
         var session = new McpSessionId("session-longterm");
 
-        var result = EngramMcpTools.Recall(sandbox.Home, session, Initialized, NoRuntime(sandbox.Home), "BEGIN IMMEDIATE transaction");
+        var result = EngramMcpTools.Recall(sandbox.Home, session, Initialized, NoRuntime(sandbox.Home), new SessionPinStore(), "BEGIN IMMEDIATE transaction");
 
         // Assert on words from the fact's BODY that do not appear in the query. Recall echoes
         // the query in its header line and again in its gap message, so asserting on a query
@@ -41,7 +41,7 @@ public class EngramMcpToolsTests
         var handle = HandleOf(EngramMcpTools.Remember(
             sandbox.Home, session, Initialized, NoRuntime(sandbox.Home), "The build pipeline retries flaky uploads three times before failing."));
 
-        var result = EngramMcpTools.Recall(sandbox.Home, session, Initialized, NoRuntime(sandbox.Home), "flaky uploads retries");
+        var result = EngramMcpTools.Recall(sandbox.Home, session, Initialized, NoRuntime(sandbox.Home), new SessionPinStore(), "flaky uploads retries");
 
         Assert.Contains($"[{handle}]", result);
         Assert.Contains("three times before failing", result);
@@ -58,7 +58,7 @@ public class EngramMcpToolsTests
         var handle = HandleOf(EngramMcpTools.Remember(
             sandbox.Home, writer, Initialized, NoRuntime(sandbox.Home), "The build pipeline retries flaky uploads three times before failing."));
 
-        var result = EngramMcpTools.Recall(sandbox.Home, reader, Initialized, NoRuntime(sandbox.Home), "flaky uploads retries");
+        var result = EngramMcpTools.Recall(sandbox.Home, reader, Initialized, NoRuntime(sandbox.Home), new SessionPinStore(), "flaky uploads retries");
 
         Assert.Contains($"[{handle}]", result);
         Assert.Contains("session · p1 ·", result);
@@ -78,7 +78,7 @@ public class EngramMcpToolsTests
         var currentHandle = HandleOf(EngramMcpTools.Remember(
             sandbox.Home, currentSession, Initialized, NoRuntime(sandbox.Home), "The nightly backup job now also verifies checksums."));
 
-        var result = EngramMcpTools.Recall(sandbox.Home, currentSession, Initialized, NoRuntime(sandbox.Home), "nightly backup job");
+        var result = EngramMcpTools.Recall(sandbox.Home, currentSession, Initialized, NoRuntime(sandbox.Home), new SessionPinStore(), "nightly backup job");
 
         var currentHandleIndex = result.IndexOf($"[{currentHandle}]", StringComparison.Ordinal);
         var priorHandleIndex = result.IndexOf($"[{priorHandle}]", StringComparison.Ordinal);
@@ -106,7 +106,7 @@ public class EngramMcpToolsTests
         // On the body, not the query: recall echoes the query in its header and again in the
         // gap message, so asserting the query terms are gone passes even when nothing was
         // retracted at all.
-        var result = EngramMcpTools.Recall(sandbox.Home, session, Initialized, NoRuntime(sandbox.Home), "flaky uploads retries");
+        var result = EngramMcpTools.Recall(sandbox.Home, session, Initialized, NoRuntime(sandbox.Home), new SessionPinStore(), "flaky uploads retries");
         Assert.DoesNotContain("three times before failing", result);
         Assert.DoesNotContain($"[{handle}]", result);
     }
@@ -130,7 +130,7 @@ public class EngramMcpToolsTests
 
         EngramMcpTools.Remember(sandbox.Home, session, Initialized, NoRuntime(sandbox.Home), "Ran the migration dry-run against staging.", agent: "migration-worker");
 
-        var result = EngramMcpTools.Recall(sandbox.Home, session, Initialized, NoRuntime(sandbox.Home), "migration dry-run staging");
+        var result = EngramMcpTools.Recall(sandbox.Home, session, Initialized, NoRuntime(sandbox.Home), new SessionPinStore(), "migration dry-run staging");
 
         Assert.Contains("session · migration-worker", result);
     }
@@ -165,7 +165,7 @@ public class EngramMcpToolsTests
         // check is on a longer phrase than the query — one that can only appear if the fact's
         // own body was actually returned.
         var result = EngramMcpTools.Recall(
-            sandbox.Home, session, Initialized, NoRuntime(sandbox.Home), "zebrafish migration");
+            sandbox.Home, session, Initialized, NoRuntime(sandbox.Home), new SessionPinStore(), "zebrafish migration");
         Assert.DoesNotContain("rare zebrafish migration pattern", result);
     }
 
@@ -304,7 +304,7 @@ public class EngramMcpToolsTests
         Assert.Contains("Nothing was stored", response);
 
         var result = EngramMcpTools.Recall(
-            sandbox.Home, session, Initialized, NoRuntime(sandbox.Home), "nightly backup job runs");
+            sandbox.Home, session, Initialized, NoRuntime(sandbox.Home), new SessionPinStore(), "nightly backup job runs");
         Assert.Contains("2am UTC", result);
         Assert.DoesNotContain("3am UTC", result);
     }
@@ -504,7 +504,7 @@ public class EngramMcpToolsTests
         var handle = $"f{factId}";
 
         var result = EngramMcpTools.Recall(
-            sandbox.Home, session, Initialized, NoRuntime(sandbox.Home), "zebrafinch flight pattern research");
+            sandbox.Home, session, Initialized, NoRuntime(sandbox.Home), new SessionPinStore(), "zebrafinch flight pattern research");
 
         Assert.Contains($"[{handle}]", result);
         Assert.Contains("…", result);
@@ -538,7 +538,7 @@ public class EngramMcpToolsTests
         var handle = $"f{factId}";
 
         var result = EngramMcpTools.Recall(
-            sandbox.Home, session, Initialized, NoRuntime(sandbox.Home), "kestrel migration route flyways");
+            sandbox.Home, session, Initialized, NoRuntime(sandbox.Home), new SessionPinStore(), "kestrel migration route flyways");
 
         Assert.Contains($"[{handle}] {body}", result);
         Assert.Contains("· +1.5k)", result);
@@ -555,7 +555,7 @@ public class EngramMcpToolsTests
             details: "Verification uses SHA-256 and compares against the manifest written at backup time."));
 
         var result = EngramMcpTools.Recall(
-            sandbox.Home, session, Initialized, NoRuntime(sandbox.Home), "nightly job verifies checksums");
+            sandbox.Home, session, Initialized, NoRuntime(sandbox.Home), new SessionPinStore(), "nightly job verifies checksums");
         var line = result.Split('\n').Single(l => l.Contains($"[{handle}]"));
 
         Assert.StartsWith($"[{handle}] The nightly job now also verifies checksums.", line);
@@ -578,7 +578,7 @@ public class EngramMcpToolsTests
             sandbox.Home, session, Initialized, NoRuntime(sandbox.Home), "The build pipeline retries flaky uploads three times before failing."));
 
         var result = EngramMcpTools.Recall(
-            sandbox.Home, session, Initialized, NoRuntime(sandbox.Home), "build pipeline retries flaky uploads");
+            sandbox.Home, session, Initialized, NoRuntime(sandbox.Home), new SessionPinStore(), "build pipeline retries flaky uploads");
         var line = result.Split('\n').Single(l => l.Contains($"[{handle}]"));
 
         Assert.Equal($"[{handle}] The build pipeline retries flaky uploads three times before failing. (session)", line);

@@ -106,6 +106,10 @@ internal static class ServeCommand
         // backlog and the query side share one server instead of loading the model twice.
         builder.Services.AddSingleton(_ => new LocalRuntime(home));
 
+        // Per-session pin (docs/memory-expansion/04-lifecycle-spec.md) — one store for the life of
+        // the server, keyed internally by McpSessionId, never persisted (D8).
+        builder.Services.AddSingleton<SessionPinStore>();
+
         // The singular embedding service. One server per home, so one embedder — no lock, no
         // second daemon. It self-disables when no provider is configured, which is the ordinary
         // case, so registering it unconditionally costs a started-and-returned task.

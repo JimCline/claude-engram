@@ -28,11 +28,17 @@ namespace Engram.Core;
 /// unconditionally, never selected from or dropped the way <paramref name="ExampleCandidates"/>
 /// is (D-1).
 /// </param>
+/// <param name="ReviewDueCount">
+/// Live facts whose <c>fact_review</c> date has passed (docs/memory-expansion/04-lifecycle-spec.md).
+/// Reuses this record's one-query read path rather than a new hook or query (D46); consumed by
+/// <c>doctor</c>, not rendered into the primer text itself.
+/// </param>
 public sealed record PrimerSummary(
     int FactCount,
     IReadOnlyDictionary<string, int> TopicCounts,
     IReadOnlyList<CannedFact> ExampleCandidates,
-    IReadOnlyList<string> Directives)
+    IReadOnlyList<string> Directives,
+    int ReviewDueCount = 0)
 {
     /// <summary>
     /// Counts a catalog already in memory — the shape every existing caller and test hands over.
@@ -99,8 +105,9 @@ public sealed record PrimerSummary(
         }
 
         var directives = DirectiveFacts.ReadLive(connection).Select(d => d.Body).ToList();
+        var reviewDueCount = FactReview.CountDue(connection, now.ToUnixTimeSeconds());
 
-        return new PrimerSummary(factCount, topicCounts, candidates, directives);
+        return new PrimerSummary(factCount, topicCounts, candidates, directives, reviewDueCount);
     }
 
     /// <remarks>

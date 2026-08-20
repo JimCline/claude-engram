@@ -121,6 +121,7 @@ public static class Diagnostics
         Try(checks, "claude code", list => list.Add(CheckClaudeCode(claudeSettingsPath ?? home.ClaudeSettingsPath)));
         Try(checks, "memory", list => list.Add(CheckMemory(config)));
         Try(checks, "tool profile", list => list.Add(CheckToolProfile(config)));
+        Try(checks, "review", list => list.Add(CheckReview(connection, DateTimeOffset.UtcNow)));
         Try(checks, "embedding", list => CheckEmbedding(home, embedding, environment, reachOut, client, list));
         Try(checks, "vector index", list => list.Add(CheckIndex(home, connection, embedding)));
         Try(checks, "token index", list => list.Add(CheckTokenIndex(connection)));
@@ -257,6 +258,29 @@ public static class Diagnostics
                 "tool profile",
                 DiagnosisState.Ok,
                 "default — 8 tools; lifecycle tools (start/status/stop) are not registered");
+    }
+
+    /// <summary>
+    /// Overdue review markers (docs/memory-expansion/04-lifecycle-spec.md). A deferred review is
+    /// a choice, not a fault (D37), so a non-zero due count is <see cref="DiagnosisState.Warn"/>,
+    /// never <see cref="DiagnosisState.Broken"/> — mirroring <see cref="CheckToolProfile"/>.
+    /// </summary>
+    private static Diagnosis CheckReview(SqliteConnection? connection, DateTimeOffset now)
+    {
+        if (connection is null)
+        {
+            return new Diagnosis("review", DiagnosisState.Warn, "no store to hold review markers yet");
+        }
+
+        var due = FactReview.CountDue(connection, now.ToUnixTimeSeconds());
+
+        return due == 0
+            ? new Diagnosis("review", DiagnosisState.Ok, "nothing due")
+            : new Diagnosis(
+                "review",
+                DiagnosisState.Warn,
+                $"{due} fact{(due == 1 ? string.Empty : "s")} past its review date",
+                "engram review list");
     }
 
     /// <summary>

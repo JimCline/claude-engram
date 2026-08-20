@@ -183,13 +183,41 @@ public static class UserFacts
         string? details = null,
         bool sync = false)
     {
+        using var transaction = EngramDatabase.BeginWrite(connection);
+        var factId = Restate(connection, transaction, targetFactId, statement, sessionExternalId, now, reason, details, sync);
+
+        if (factId is null)
+        {
+            transaction.Rollback();
+            return null;
+        }
+
+        transaction.Commit();
+        return factId;
+    }
+
+    /// <summary>
+    /// Writes the replacement inside a caller-supplied transaction, so it can land atomically
+    /// with another write — e.g. a review-due marker (docs/memory-expansion/04-lifecycle-spec.md).
+    /// The caller commits; returns null without writing anything if the target is not a live
+    /// fact, same as the convenience overload above.
+    /// </summary>
+    public static long? Restate(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        long targetFactId,
+        string statement,
+        string? sessionExternalId,
+        DateTimeOffset now,
+        string reason = "restated so it stands on its own",
+        string? details = null,
+        bool sync = false)
+    {
         var target = FactStore.ReadById(connection, targetFactId);
         if (target is null || target.ValidTo is not null)
         {
             return null;
         }
-
-        using var transaction = EngramDatabase.BeginWrite(connection);
 
         var sessionId = sessionExternalId is { Length: > 0 } external
             ? SessionStore.EnsureSession(connection, transaction, external, now)
@@ -217,7 +245,6 @@ public static class UserFacts
             FactSyncRequests.Insert(connection, transaction, result.FactId, now.ToUnixTimeSeconds());
         }
 
-        transaction.Commit();
         return result.FactId;
     }
 

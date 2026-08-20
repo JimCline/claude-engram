@@ -70,6 +70,8 @@ public static class RecallRanker
     /// </summary>
     private const string NoMatchSentinel = "\"zzz_engram_no_such_token_sentinel_zzz\"";
 
+    private static readonly IReadOnlySet<long> EmptyPinnedFactIds = new HashSet<long>();
+
     // Four stable texts (spec §2.2): built once per (overlap built?, vector available?, vec table
     // name) combination and held, so every recall in a process reuses the same CommandText instead
     // of paying to assemble it again. The vec table name is keyed in because it is not stable across
@@ -104,7 +106,8 @@ public static class RecallRanker
         long? currentSessionId,
         DateTimeOffset now,
         VectorLaneQuery vectorQuery,
-        int minCandidates = 0)
+        int minCandidates = 0,
+        IReadOnlySet<long>? pinnedFactIds = null)
     {
         ArgumentNullException.ThrowIfNull(connection);
         ArgumentNullException.ThrowIfNull(query);
@@ -168,6 +171,12 @@ public static class RecallRanker
         }
 
         var coverage = RecallEngine.ClassifyCoverage(matchedTotal, corroboratedTotal);
+
+        // A ranking boost among already-matched candidates, never a second relevance signal
+        // (D44/D60) — applied before ApplyBudget so a pinned fact's reordering is what the budget
+        // packs against, not an afterthought layered on top of an already-cut digest.
+        candidates = RecallEngine.ApplyPinBoost(candidates, pinnedFactIds ?? EmptyPinnedFactIds).ToList();
+
         var tokensUsed = RecallEngine.ApplyBudget(candidates, budgetTokens);
 
         return new RankOutcome(
@@ -193,9 +202,11 @@ public static class RecallRanker
         int seedK,
         long? currentSessionId,
         DateTimeOffset now,
-        VectorLaneQuery vectorQuery)
+        VectorLaneQuery vectorQuery,
+        IReadOnlySet<long>? pinnedFactIds = null)
     {
-        var outcome = Rank(connection, query, budgetTokens, seedK, currentSessionId, now, vectorQuery);
+        var outcome = Rank(
+            connection, query, budgetTokens, seedK, currentSessionId, now, vectorQuery, pinnedFactIds: pinnedFactIds);
 
         var includedLines = new List<string>();
         var sessionFactCount = 0;

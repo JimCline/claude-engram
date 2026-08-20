@@ -7,7 +7,7 @@ namespace Engram.EndToEnd.Tests;
 public class ToolProfileEndToEndTests
 {
     [Fact]
-    public async Task McpServer_UnderDefaultProfile_AdvertisesExactlyEightTools()
+    public async Task McpServer_UnderDefaultProfile_AdvertisesExactlyTenTools()
     {
         Assert.SkipUnless(EndToEndBinary.Path is not null, EndToEndBinary.SkipReason);
 
@@ -26,7 +26,7 @@ public class ToolProfileEndToEndTests
             var toolNames = await ToolNamesAsync(client, cancellationToken);
 
             Assert.Equal(
-                ["engram_browse", "engram_expand", "engram_forget", "engram_index_repo", "engram_judge", "engram_recall", "engram_remember", "engram_revise"],
+                ["engram_browse", "engram_expand", "engram_forget", "engram_index_repo", "engram_judge", "engram_pin", "engram_recall", "engram_remember", "engram_revise", "engram_unpin"],
                 toolNames);
         }
         finally
@@ -36,9 +36,9 @@ public class ToolProfileEndToEndTests
     }
 
     // Falsify: hardcode `.WithTools<EngramServerTools>()` unconditionally in ServeCommand and
-    // confirm this test starts failing (the count would read 11 rather than 8).
+    // confirm this test starts failing (the count would read 13 rather than 10).
     [Fact]
-    public async Task McpServer_UnderFullProfile_AdvertisesAllElevenTools()
+    public async Task McpServer_UnderFullProfile_AdvertisesAllThirteenTools()
     {
         Assert.SkipUnless(EndToEndBinary.Path is not null, EndToEndBinary.SkipReason);
 
@@ -60,7 +60,7 @@ public class ToolProfileEndToEndTests
             var toolNames = await ToolNamesAsync(client, cancellationToken);
 
             Assert.Equal(
-                ["engram_browse", "engram_expand", "engram_forget", "engram_index_repo", "engram_judge", "engram_recall", "engram_remember", "engram_revise", "engram_start", "engram_status", "engram_stop"],
+                ["engram_browse", "engram_expand", "engram_forget", "engram_index_repo", "engram_judge", "engram_pin", "engram_recall", "engram_remember", "engram_revise", "engram_start", "engram_status", "engram_stop", "engram_unpin"],
                 toolNames);
         }
         finally

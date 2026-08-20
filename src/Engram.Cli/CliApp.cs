@@ -56,6 +56,7 @@ public static class CliApp
             "repo" => RepoCommand.Run(homePath, rest, stdout, stderr),
             "queue" => QueueCommand.Run(homePath, rest, stdout, stderr),
             "repair" => RepairCommand.Run(homePath, rest, stdout, stderr),
+            "review" => ReviewCommand.Run(homePath, rest, stdout, stderr),
             "compact" => CompactCommand.Run(homePath, rest, stdout, stderr),
             "export" => ExportCommand.Run(homePath, rest, stdout, stderr),
             "import" => ImportCommand.Run(homePath, rest, stdout, stderr),
@@ -109,6 +110,7 @@ public static class CliApp
         writer.WriteLine("  repo <enroll|decline|later|reset|list> [path]  record or inspect the decision to keep a checkout indexed");
         writer.WriteLine("  queue <status|compact>             report the file-touched edit queue, or fold it down");
         writer.WriteLine("  repair [--apply]                   rebuild derived state — the lexical index, denormalized paths — never facts");
+        writer.WriteLine("  review <list|clear <id>> [--apply]  list facts with a review date set, or clear one");
         writer.WriteLine("  compact [--path <prefix>] [--apply]  prune regenerable code facts: closed ones, or a whole subtree with --path");
         writer.WriteLine("  export [--path <prefix>] [--out <file>]  write facts as a portable JSONL bundle (stdout by default)");
         writer.WriteLine("  import <file> [--apply]            add a bundle's facts; never rewrites or closes what the store already has");
