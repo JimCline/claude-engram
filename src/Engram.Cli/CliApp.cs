@@ -52,6 +52,8 @@ public static class CliApp
             "scan" => ScanCommand.Run(homePath, rest, stdout, stderr),
             "index" => IndexCommand.Run(homePath, rest, stdout, stderr),
             "explain" => ExplainCommand.Run(homePath, rest, stdout, stderr),
+            "timeline" => TimelineCommand.Run(homePath, rest, stdout, stderr),
+            "browse" => BrowseCommand.Run(homePath, rest, stdout, stderr),
             "backup" => BackupCommand.Run(homePath, rest, stdout, stderr),
             "repo" => RepoCommand.Run(homePath, rest, stdout, stderr),
             "queue" => QueueCommand.Run(homePath, rest, stdout, stderr),
@@ -106,6 +108,8 @@ public static class CliApp
         writer.WriteLine("  scan [path] [options]              report what indexing would read there, and what it would skip");
         writer.WriteLine("  index [path] [options]             turn a repo's files into code facts; incremental after the first run");
         writer.WriteLine("  explain <query> [options]          show why recall ranks what it ranks, and what it leaves out");
+        writer.WriteLine("  timeline <fact-id> [options]       facts recorded around one fact, across every subject");
+        writer.WriteLine("  browse                             walk the entity tree interactively; jump to timeline or history");
         writer.WriteLine("  backup <take|list|prune|restore|replay|import>  snapshot the store, or put the facts back");
         writer.WriteLine("  repo <enroll|decline|later|reset|list> [path]  record or inspect the decision to keep a checkout indexed");
         writer.WriteLine("  queue <status|compact>             report the file-touched edit queue, or fold it down");
@@ -161,6 +165,10 @@ public static class CliApp
         writer.WriteLine("  --budget <n>                       token budget to test against (default 500)");
         writer.WriteLine("  --limit <n>                        candidates to print (default 20)");
         writer.WriteLine("  --session <id>                     treat this host session's notes as working memory");
+        writer.WriteLine();
+        writer.WriteLine("timeline options:");
+        writer.WriteLine("  --before <n>                       facts to show before the anchor (default 5)");
+        writer.WriteLine("  --after <n>                        facts to show after the anchor (default 5)");
         writer.WriteLine();
         writer.WriteLine("model subcommands:");
         writer.WriteLine("  list                               show every model, its size and tradeoff, and whether it is installed");

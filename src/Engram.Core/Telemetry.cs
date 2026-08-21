@@ -12,6 +12,13 @@ public static class TelemetryEventKind
     public const string Expand = "expand";
     public const string Revise = "revise";
 
+    /// <summary>
+    /// An <c>engram timeline</c> CLI call. A single completion event, no phases — an instant
+    /// read rather than a background job, the same shape as <see cref="Recall"/>'s telemetry
+    /// (docs/memory-expansion/05-browse-tui-spec.md).
+    /// </summary>
+    public const string Timeline = "timeline";
+
     /// <summary>An <c>engram_judge</c> call recording a verdict between two facts.</summary>
     public const string Judge = "judge";
 
@@ -117,7 +124,7 @@ public static class TelemetryEventKind
     /// </remarks>
     public static IReadOnlyList<string> All { get; } =
     [
-        Recall, Remember, Digest, Browse, Expand, Revise, Judge,
+        Recall, Remember, Digest, Browse, Expand, Revise, Timeline, Judge,
         SessionStart, ServerStart, ServerStop, SessionOpen, SubagentStart, PreCompact, PostCompact,
         FileTouched, UserPrompt, MemoryGuard, Index, Embedding, Enrollment, Sync,
     ];

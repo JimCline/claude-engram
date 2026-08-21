@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using Microsoft.Data.Sqlite;
 
 namespace Engram.Core;
@@ -24,10 +25,11 @@ public static class MemoryBrowser
     public const int MaxDepth = 3;
 
     /// <summary>
-    /// One query for the whole subtree, folded into a tree in memory. The boundary is
-    /// MoveSubtree's — <c>substr</c>, not <c>LIKE</c>, because paths contain <c>%</c> and
-    /// <c>_</c> in ordinary filenames — and a child is the next segment across <c>/</c> or
-    /// <c>#</c>, so <c>/code/api-docs</c> never counts under <c>/code/api</c>.
+    /// One query for the whole subtree, accumulated into a tree in a single pass over the
+    /// rows as they stream from the reader (docs/memory-expansion/05b-browse-depth-bound-spec.md).
+    /// The boundary is MoveSubtree's — <c>substr</c>, not <c>LIKE</c>, because paths contain
+    /// <c>%</c> and <c>_</c> in ordinary filenames — and a child is the next segment across
+    /// <c>/</c> or <c>#</c>, so <c>/code/api-docs</c> never counts under <c>/code/api</c>.
     /// </summary>
     public static BrowseNode? Browse(SqliteConnection connection, string path, int depth)
     {
@@ -42,7 +44,22 @@ public static class MemoryBrowser
 
         depth = Math.Clamp(depth, 1, MaxDepth);
 
-        var counts = new Dictionary<string, int>(StringComparer.Ordinal);
+        // Root's separator is its own last character, so nothing precedes a root child's first
+        // segment: the prefix the boundary test measures from is empty, and each child's leading
+        // '/' is the separator that test looks for. Every other prefix ends in a segment, where
+        // this is the same string and the query is unchanged.
+        var prefix = normalized == "/" ? string.Empty : normalized;
+
+        // here/under hold exact-match and strict-descendant fact counts per path, and
+        // childrenOf holds each path's observed direct children — all three bounded to the
+        // paths actually reached while walking a row's segments up to `depth` deep, never to
+        // the full row count, so memory stops scaling with corpus size the way the prior
+        // materialize-then-refold approach did.
+        var here = new Dictionary<string, int>(StringComparer.Ordinal);
+        var under = new Dictionary<string, int>(StringComparer.Ordinal);
+        var childrenOf = new Dictionary<string, Dictionary<string, string>>(StringComparer.Ordinal);
+        var sawAnyRow = false;
+
         using (var command = connection.CreateCommand())
         {
             command.CommandText =
@@ -54,22 +71,89 @@ public static class MemoryBrowser
                    OR (substr(e.path, 1, $len) = $path AND substr(e.path, $len + 1, 1) IN ('/', '#'))
                 GROUP BY e.path;
                 """;
-            command.Parameters.AddWithValue("$path", normalized);
-            command.Parameters.AddWithValue("$len", normalized.Length);
+            command.Parameters.AddWithValue("$path", prefix);
+            command.Parameters.AddWithValue("$len", prefix.Length);
 
             using var reader = command.ExecuteReader();
             while (reader.Read())
             {
-                counts[reader.GetString(0)] = (int)reader.GetInt64(1);
+                sawAnyRow = true;
+                var rowPath = reader.GetString(0);
+                var count = (int)reader.GetInt64(1);
+
+                if (rowPath == prefix)
+                {
+                    CollectionsMarshal.GetValueRefOrAddDefault(here, prefix, out _) += count;
+                    continue;
+                }
+
+                // Root's own FactsUnder is unbounded by `depth` — every strict descendant
+                // counts toward it regardless of how many segments down it is.
+                CollectionsMarshal.GetValueRefOrAddDefault(under, prefix, out _) += count;
+
+                var currentPath = prefix;
+                for (var level = 1; level <= depth; level++)
+                {
+                    // rest/segment/display/childPath are spans over rowPath, not copies — a
+                    // node within depth is seen by every entity beneath it (up to 28,920 rows
+                    // for one node on the DEEP-50K fixture), so materializing a fresh string
+                    // per row here is what D-7 measured as ~889 B/entity of pure GC churn. The
+                    // separator sits immediately before the segment in rowPath itself, so a
+                    // '#' child's display span (which must keep the '#') is just one character
+                    // further left than a '/' child's (which must drop it) — no copy either way.
+                    var separator = rowPath[currentPath.Length];
+                    var afterSeparator = rowPath.AsSpan(currentPath.Length + 1);
+                    var segmentEnd = afterSeparator.IndexOfAny('/', '#');
+                    var segment = segmentEnd < 0 ? afterSeparator : afterSeparator[..segmentEnd];
+                    var display = separator == '#'
+                        ? rowPath.AsSpan(currentPath.Length, 1 + segment.Length)
+                        : segment;
+                    var childEnd = currentPath.Length + 1 + segment.Length;
+
+                    if (!childrenOf.TryGetValue(currentPath, out var siblings))
+                    {
+                        siblings = new Dictionary<string, string>(StringComparer.Ordinal);
+                        childrenOf[currentPath] = siblings;
+                    }
+
+                    // Only a node's first-seen row pays for a materialized string — every
+                    // later row reuses the exact instance already stored here, which is what
+                    // keeps allocation bounded to the node count within depth rather than the
+                    // row count.
+                    var siblingsLookup = siblings.GetAlternateLookup<ReadOnlySpan<char>>();
+                    if (!siblingsLookup.TryGetValue(display, out var childPath))
+                    {
+                        childPath = rowPath[..childEnd];
+                        siblingsLookup[display] = childPath;
+                    }
+
+                    if (childPath == rowPath)
+                    {
+                        CollectionsMarshal.GetValueRefOrAddDefault(here, childPath, out _) += count;
+                        break;
+                    }
+
+                    // Every visible node's FactsUnder is likewise the full arbitrary-depth
+                    // sum beneath it, not just what's within the remaining `depth` budget —
+                    // a row deeper than `depth` still folds into the deepest visible
+                    // ancestor's count on the last iteration of this loop.
+                    CollectionsMarshal.GetValueRefOrAddDefault(under, childPath, out _) += count;
+                    currentPath = childPath;
+                }
             }
         }
 
-        if (counts.Count == 0)
+        if (!sawAnyRow)
         {
             return null;
         }
 
-        return Fold(normalized, LastSegment(normalized), counts, depth);
+        var node = BuildNode(prefix, prefix.Length == 0 ? "/" : LastSegment(prefix), 0, depth, here, under, childrenOf);
+
+        // BuildNode addresses root as the empty prefix; every caller addresses it as "/" —
+        // BrowseCommand.Loop compares its own path against "/", prints node.Path in the header,
+        // and passes node.Path to TopFacts.
+        return prefix.Length == 0 ? node with { Path = normalized } : node;
     }
 
     /// <summary>Live facts at exactly this path, most salient first, newest breaking ties.</summary>
@@ -83,9 +167,7 @@ public static class MemoryBrowser
     {
         ArgumentNullException.ThrowIfNull(connection);
 
-        var facts = FactStore.ReadSubtree(connection, path)
-            .Where(f => f.SubjectPath == path.TrimEnd('/') && f.ValidTo is null)
-            .ToList();
+        var facts = FactStore.ReadAt(connection, path);
 
         if (facts.Count <= limit)
         {
@@ -158,55 +240,55 @@ public static class MemoryBrowser
         return scores;
     }
 
-    private static BrowseNode Fold(
+    private static BrowseNode BuildNode(
         string path,
         string name,
-        Dictionary<string, int> counts,
-        int depth)
+        int level,
+        int depth,
+        Dictionary<string, int> here,
+        Dictionary<string, int> under,
+        Dictionary<string, Dictionary<string, string>> childrenOf)
     {
-        var here = counts.GetValueOrDefault(path, 0);
+        var hereCount = here.GetValueOrDefault(path);
+        var underCount = under.GetValueOrDefault(path);
 
-        // Group every strict descendant by its next segment after this node.
-        var byChild = new Dictionary<string, (string ChildPath, int Facts)>(StringComparer.Ordinal);
-        foreach (var (entityPath, factCount) in counts)
+        if (level == depth || !childrenOf.TryGetValue(path, out var siblings))
         {
-            if (entityPath.Length <= path.Length
-                || !entityPath.StartsWith(path, StringComparison.Ordinal)
-                || entityPath[path.Length] is not ('/' or '#'))
-            {
-                continue;
-            }
-
-            var separator = entityPath[path.Length];
-            var rest = entityPath[(path.Length + 1)..];
-            var segmentEnd = rest.IndexOfAny(['/', '#']);
-            var segment = segmentEnd < 0 ? rest : rest[..segmentEnd];
-            var childPath = path + separator + segment;
-
-            var display = separator == '#' ? "#" + segment : segment;
-            byChild[display] = byChild.TryGetValue(display, out var existing)
-                ? (existing.ChildPath, existing.Facts + factCount)
-                : (childPath, factCount);
+            return new BrowseNode(path, name, hereCount, underCount, [], 0);
         }
 
-        var ordered = byChild
-            .OrderByDescending(pair => pair.Value.Facts)
-            .ThenBy(pair => pair.Key, StringComparer.Ordinal)
-            .ToList();
+        var unordered = siblings
+            .Select(pair => (
+                Display: pair.Key,
+                ChildPath: pair.Value,
+                Total: here.GetValueOrDefault(pair.Value) + under.GetValueOrDefault(pair.Value)));
+
+        var ordered = OrderChildren(unordered);
 
         var children = new List<BrowseNode>(Math.Min(ordered.Count, MaxChildrenShown));
-        foreach (var (display, (childPath, facts)) in ordered.Take(MaxChildrenShown))
+        foreach (var entry in ordered.Take(MaxChildrenShown))
         {
-            // FactsUnder is strict descendants on every node, whichever branch built it —
-            // the grouped sum includes the child's own facts, so they come back off here.
-            var childHere = counts.GetValueOrDefault(childPath, 0);
-            children.Add(depth > 1
-                ? Fold(childPath, display, counts, depth - 1)
-                : new BrowseNode(childPath, display, childHere, facts - childHere, [], 0));
+            children.Add(BuildNode(entry.ChildPath, entry.Display, level + 1, depth, here, under, childrenOf));
         }
 
-        var under = ordered.Sum(pair => pair.Value.Facts);
-        return new BrowseNode(path, name, here, under, children, Math.Max(0, ordered.Count - MaxChildrenShown));
+        return new BrowseNode(path, name, hereCount, underCount, children, Math.Max(0, ordered.Count - MaxChildrenShown));
+    }
+
+    /// <summary>
+    /// Sort order for a node's children: highest fact count first, ties broken ordinally by
+    /// display name. Exposed at internal visibility so a test can drive it directly with an
+    /// already-in-memory, arbitrarily-ordered sequence — the query's own row order is always
+    /// path-ascending (SQLite sorts on the GROUP BY column), which happens to coincide with
+    /// display-name-ordinal order for children of one parent, so a fixture built through
+    /// <see cref="Browse"/> can never exercise a tie the way this ordering intends.
+    /// </summary>
+    internal static List<(string Display, string ChildPath, int Total)> OrderChildren(
+        IEnumerable<(string Display, string ChildPath, int Total)> entries)
+    {
+        return entries
+            .OrderByDescending(entry => entry.Total)
+            .ThenBy(entry => entry.Display, StringComparer.Ordinal)
+            .ToList();
     }
 
     private static string LastSegment(string path)
