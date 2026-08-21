@@ -1,6 +1,9 @@
 # Memory expansion — high-level spec
 
-Status: design. Author: orchestrator, 2026-08-17.
+Status: shipped, 2026-08-21. Author: orchestrator, 2026-08-17. Features 1-4 and 7 built and
+committed; feature 5 (browse & timeline) built and committed 2026-08-21; feature 6 (export)
+scratched 2026-08-20, not built. All seven rows below are resolved — nothing left scheduled on
+this roadmap beyond the backlog item.
 Detailed specs: `docs/memory-expansion/*.md`, one per feature below.
 
 ## Context
