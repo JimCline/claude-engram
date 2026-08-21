@@ -809,6 +809,17 @@ priced into `file-touched`'s own budget already. Fails open everywhere (a state-
 allows; an unreadable config falls back to the default precedence rather than throwing), and
 `[memory] precedence = off` is the only switch — no second key (D66).
 
+**A guard that checks displayed output cannot protect the allocation shape that produced it.**
+`MemoryBrowser.Browse`'s row-processing loop (D-7, `docs/memory-expansion/05b-browse-depth-bound-spec.md`)
+walks `ReadOnlySpan<char>` slices of each row's path rather than allocating substrings, cutting
+transient allocation from ~889 B/entity to ~154 B/entity — measured, confirmed as the driving
+variable behind an early memory-slope anomaly during that spec's acceptance run. The equivalence
+suite that guards this code compares *displayed values*, so it is blind to how they were computed:
+reverting the span slicing to substring copies restores the full 5.8x allocation cost with every
+test still green. Read the loop before "simplifying" it, and re-verify with the 05b measurement
+protocol (repeated-call RSS over hundreds of calls, or `GC.GetTotalMemory(forceFullCollection:true)`
+before/after) rather than trusting the test suite alone.
+
 ## Build constraints
 
 - .NET 10, `net10.0`. Warnings are errors.
