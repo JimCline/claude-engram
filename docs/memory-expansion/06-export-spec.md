@@ -1,6 +1,7 @@
 # 06 — Export to notes
 
-Status: design, revised. Parent: `docs/memory-expansion-spec.md` row 6.
+Status: **scratched, 2026-08-20 — Jim's call, not built.** Parent: `docs/memory-expansion-spec.md`
+row 6. Left in place as design history; not on the implementation path.
 
 ## Goal
 
