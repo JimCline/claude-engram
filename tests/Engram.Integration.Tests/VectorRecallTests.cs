@@ -182,7 +182,8 @@ public sealed class VectorRecallTests : IDisposable
         WriteConfig(sandbox.Home, EmbeddingConfig(endpoint));
 
         var answer = EngramMcpTools.Recall(
-            sandbox.Home, new McpSessionId("s1"), new McpHomeState(false), NoRuntime(sandbox.Home), Query);
+            sandbox.Home, new McpSessionId("s1"), new McpHomeState(false), NoRuntime(sandbox.Home),
+            new SessionPinStore(), Query);
 
         Assert.Contains("backoff", answer, StringComparison.Ordinal);
     }
@@ -200,7 +201,8 @@ public sealed class VectorRecallTests : IDisposable
         WriteConfig(sandbox.Home, "[embedding]\nprovider = \"none\"\n");
 
         var answer = EngramMcpTools.Recall(
-            sandbox.Home, new McpSessionId("s1"), new McpHomeState(false), NoRuntime(sandbox.Home), Query);
+            sandbox.Home, new McpSessionId("s1"), new McpHomeState(false), NoRuntime(sandbox.Home),
+            new SessionPinStore(), Query);
 
         Assert.DoesNotContain("backoff", answer, StringComparison.Ordinal);
     }
@@ -221,7 +223,7 @@ public sealed class VectorRecallTests : IDisposable
 
         var answer = EngramMcpTools.Recall(
             sandbox.Home, new McpSessionId("s1"), new McpHomeState(false), NoRuntime(sandbox.Home),
-            "nightly vacuum");
+            new SessionPinStore(), "nightly vacuum");
 
         Assert.Contains("vacuum", answer, StringComparison.Ordinal);
     }

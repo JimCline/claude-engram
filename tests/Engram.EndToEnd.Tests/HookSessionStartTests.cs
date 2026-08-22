@@ -22,6 +22,101 @@ public class HookSessionStartTests
             .Where(record => record.GetProperty("kind").GetString() == "session-start")
             .ToList();
 
+    /// <summary>
+    /// Positive case for the <c>[sync] enabled</c> ambient gate (spec, "[sync] enabled gates
+    /// MaintenanceLauncher's automatic invocation"): with the flag on, the detached session-start
+    /// child's <c>sync export --if-due --apply</c> really does run against the published binary and
+    /// creates <c>&lt;home&gt;/sync/machine-id</c>. Paired with
+    /// <see cref="SessionStart_WithSyncDisabled_NeverCreatesTheSyncDirectory"/> so the gate can be
+    /// proven to fail by temporarily reverting it (Tier 1 covers the same claim at the script-text
+    /// level; this is the one place it is proven against a real shelled-out `engram sync export`).
+    /// </summary>
+    [Fact]
+    public void SessionStart_WithSyncEnabled_SpawnsTheAmbientSyncExport()
+    {
+        Assert.SkipUnless(EndToEndBinary.Path is not null, EndToEndBinary.SkipReason);
+
+        using var home = new TestHome();
+        File.AppendAllText(Path.Combine(home.Root, "config.toml"), "\n[sync]\nenabled = true\n");
+
+        var bundlePath = Path.Combine(Path.GetTempPath(), "engram-e2e-syncgate-" + Guid.NewGuid().ToString("N") + ".jsonl");
+        File.WriteAllLines(bundlePath,
+        [
+            """{"format":"engram-facts","format_version":1,"schema_version":9,"written_at":"2026-08-17T00:00:00Z"}""",
+            """{"id":1,"subject":"/project/x","kind":"note","predicate":"states","body":"ambient export body","object":null,"object_kind":null,"scope":"project","learned_via":"stated","regenerable":false,"evidence":null,"valid_from":1755388800,"valid_to":null,"superseded_by":null,"reason":null,"created_at":1755388800,"details":null}""",
+        ]);
+
+        try
+        {
+            var (seedCode, _, seedErr) = EngramProcess.Run(home.Root, "import", bundlePath, "--apply");
+            Assert.True(seedCode == 0, $"seed import exited {seedCode}: {seedErr}");
+
+            var (exitCode, _, stderr) = EngramProcess.Run(home.Root, "hook", "session-start");
+            Assert.Equal(0, exitCode);
+            Assert.Equal(string.Empty, stderr);
+
+            var machineIdPath = Path.Combine(home.Root, "sync", "machine-id");
+            var deadline = DateTime.UtcNow.AddSeconds(30);
+            while (!File.Exists(machineIdPath) && DateTime.UtcNow < deadline)
+            {
+                Thread.Sleep(200);
+            }
+
+            Assert.True(File.Exists(machineIdPath), "expected the detached session-start child's `sync export` to create <home>/sync/machine-id within 30s");
+        }
+        finally
+        {
+            File.Delete(bundlePath);
+        }
+    }
+
+    /// <summary>
+    /// Negative case: <c>[sync] enabled</c> defaults to false, and MaintenanceLauncher's
+    /// session-start script must omit all three sync lines entirely when it is off (spec,
+    /// resolved Open question 14) — the very defect this fix closes was a full unfiltered export
+    /// landing in &lt;home&gt;/sync/&lt;machine-id&gt;/1.jsonl for anyone who had never touched [sync].
+    /// Waits the same 30s the positive test uses to actually observe the directory appear, so a
+    /// reverted gate fails this test rather than racing it.
+    /// </summary>
+    [Fact]
+    public void SessionStart_WithSyncDisabled_NeverCreatesTheSyncDirectory()
+    {
+        Assert.SkipUnless(EndToEndBinary.Path is not null, EndToEndBinary.SkipReason);
+
+        using var home = new TestHome();
+        // [sync] enabled is never written, so it stays at its documented default (false).
+
+        var bundlePath = Path.Combine(Path.GetTempPath(), "engram-e2e-syncgate-" + Guid.NewGuid().ToString("N") + ".jsonl");
+        File.WriteAllLines(bundlePath,
+        [
+            """{"format":"engram-facts","format_version":1,"schema_version":9,"written_at":"2026-08-17T00:00:00Z"}""",
+            """{"id":1,"subject":"/project/x","kind":"note","predicate":"states","body":"must not be exported","object":null,"object_kind":null,"scope":"project","learned_via":"stated","regenerable":false,"evidence":null,"valid_from":1755388800,"valid_to":null,"superseded_by":null,"reason":null,"created_at":1755388800,"details":null}""",
+        ]);
+
+        try
+        {
+            var (seedCode, _, seedErr) = EngramProcess.Run(home.Root, "import", bundlePath, "--apply");
+            Assert.True(seedCode == 0, $"seed import exited {seedCode}: {seedErr}");
+
+            var (exitCode, _, stderr) = EngramProcess.Run(home.Root, "hook", "session-start");
+            Assert.Equal(0, exitCode);
+            Assert.Equal(string.Empty, stderr);
+
+            var syncDir = Path.Combine(home.Root, "sync");
+            var deadline = DateTime.UtcNow.AddSeconds(30);
+            while (!Directory.Exists(syncDir) && DateTime.UtcNow < deadline)
+            {
+                Thread.Sleep(200);
+            }
+
+            Assert.False(Directory.Exists(syncDir), "a session start with [sync] enabled = false (its default) must never create <home>/sync");
+        }
+        finally
+        {
+            File.Delete(bundlePath);
+        }
+    }
+
     [Fact]
     public void SessionStart_ExitsZero_EmitsValidJsonContract_PrimerUnder300Tokens()
     {

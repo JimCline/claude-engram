@@ -12,20 +12,22 @@ namespace Engram.Integration.Tests;
 /// </summary>
 public class McpToolSurfaceBudgetTests
 {
-    // Measured 3,964 characters across the seven tools in EngramMcpTools on 2026-08-13, when
-    // engram_index_repo joined (spec §6.6a-b) — the situational tools must not dilute
-    // recall's pitch, which is the funnel that matters. EngramServerTools's three tools
-    // (start/status/stop) are argued as cost in D17 but are not reflected over by
-    // ToolMethods() and are not counted in this figure — a separate, unmeasured gap. The
-    // +137 headroom is carried over from the previous ceiling's stated purpose of "ordinary
-    // wording changes"; raising this number is a deliberate edit that needs a reason in the
+    // Measured 5,610 characters across the ten tools in EngramMcpTools on 2026-08-20, when
+    // engram_pin and engram_unpin joined for per-session pin (docs/memory-expansion/04-lifecycle-
+    // spec.md) and engram_remember/engram_revise each gained a `review_after` parameter for the
+    // review-due marker from the same spec. This is the deliberate-feature-addition case the
+    // ceiling exists to let through, not the silent-drift case it otherwise guards against, so it
+    // is re-baselined off this measured actual rather than carrying forward unspent headroom.
+    // EngramServerTools's three tools (start/status/stop) are argued as cost in D17 but are
+    // not reflected over by ToolMethods() and are not counted in this figure — a separate,
+    // unmeasured gap. Raising this number is a deliberate edit that needs a reason in the
     // commit message, not a knob to turn when a description outgrows it.
-    private const int MaxDefinitionChars = 4101;
+    private const int MaxDefinitionChars = 5610;
 
-    // 6 -> 7 when engram_index_repo joined: it addresses a filesystem path and spawns a
-    // background process, which no existing tool can take as a parameter without changing
-    // that tool's addressing model (spec §6.6a-b).
-    private const int ExpectedToolCount = 7;
+    // 8 -> 10 when engram_pin and engram_unpin joined for per-session pin
+    // (docs/memory-expansion/04-lifecycle-spec.md): a pin's effect on ranking has to be callable
+    // independently of remember/revise/recall, so it cannot ride an existing tool's contract.
+    private const int ExpectedToolCount = 10;
 
     [Fact]
     public void ToolDefinitions_StayUnderCharacterCeiling()

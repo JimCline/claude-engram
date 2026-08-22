@@ -42,7 +42,10 @@ public class PrimerBuilderTests
     [InlineData("engram_index_repo")]
     public void Build_GuidanceLines_DoNotRestateToolDescriptions(string toolName)
     {
-        var primer = PrimerBuilder.Build(CannedFacts.All, Shipped);
+        var summary = PrimerSummary.From(CannedFacts.All);
+        Assert.Empty(summary.Directives);
+
+        var primer = PrimerBuilder.Build(summary, Shipped);
 
         var precedenceLines = Enum.GetValues<MemoryPrecedence>()
             .Select(MemorySettings.PrimerLine)
@@ -267,5 +270,111 @@ public class PrimerBuilderTests
         var primer = PrimerBuilder.BuildForSubagent(CannedFacts.All, Shipped);
 
         Assert.DoesNotContain("enroll it", primer, StringComparison.Ordinal);
+    }
+
+    // Every existing test above builds a primer through the (facts, precedence) overload,
+    // which routes through PrimerSummary.From and therefore always carries zero directives.
+    // A store with none must still render byte-identical to the primer this feature did not
+    // exist to change (D-1's fifth hazard) — this makes that explicit rather than leaving it
+    // as an unstated property of every other test's shared path.
+    [Fact]
+    public void Build_ZeroDirectives_MatchesThePrimerBuiltBeforeThisFeatureExisted()
+    {
+        var withExplicitEmptyDirectives = PrimerBuilder.Build(PrimerSummary.From(CannedFacts.All) with { Directives = [] }, Shipped);
+        var throughTheOldOverload = PrimerBuilder.Build(CannedFacts.All, Shipped);
+
+        Assert.Equal(throughTheOldOverload, withExplicitEmptyDirectives);
+    }
+
+    [Fact]
+    public void BuildForSubagent_ZeroDirectives_MatchesThePrimerBuiltBeforeThisFeatureExisted()
+    {
+        var withExplicitEmptyDirectives = PrimerBuilder.BuildForSubagent(PrimerSummary.From(CannedFacts.All) with { Directives = [] }, Shipped);
+        var throughTheOldOverload = PrimerBuilder.BuildForSubagent(CannedFacts.All, Shipped);
+
+        Assert.Equal(throughTheOldOverload, withExplicitEmptyDirectives);
+    }
+
+    [Fact]
+    public void Build_WithDirectives_RendersTheHeaderAndOneLinePerDirective()
+    {
+        var summary = PrimerSummary.From(CannedFacts.All) with
+        {
+            Directives = ["always use BEGIN IMMEDIATE for writes", "never commit directly to main"],
+        };
+
+        var primer = PrimerBuilder.Build(summary, Shipped);
+
+        Assert.Contains("Standing directives (complete; memory path /directives):", primer);
+        Assert.Contains("- always use BEGIN IMMEDIATE for writes", primer);
+        Assert.Contains("- never commit directly to main", primer);
+    }
+
+    // Reading order, not a drop priority (spec): the directive block sits right after the
+    // precedence line and ahead of everything else, including the enrollment offer.
+    [Fact]
+    public void Build_WithDirectives_ComesRightAfterPrecedenceAndBeforeEnrollmentAndCoverage()
+    {
+        var summary = PrimerSummary.From(CannedFacts.All) with { Directives = ["always use BEGIN IMMEDIATE for writes"] };
+
+        var primer = PrimerBuilder.Build(summary, Shipped, offerEnrollment: true);
+        var lines = primer.Split('\n');
+
+        var precedenceIndex = Array.IndexOf(lines, MemorySettings.PrimerLine(Shipped));
+        var directiveHeaderIndex = Array.FindIndex(lines, l => l.StartsWith("Standing directives", StringComparison.Ordinal));
+        var enrollmentIndex = Array.FindIndex(lines, l => l.Contains("enroll it", StringComparison.Ordinal));
+        var coverageIndex = Array.FindIndex(lines, l => l.StartsWith("Memory holds", StringComparison.Ordinal));
+
+        Assert.True(precedenceIndex < directiveHeaderIndex);
+        Assert.True(directiveHeaderIndex < enrollmentIndex);
+        Assert.True(directiveHeaderIndex < coverageIndex);
+    }
+
+    [Fact]
+    public void BuildForSubagent_WithDirectives_ComesAfterPrecedenceAndBeforeCoverage()
+    {
+        var summary = PrimerSummary.From(CannedFacts.All) with { Directives = ["always use BEGIN IMMEDIATE for writes"] };
+
+        var primer = PrimerBuilder.BuildForSubagent(summary, Shipped);
+        var lines = primer.Split('\n');
+
+        var precedenceIndex = Array.IndexOf(lines, MemorySettings.PrimerLine(Shipped));
+        var directiveHeaderIndex = Array.FindIndex(lines, l => l.StartsWith("Standing directives", StringComparison.Ordinal));
+        var coverageIndex = Array.FindIndex(lines, l => l.StartsWith("Memory holds", StringComparison.Ordinal));
+
+        Assert.True(precedenceIndex < directiveHeaderIndex);
+        Assert.True(directiveHeaderIndex < coverageIndex);
+    }
+
+    // D-1: a directive was authored deliberately, through its own CLI verb, and must never be
+    // silently dropped the way TryAppendLine drops an offered line that overruns the budget.
+    // Falsified by construction: MaxTokens is 300 and this alone estimates well past it, so if
+    // AppendDirectives ever started routing through TryAppendLine this would catch it going red.
+    [Fact]
+    public void Build_DirectivesThatWouldOverrunTheBudgetStillAllAppear()
+    {
+        var hugeDirective = string.Join(" ", Enumerable.Range(0, PrimerBuilder.MaxTokens * 4).Select(i => $"word{i}"));
+        var summary = PrimerSummary.From(CannedFacts.All) with { Directives = [hugeDirective] };
+
+        var primer = PrimerBuilder.Build(summary, Shipped);
+
+        Assert.Contains(hugeDirective, primer);
+        Assert.True(TokenEstimator.Estimate(primer) > PrimerBuilder.MaxTokens);
+    }
+
+    // A directive's own authored text can legitimately name a tool ("always call engram_recall
+    // before exploring") — it is user content, like an example fact body, not framework
+    // guidance. The D15 guard above is never exercised against nonzero directives because every
+    // test that feeds it routes through PrimerSummary.From, which always renders none; this does
+    // not widen that guard's exemption set, it documents that directive text sits outside its
+    // scope entirely rather than leaving that unstated.
+    [Fact]
+    public void Build_WithDirectives_ADirectiveMayNameATool()
+    {
+        var summary = PrimerSummary.From(CannedFacts.All) with { Directives = ["always call engram_recall before exploring files"] };
+
+        var primer = PrimerBuilder.Build(summary, Shipped);
+
+        Assert.Contains("engram_recall", primer, StringComparison.Ordinal);
     }
 }

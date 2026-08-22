@@ -20,7 +20,7 @@ namespace Engram.Core;
 /// </remarks>
 public static class EngramDatabase
 {
-    public const int SchemaVersion = 8;
+    public const int SchemaVersion = 12;
 
     public const int BusyTimeoutMilliseconds = 5000;
 
@@ -364,6 +364,105 @@ public static class EngramDatabase
                 """);
 
             WriteMeta(connection, null, "schema_version", "8");
+        }
+
+        if (from < 9)
+        {
+            // Cross-machine sync side tables (docs/memory-expansion/01-sync-spec.md) — nothing
+            // added to `fact`. Both are derived in the weak sense (D8): rebuildable by
+            // re-running `sync import` over the full chunk history.
+            Execute(
+                connection,
+                null,
+                """
+                CREATE TABLE sync_chunk_state (
+                  machine_id TEXT NOT NULL,
+                  seq        INTEGER NOT NULL,
+                  applied_at INTEGER NOT NULL,
+                  fact_count INTEGER NOT NULL,
+                  close_count INTEGER NOT NULL,
+                  PRIMARY KEY (machine_id, seq)
+                );
+
+                CREATE TABLE sync_deferred_close (
+                  subject_path TEXT NOT NULL,
+                  predicate    TEXT NOT NULL,
+                  body         TEXT NOT NULL,
+                  valid_from   INTEGER NOT NULL,
+                  valid_to     INTEGER NOT NULL,
+                  superseded_by_body TEXT,
+                  superseded_by_valid_from INTEGER,
+                  status TEXT NOT NULL DEFAULT 'deferred' CHECK (status IN ('deferred','stalled')),
+                  retry_count INTEGER NOT NULL DEFAULT 0,
+                  first_seen_at INTEGER NOT NULL,
+                  source_chunk TEXT NOT NULL,
+                  PRIMARY KEY (subject_path, predicate, body, valid_from)
+                );
+                """);
+
+            WriteMeta(connection, null, "schema_version", "9");
+        }
+
+        if (from < 10)
+        {
+            // Conflict verdicts (docs/memory-expansion/02-conflict-verdicts-spec.md) —
+            // nothing added to `fact` (D8). A verdict is an annotation, never a fact mutation.
+            Execute(
+                connection,
+                null,
+                """
+                CREATE TABLE fact_relation (
+                  id INTEGER PRIMARY KEY,
+                  fact_id    INTEGER NOT NULL REFERENCES fact(id),
+                  related_id INTEGER NOT NULL REFERENCES fact(id),
+                  relation   TEXT NOT NULL CHECK (relation IN
+                             ('supersedes','conflicts_with','scoped','not_conflict')),
+                  reason     TEXT,
+                  judged_at  INTEGER NOT NULL
+                );
+                CREATE INDEX ix_fact_relation_fact    ON fact_relation(fact_id);
+                CREATE INDEX ix_fact_relation_related ON fact_relation(related_id);
+                """);
+
+            WriteMeta(connection, null, "schema_version", "10");
+        }
+
+        if (from < 11)
+        {
+            // Scoped export (docs/memory-expansion/01-sync-spec.md) — an authored decision, not
+            // derived from `fact` or from the chunk history (D8's "derived state is repairable"
+            // does not cover this table), so it is insert-only like fact_relation rather than a
+            // column on `fact`.
+            Execute(
+                connection,
+                null,
+                """
+                CREATE TABLE fact_sync_request (
+                  fact_id      INTEGER NOT NULL PRIMARY KEY REFERENCES fact(id),
+                  requested_at INTEGER NOT NULL
+                );
+                """);
+
+            WriteMeta(connection, null, "schema_version", "11");
+        }
+
+        if (from < 12)
+        {
+            // Review-due marker (docs/memory-expansion/04-lifecycle-spec.md) — nothing added to
+            // `fact` (D8). A reminder date is an explicit, caller-supplied side fact, not derived
+            // from anything a fact's body already encodes.
+            Execute(
+                connection,
+                null,
+                """
+                CREATE TABLE fact_review (
+                  fact_id      INTEGER PRIMARY KEY REFERENCES fact(id),
+                  review_after INTEGER NOT NULL,
+                  set_at       INTEGER NOT NULL
+                );
+                """);
+
+            WriteMeta(connection, null, "schema_version", "12");
         }
     }
 

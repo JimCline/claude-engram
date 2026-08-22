@@ -17,7 +17,8 @@ public sealed record CannedFact(
     int AgeDays,
     string? Evidence = null,
     int Versions = 1,
-    int DetailsChars = 0);
+    int DetailsChars = 0,
+    bool Judged = false);
 
 public static class CannedFacts
 {

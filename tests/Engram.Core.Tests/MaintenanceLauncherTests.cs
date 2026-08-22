@@ -26,7 +26,7 @@ public class MaintenanceLauncherTests
     [Fact]
     public void TheShellsOwnDescriptorsAreReplaced_BeforeItRunsAnything()
     {
-        var script = MaintenanceLauncher.BuildScript(Executable, Home, indexRoot: null);
+        var script = MaintenanceLauncher.BuildScript(Executable, Home, syncEnabled: true, indexRoot: null);
 
         Assert.StartsWith(MaintenanceLauncher.Redirect, script, StringComparison.Ordinal);
         Assert.True(
@@ -46,7 +46,7 @@ public class MaintenanceLauncherTests
     public void EveryStandardDescriptorIsRedirected(string redirection) =>
         Assert.Contains(
             redirection,
-            MaintenanceLauncher.BuildScript(Executable, Home, indexRoot: null),
+            MaintenanceLauncher.BuildScript(Executable, Home, syncEnabled: true, indexRoot: null),
             StringComparison.Ordinal);
 
     /// <summary>
@@ -57,10 +57,28 @@ public class MaintenanceLauncherTests
     [InlineData("backup take --if-due")]
     [InlineData("queue compact --apply --if-large")]
     [InlineData("repair --apply --tokens")]
+    [InlineData("sync import --if-new --apply")]
+    [InlineData("sync export --if-due --apply")]
     public void EveryJobRunsWithItsOwnIdleGuard(string job) =>
         Assert.Contains(
             job,
-            MaintenanceLauncher.BuildScript(Executable, Home, indexRoot: null),
+            MaintenanceLauncher.BuildScript(Executable, Home, syncEnabled: true, indexRoot: null),
+            StringComparison.Ordinal);
+
+    /// <summary>
+    /// `[sync] enabled` defaults to false and creates nothing on its own — the ambient
+    /// session-start script must omit all three sync lines entirely when it is off, or the very
+    /// first automatic export writes a full unfiltered copy of the store to
+    /// <c>&lt;home&gt;/sync/&lt;machine-id&gt;/1.jsonl</c> for anyone who has never touched [sync].
+    /// </summary>
+    [Theory]
+    [InlineData("sync import")]
+    [InlineData("sync export")]
+    [InlineData("sync compact")]
+    public void SyncJobsAreOmittedEntirely_WhenSyncIsNotEnabled(string job) =>
+        Assert.DoesNotContain(
+            job,
+            MaintenanceLauncher.BuildScript(Executable, Home, syncEnabled: false, indexRoot: null),
             StringComparison.Ordinal);
 
     [Fact]
@@ -68,11 +86,11 @@ public class MaintenanceLauncherTests
     {
         Assert.DoesNotContain(
             "index --drain",
-            MaintenanceLauncher.BuildScript(Executable, Home, indexRoot: null),
+            MaintenanceLauncher.BuildScript(Executable, Home, syncEnabled: true, indexRoot: null),
             StringComparison.Ordinal);
         Assert.Contains(
             "index --drain-all --apply --auto '/repo'",
-            MaintenanceLauncher.BuildScript(Executable, Home, "/repo"),
+            MaintenanceLauncher.BuildScript(Executable, Home, syncEnabled: true, "/repo"),
             StringComparison.Ordinal);
     }
 
@@ -84,7 +102,7 @@ public class MaintenanceLauncherTests
     [Fact]
     public void TheFreshenSelfHealFollowsTheDrainAllJob_ForSessionStartOnly()
     {
-        var script = MaintenanceLauncher.BuildScript(Executable, Home, "/repo");
+        var script = MaintenanceLauncher.BuildScript(Executable, Home, syncEnabled: true, "/repo");
 
         var drainAllAt = script.IndexOf("index --drain-all --apply --auto '/repo'", StringComparison.Ordinal);
         var freshenAt = script.IndexOf("index --freshen --apply --skip '/repo'", StringComparison.Ordinal);
@@ -95,7 +113,7 @@ public class MaintenanceLauncherTests
         Assert.DoesNotContain(
             "--freshen",
             MaintenanceLauncher.BuildScript(
-                Executable, Home, "/repo", MaintenanceLauncher.MaintenanceJobs.EnrollmentIndex),
+                Executable, Home, syncEnabled: true, "/repo", MaintenanceLauncher.MaintenanceJobs.EnrollmentIndex),
             StringComparison.Ordinal);
     }
 
@@ -105,7 +123,7 @@ public class MaintenanceLauncherTests
     [Fact]
     public void APathCarryingAQuoteStaysOneWord()
     {
-        var script = MaintenanceLauncher.BuildScript(Executable, "/home/o'brien/.engram", null);
+        var script = MaintenanceLauncher.BuildScript(Executable, "/home/o'brien/.engram", syncEnabled: true, null);
 
         Assert.Contains(@"'/home/o'\''brien/.engram'", script, StringComparison.Ordinal);
     }
@@ -118,7 +136,7 @@ public class MaintenanceLauncherTests
     public void EnrollmentIndex_ContainsTheIndexJob_WithNoAutoAndNoFull()
     {
         var script = MaintenanceLauncher.BuildScript(
-            Executable, Home, "/repo", MaintenanceLauncher.MaintenanceJobs.EnrollmentIndex);
+            Executable, Home, syncEnabled: true, "/repo", MaintenanceLauncher.MaintenanceJobs.EnrollmentIndex);
 
         Assert.Contains("index --drain --apply '/repo'", script, StringComparison.Ordinal);
         Assert.DoesNotContain("--auto", script, StringComparison.Ordinal);
@@ -134,11 +152,12 @@ public class MaintenanceLauncherTests
     public void EnrollmentIndex_RunsNoSessionStartHousekeeping()
     {
         var script = MaintenanceLauncher.BuildScript(
-            Executable, Home, "/repo", MaintenanceLauncher.MaintenanceJobs.EnrollmentIndex);
+            Executable, Home, syncEnabled: true, "/repo", MaintenanceLauncher.MaintenanceJobs.EnrollmentIndex);
 
         Assert.DoesNotContain("backup take", script, StringComparison.Ordinal);
         Assert.DoesNotContain("queue compact", script, StringComparison.Ordinal);
         Assert.DoesNotContain("repair", script, StringComparison.Ordinal);
+        Assert.DoesNotContain("sync", script, StringComparison.Ordinal);
     }
 
     /// <summary>
@@ -150,7 +169,7 @@ public class MaintenanceLauncherTests
     [InlineData(MaintenanceLauncher.MaintenanceJobs.EnrollmentIndex)]
     public void RedirectLeadsTheScript_ForEveryJobsValue(MaintenanceLauncher.MaintenanceJobs jobs)
     {
-        var script = MaintenanceLauncher.BuildScript(Executable, Home, "/repo", jobs);
+        var script = MaintenanceLauncher.BuildScript(Executable, Home, syncEnabled: true, "/repo", jobs);
 
         Assert.StartsWith(MaintenanceLauncher.Redirect, script, StringComparison.Ordinal);
     }

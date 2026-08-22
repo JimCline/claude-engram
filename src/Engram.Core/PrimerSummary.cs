@@ -23,10 +23,22 @@ namespace Engram.Core;
 /// A superset of everything <see cref="PrimerBuilder"/> can choose as an example, in catalog
 /// order (ascending fact id).
 /// </param>
+/// <param name="Directives">
+/// Live directives (<see cref="DirectiveFacts"/>), oldest first — delivered in full and
+/// unconditionally, never selected from or dropped the way <paramref name="ExampleCandidates"/>
+/// is (D-1).
+/// </param>
+/// <param name="ReviewDueCount">
+/// Live facts whose <c>fact_review</c> date has passed (docs/memory-expansion/04-lifecycle-spec.md).
+/// Reuses this record's one-query read path rather than a new hook or query (D46); consumed by
+/// <c>doctor</c>, not rendered into the primer text itself.
+/// </param>
 public sealed record PrimerSummary(
     int FactCount,
     IReadOnlyDictionary<string, int> TopicCounts,
-    IReadOnlyList<CannedFact> ExampleCandidates)
+    IReadOnlyList<CannedFact> ExampleCandidates,
+    IReadOnlyList<string> Directives,
+    int ReviewDueCount = 0)
 {
     /// <summary>
     /// Counts a catalog already in memory — the shape every existing caller and test hands over.
@@ -39,7 +51,7 @@ public sealed record PrimerSummary(
             topicCounts[fact.Topic] = topicCounts.GetValueOrDefault(fact.Topic) + 1;
         }
 
-        return new PrimerSummary(facts.Count, topicCounts, facts);
+        return new PrimerSummary(facts.Count, topicCounts, facts, Directives: []);
     }
 
     /// <summary>
@@ -57,6 +69,7 @@ public sealed record PrimerSummary(
     {
         var topicNames = FactStore.ReadEntityNames(connection, CannedFactSeeder.TopicKind);
         var sessionPrefix = SessionFacts.Root + "/";
+        var directivePrefix = DirectiveFacts.Root + "/";
 
         var factCount = 0;
         var topicCounts = new Dictionary<string, int>(StringComparer.Ordinal);
@@ -64,7 +77,7 @@ public sealed record PrimerSummary(
         using (var command = connection.CreateCommand())
         {
             command.CommandText = TopicHistogramSql;
-            BindSessionExclusion(command, sessionPrefix);
+            BindExclusions(command, sessionPrefix, directivePrefix);
 
             using var reader = command.ExecuteReader();
             while (reader.Read())
@@ -80,7 +93,7 @@ public sealed record PrimerSummary(
         using (var command = connection.CreateCommand())
         {
             command.CommandText = ExampleCandidatesSql;
-            BindSessionExclusion(command, sessionPrefix);
+            BindExclusions(command, sessionPrefix, directivePrefix);
             command.Parameters.AddWithValue("$limit", PrimerBuilder.MaxExampleFacts);
 
             using var reader = command.ExecuteReader();
@@ -91,7 +104,10 @@ public sealed record PrimerSummary(
             }
         }
 
-        return new PrimerSummary(factCount, topicCounts, candidates);
+        var directives = DirectiveFacts.ReadLive(connection).Select(d => d.Body).ToList();
+        var reviewDueCount = FactReview.CountDue(connection, now.ToUnixTimeSeconds());
+
+        return new PrimerSummary(factCount, topicCounts, candidates, directives, reviewDueCount);
     }
 
     /// <remarks>
@@ -100,12 +116,17 @@ public sealed record PrimerSummary(
     /// <c>entity.path</c> declares no collation, so SQLite compares it BINARY — which is what
     /// the <see cref="StringComparison.Ordinal"/> exclusion in
     /// <see cref="FactCatalog.ReadLongTerm(SqliteConnection, DateTimeOffset)"/> does. That
-    /// equivalence is required; do not add a COLLATE.
+    /// equivalence is required; do not add a COLLATE. Directives are excluded here too, by the
+    /// same mechanism rather than a second one beside it: they are their own delivery channel
+    /// (D-1), so they must not also inflate <see cref="PrimerSummary.FactCount"/>,
+    /// <see cref="PrimerSummary.TopicCounts"/>, or appear a second time as an "Examples:" line.
     /// </remarks>
-    private static void BindSessionExclusion(SqliteCommand command, string sessionPrefix)
+    private static void BindExclusions(SqliteCommand command, string sessionPrefix, string directivePrefix)
     {
         command.Parameters.AddWithValue("$plen", sessionPrefix.Length);
         command.Parameters.AddWithValue("$prefix", sessionPrefix);
+        command.Parameters.AddWithValue("$dplen", directivePrefix.Length);
+        command.Parameters.AddWithValue("$dprefix", directivePrefix);
     }
 
     private const string TopicHistogramSql =
@@ -115,6 +136,7 @@ public sealed record PrimerSummary(
           JOIN entity e ON e.id = f.subject_id
          WHERE f.valid_to IS NULL
            AND substr(e.path, 1, $plen) <> $prefix
+           AND substr(e.path, 1, $dplen) <> $dprefix
          GROUP BY e.path;
         """;
 
@@ -148,6 +170,7 @@ public sealed record PrimerSummary(
                           JOIN entity se ON se.id = sf.subject_id
                          WHERE sf.valid_to IS NULL
                            AND substr(se.path, 1, $plen) <> $prefix
+                           AND substr(se.path, 1, $dplen) <> $dprefix
                          GROUP BY sf.scope
                         UNION
                         SELECT id
@@ -156,6 +179,7 @@ public sealed record PrimerSummary(
                                   JOIN entity ne ON ne.id = nf.subject_id
                                  WHERE nf.valid_to IS NULL
                                    AND substr(ne.path, 1, $plen) <> $prefix
+                                   AND substr(ne.path, 1, $dplen) <> $dprefix
                                  ORDER BY nf.id
                                  LIMIT $limit))
          ORDER BY f.id;

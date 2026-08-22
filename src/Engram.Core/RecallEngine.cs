@@ -49,7 +49,8 @@ public sealed record RecallCandidate(
     int? VectorRank,
     FactOrigin Origin,
     int Tokens,
-    bool Packed);
+    bool Packed,
+    bool Pinned = false);
 
 /// <summary>
 /// What <see cref="RecallEngine.Pack(string, IReadOnlyList{CannedFact}, IReadOnlyList{SessionFact}, IReadOnlyList{SessionFact}, int)"/>
@@ -534,6 +535,46 @@ public static class RecallEngine
         return tokensUsed;
     }
 
+    /// <summary>
+    /// Reorders already-matched candidates so a pinned fact sorts first within its origin tier —
+    /// never a way to inject a fact into results it would not otherwise match (D44/D60,
+    /// docs/memory-expansion/04-lifecycle-spec.md). Returns <paramref name="candidates"/> unchanged
+    /// when nothing is pinned, which is also the shape a query with no lane match for a pinned
+    /// fact needs: nothing is added, so it returns nothing extra.
+    /// </summary>
+    internal static IReadOnlyList<RecallCandidate> ApplyPinBoost(
+        IReadOnlyList<RecallCandidate> candidates, IReadOnlySet<long> pinnedFactIds)
+    {
+        ArgumentNullException.ThrowIfNull(candidates);
+        ArgumentNullException.ThrowIfNull(pinnedFactIds);
+
+        if (pinnedFactIds.Count == 0)
+        {
+            return candidates;
+        }
+
+        return candidates
+            .Select((candidate, index) => (Candidate: MarkIfPinned(candidate, pinnedFactIds), Index: index))
+            // Origin-tier grouping mirrors the two-tier split RecallRanker's SQL and BuildCandidates
+            // both use — current session first, everything else fused together — not FactOrigin's
+            // raw three-value declaration order, which would wrongly split LongTerm from
+            // PriorSession into separate tiers.
+            .OrderBy(x => x.Candidate.Origin == FactOrigin.CurrentSession ? 0 : 1)
+            .ThenByDescending(x => x.Candidate.Pinned)
+            .ThenBy(x => x.Index)
+            .Select(x => x.Candidate)
+            .ToList();
+    }
+
+    private static RecallCandidate MarkIfPinned(RecallCandidate candidate, IReadOnlySet<long> pinnedFactIds) =>
+        candidate.FactId is { } id && pinnedFactIds.Contains(id)
+            ? candidate with { Line = MarkPinned(candidate.Line), Pinned = true }
+            : candidate;
+
+    /// <summary>The <c>· pinned</c> marker, following D57's <c>· v2</c> "advertise, don't inline" pattern.</summary>
+    private static string MarkPinned(string line) =>
+        line.EndsWith(')') ? line[..^1] + " · pinned)" : line + " · pinned";
+
     // p1, p2, … so the model can tell which notes came from the same earlier session. Ids
     // are globally unique now and carry no such grouping on their own, and "these three
     // findings are from one sitting" is information a reader acts on.
@@ -596,10 +637,10 @@ public static class RecallEngine
     {
         var (shownBody, withheldBodyChars) = TruncateBody(fact.Body);
         var marker = MarkerFor(withheldBodyChars + fact.DetailsChars);
+        var version = fact.Versions > 1 ? $" · v{fact.Versions}" : string.Empty;
+        var judged = fact.Judged ? " · judged" : string.Empty;
 
-        return fact.Versions > 1
-            ? $"[{fact.Id}] {shownBody} ({fact.Scope} · {fact.AgeDays}d · v{fact.Versions}{marker})"
-            : $"[{fact.Id}] {shownBody} ({fact.Scope} · {fact.AgeDays}d{marker})";
+        return $"[{fact.Id}] {shownBody} ({fact.Scope} · {fact.AgeDays}d{version}{judged}{marker})";
     }
 
     /// <summary>

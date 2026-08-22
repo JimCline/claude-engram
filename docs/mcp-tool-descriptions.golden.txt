@@ -28,6 +28,22 @@ Record the user's answer on indexing this checkout: enroll, decline (stop asking
   param: decision
   enroll, decline, or later.
 
+tool: engram_judge
+Record a verdict on how two facts relate: supersedes, conflicts_with, scoped, or not_conflict. Call it after engram_recall or engram_expand surfaces two facts that might disagree, to settle which one stands and why. The verdict is recorded alongside both facts — neither is changed or closed by it — and shows up under engram_expand ... history for either one.
+  param: fact_id
+  The bracketed id of the fact being judged, e.g. "f42".
+  param: related_id
+  The bracketed id of the fact it is being compared against, e.g. "f17".
+  param: relation
+  One of: supersedes, conflicts_with, scoped, not_conflict.
+  param: reason
+  Why this verdict — what distinguishes or reconciles the two facts.
+
+tool: engram_pin
+Pin a fact for this session: engram_recall guarantees it top position whenever the query matches it, without pulling it into results it would not otherwise match. Use it to keep a fact from being crowded out of the digest for the rest of a task where it keeps mattering. The pin does not persist past this session — engram_unpin releases it early.
+  param: fact_id
+  The bracketed id of the fact to pin, e.g. "f42".
+
 tool: engram_recall
 Check memory BEFORE reading files or exploring the repo. Searches Engram's stored facts (decisions, conventions, gotchas, contracts) and returns a token-budgeted, ranked digest with fact handles and a coverage estimate. Call this first for any question about how this project works, what was decided, or why something is the way it is — it is far cheaper than rediscovering the answer by reading source.
   param: query
@@ -36,7 +52,7 @@ Check memory BEFORE reading files or exploring the repo. Searches Engram's store
   Maximum tokens to spend on the response. Defaults to 500.
 
 tool: engram_remember
-Engram's durable memory, and where anything worth keeping goes even when another memory system is available. Call it when the user asks you to remember or save something, and whenever you learn something durable: a decision, a constraint, a partial result, a dead end already ruled out — state you would otherwise repeat in context and would lose to compaction. `engram_recall` ranks these above long-term memory for the rest of this session, and they stay recallable in later ones, so this is for anything still true next week rather than only the next ten minutes. Subagents pass their own name in `agent`. When restating something the user just said, pass the bracketed id of its automatic capture in `supersedes` so the rewrite replaces it rather than duplicating it.
+Engram's durable memory, and where anything worth keeping goes even when another memory system is available. Call it when the user asks you to remember or save something, and whenever you learn something durable: a decision, a constraint, a partial result, a dead end already ruled out — state you would otherwise repeat in context and would lose to compaction. `engram_recall` ranks these above long-term memory for the rest of this session, and they stay recallable in later ones, so this is for anything still true next week rather than only the next ten minutes. Subagents pass their own name in `agent`. When restating something the user just said, pass the bracketed id of its automatic capture in `supersedes` so the rewrite replaces it rather than duplicating it. When candidates are enabled, also returns up to 3 similar live facts already stored, for a follow-up engram_judge call.
   param: statement
   The fact to remember, as a short, self-contained statement — aim under ~300 characters; depth belongs in details.
   param: details
@@ -49,6 +65,10 @@ Engram's durable memory, and where anything worth keeping goes even when another
   Your own name, if you are a subagent recording this fact rather than the main agent.
   param: supersedes
   The bracketed id of a raw user-statement capture this restates, e.g. "f42". Closes that capture so the rewritten version replaces it instead of duplicating it.
+  param: sync
+  Flags for sync. Triggered by "share engram" plus content.
+  param: review_after
+  When to revisit this: a relative duration ('3d', '2w', '12h') or an ISO date. Surfaces in 'engram review list' and doctor once it passes.
 
 tool: engram_revise
 Replace a stored belief with a corrected statement, recording why. The old fact is closed, never erased, and the new one takes its place in recall. Use it when the user or fresh evidence contradicts something stored; engram_forget retracts without a replacement.
@@ -62,4 +82,13 @@ Replace a stored belief with a corrected statement, recording why. The old fact 
   Where the correction came from — a file, PR, or the user's words.
   param: details
   Depth for the corrected fact. Does not carry forward from the old version — restate it or drop it deliberately.
+  param: sync
+  Sync flag; omit inherits, else overrides.
+  param: review_after
+  When to revisit this: a relative duration ('3d', '2w', '12h') or an ISO date. Does not carry forward from the old version.
+
+tool: engram_unpin
+Release a fact pinned earlier this session with engram_pin. Pins that are never released end with the session anyway.
+  param: fact_id
+  The bracketed id of the fact to unpin, e.g. "f42".
 

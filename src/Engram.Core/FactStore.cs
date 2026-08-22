@@ -372,6 +372,24 @@ public static class FactStore
         return ReadFacts(command);
     }
 
+    /// <summary>
+    /// Live facts at exactly one path — <c>entity.path</c> is <c>UNIQUE</c>, so this is an
+    /// index seek rather than the range scan <see cref="ReadSubtree"/> pays for when the
+    /// caller wants a single node, not a whole subtree
+    /// (docs/memory-expansion/05b-browse-depth-bound-spec.md).
+    /// </summary>
+    public static IReadOnlyList<StoredFact> ReadAt(SqliteConnection connection, string path)
+    {
+        var exact = path.TrimEnd('/');
+
+        using var command = connection.CreateCommand();
+        command.CommandText = SelectFactColumns
+            + " WHERE f.valid_to IS NULL AND e.path = $exact ORDER BY e.path, f.id;";
+        command.Parameters.AddWithValue("$exact", exact);
+
+        return ReadFacts(command);
+    }
+
     public static IReadOnlyList<StoredFact> History(SqliteConnection connection, string subjectPath, string predicate)
     {
         using var command = connection.CreateCommand();
@@ -381,6 +399,57 @@ public static class FactStore
         command.Parameters.AddWithValue("$predicate", predicate);
 
         return ReadFacts(command);
+    }
+
+    /// <summary>
+    /// Facts immediately before and after one fact in the store's global chronological order,
+    /// across every subject — "what else was I recording around this time"
+    /// (docs/memory-expansion/05-browse-tui-spec.md). Ordered by <c>valid_from</c>, ties broken
+    /// by <c>created_at</c> and then <c>id</c> for a total order. Deliberately not scoped to the
+    /// anchor's own subject: that is <see cref="History"/>, which answers a different question
+    /// (this entity's own thread) and must not be re-derived here.
+    /// </summary>
+    public static (IReadOnlyList<StoredFact> Before, IReadOnlyList<StoredFact> After) Timeline(
+        SqliteConnection connection, StoredFact anchor, int before, int after)
+    {
+        ArgumentNullException.ThrowIfNull(connection);
+        ArgumentNullException.ThrowIfNull(anchor);
+
+        return (
+            ReadNeighbours(connection, anchor, before, earlier: true),
+            ReadNeighbours(connection, anchor, after, earlier: false));
+    }
+
+    private static List<StoredFact> ReadNeighbours(
+        SqliteConnection connection, StoredFact anchor, int limit, bool earlier)
+    {
+        if (limit <= 0)
+        {
+            return [];
+        }
+
+        var comparison = earlier ? "<" : ">";
+        var direction = earlier ? "DESC" : "ASC";
+
+        using var command = connection.CreateCommand();
+        command.CommandText = SelectFactColumns
+            + $"""
+               WHERE (f.valid_from, f.created_at, f.id) {comparison} ($anchorValidFrom, $anchorCreatedAt, $anchorId)
+               ORDER BY f.valid_from {direction}, f.created_at {direction}, f.id {direction}
+               LIMIT $limit;
+              """;
+        command.Parameters.AddWithValue("$anchorValidFrom", anchor.ValidFrom);
+        command.Parameters.AddWithValue("$anchorCreatedAt", anchor.CreatedAt);
+        command.Parameters.AddWithValue("$anchorId", anchor.Id);
+        command.Parameters.AddWithValue("$limit", limit);
+
+        var facts = ReadFacts(command);
+        if (earlier)
+        {
+            facts.Reverse();
+        }
+
+        return facts;
     }
 
     /// <summary>

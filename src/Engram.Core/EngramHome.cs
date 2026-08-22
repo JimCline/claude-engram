@@ -47,6 +47,19 @@ public sealed class EngramHome
     public string IndexLockDir { get; }
 
     /// <summary>
+    /// Default location of the cross-machine sync directory (docs/gp-adoption/01-sync-spec.md)
+    /// — <c>&lt;machine-id&gt;/&lt;seq&gt;.jsonl</c> chunks plus the local <c>machine-id</c>
+    /// discriminator file live under here.
+    /// </summary>
+    /// <remarks>
+    /// Derived state, like <see cref="BackupDir"/>: not created by <c>init</c>, only lazily on
+    /// first <c>sync export</c>. <c>[sync] dir</c> in config overrides this default; callers
+    /// resolve that override themselves rather than this type reaching into <c>ConfigFile</c>,
+    /// which is not this type's job.
+    /// </remarks>
+    public string SyncDir { get; }
+
+    /// <summary>
     /// What ggml-metal reported about this machine at the last local model load (D28).
     /// </summary>
     /// <remarks>
@@ -116,6 +129,7 @@ public sealed class EngramHome
         LibDir = Path.Combine(root, "lib");
         BackupDir = Path.Combine(root, "backups");
         IndexLockDir = Path.Combine(root, "locks");
+        SyncDir = Path.Combine(root, "sync");
         MetalRecordPath = Path.Combine(root, "metal.json");
         EmbeddingProgressPath = Path.Combine(root, "embedding.json");
         IndexProgressPath = Path.Combine(root, "indexing.json");

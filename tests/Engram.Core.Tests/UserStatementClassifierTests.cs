@@ -37,7 +37,7 @@ public class UserStatementClassifierTests
     public void CapturesStandingInstructions(string prompt)
     {
         var candidate = Assert.Single(UserStatementClassifier.Classify(prompt));
-        Assert.Equal(UserFactKind.Directive, candidate.Kind);
+        Assert.Equal(UserFactKind.Instruction, candidate.Kind);
     }
 
     // Everything a prompt is usually made of instead. Storing any of these would fill

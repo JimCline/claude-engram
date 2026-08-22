@@ -115,7 +115,7 @@ internal static class HookCommand
 
             foreach (var candidate in candidates)
             {
-                var topic = candidate.Kind == UserFactKind.Directive
+                var topic = candidate.Kind == UserFactKind.Instruction
                     ? UserFactTopic.Instruction
                     : UserFactTopic.AboutYou;
 
@@ -355,12 +355,14 @@ internal static class HookCommand
         string sessionId,
         string kind,
         int longTermFactCount,
+        int directiveCount,
         string primer) =>
         new(Timestamp: DateTime.UtcNow.ToString("o"),
             SessionId: sessionId,
             Kind: kind,
             LongTermFactCount: longTermFactCount,
-            TokensReturned: TokenEstimator.Estimate(primer));
+            TokensReturned: TokenEstimator.Estimate(primer),
+            DirectiveCount: directiveCount);
 
     /// <summary>What the primer should say about where this agent's durable memory lives.</summary>
     /// <remarks>
@@ -422,19 +424,20 @@ internal static class HookCommand
         // the spawn costs 1.6-3.4 ms and the ordering is worth no part of it. It stays here
         // because a fork is never more expensive for happening while the parent is small.
         var startDirectory = payload?.Cwd ?? Directory.GetCurrentDirectory();
+        var config = TryLoadConfig(home);
 
         try
         {
             if (Environment.ProcessPath is { Length: > 0 } executable)
             {
-                MaintenanceLauncher.Spawn(executable, home.Root, startDirectory);
+                var syncEnabled = config is not null && SyncSettings.Read(config).Enabled;
+                MaintenanceLauncher.Spawn(executable, home.Root, syncEnabled, startDirectory);
             }
         }
         catch
         {
         }
 
-        var config = TryLoadConfig(home);
         var (summary, offerEnrollment) = SessionStartPrimerInputs(home, config, startDirectory);
         var primer = PrimerBuilder.Build(summary, Precedence(config), offerEnrollment);
 
@@ -442,7 +445,8 @@ internal static class HookCommand
         {
             Telemetry.Append(
                 home,
-                PrimerRecord(sessionId, TelemetryEventKind.SessionStart, summary.FactCount, primer));
+                PrimerRecord(
+                    sessionId, TelemetryEventKind.SessionStart, summary.FactCount, summary.Directives.Count, primer));
         }
         catch
         {
@@ -482,7 +486,8 @@ internal static class HookCommand
             // shared across the spawn with no further work; if not, D11's sharing needs a
             // parent id threaded through instead of being assumed.
             Telemetry.Append(home, PrimerRecord(
-                ResolveSessionId(payload), TelemetryEventKind.SubagentStart, summary.FactCount, primer) with
+                ResolveSessionId(payload), TelemetryEventKind.SubagentStart, summary.FactCount,
+                summary.Directives.Count, primer) with
             {
                 AgentId = payload?.AgentId,
                 AgentType = payload?.AgentType,

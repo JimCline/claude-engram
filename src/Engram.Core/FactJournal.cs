@@ -305,7 +305,19 @@ public static class FactJournal
     public static ReplayResult Replay(
         SqliteConnection connection,
         IReadOnlyList<JournalFact> facts,
-        bool apply)
+        bool apply) =>
+        Replay(connection, facts, apply, out _);
+
+    /// <summary>
+    /// Same replay, also handing back the journal-id-to-target-id map it built — what
+    /// <see cref="RelationJournal.Replay"/> resolves <c>relations.jsonl</c>'s fact references
+    /// through, so a verdict never ends up pointed at the wrong row (D32).
+    /// </summary>
+    public static ReplayResult Replay(
+        SqliteConnection connection,
+        IReadOnlyList<JournalFact> facts,
+        bool apply,
+        out IReadOnlyDictionary<long, long> idMap)
     {
         ArgumentNullException.ThrowIfNull(connection);
         ArgumentNullException.ThrowIfNull(facts);
@@ -314,7 +326,7 @@ public static class FactJournal
         var present = 0;
         var unresolved = 0;
         var conflicted = 0;
-        var idMap = new Dictionary<long, long>();
+        var idMapBuilder = new Dictionary<long, long>();
 
         // Journal ids whose target row this replay inserted. Link may write superseded_by into
         // those rows and no others: a row that was already here carries the target's own account
@@ -346,6 +358,7 @@ public static class FactJournal
                 }
             }
 
+            idMap = idMapBuilder;
             return new ReplayResult(written, present, 0, conflicted);
         }
 
@@ -358,7 +371,7 @@ public static class FactJournal
             {
                 if (match.AddressUsable)
                 {
-                    idMap[fact.Id] = match.Id;
+                    idMapBuilder[fact.Id] = match.Id;
                 }
                 else if (fact.SupersededBy is not null)
                 {
@@ -380,19 +393,19 @@ public static class FactJournal
                 continue;
             }
 
-            idMap[fact.Id] = Insert(connection, transaction, fact);
+            idMapBuilder[fact.Id] = Insert(connection, transaction, fact);
             inserted.Add(fact.Id);
             written++;
         }
 
         foreach (var fact in facts)
         {
-            if (fact.SupersededBy is not { } oldTarget || !idMap.TryGetValue(fact.Id, out var newId))
+            if (fact.SupersededBy is not { } oldTarget || !idMapBuilder.TryGetValue(fact.Id, out var newId))
             {
                 continue;
             }
 
-            if (!idMap.TryGetValue(oldTarget, out var newTarget))
+            if (!idMapBuilder.TryGetValue(oldTarget, out var newTarget))
             {
                 // The superseding fact is not in this journal. The belief still closed at the
                 // recorded time; only the pointer to what replaced it is lost, which is strictly
@@ -417,6 +430,7 @@ public static class FactJournal
         }
 
         transaction.Commit();
+        idMap = idMapBuilder;
         return new ReplayResult(written, present, unresolved, conflicted);
     }
 
@@ -630,7 +644,12 @@ public static class FactJournal
         return slash >= 0 && slash < path.Length - 1 ? path[(slash + 1)..] : path;
     }
 
-    private static JsonObject ToJson(JournalFact fact) => new()
+    /// <summary>
+    /// Internal rather than private so <see cref="Sync"/> can reuse this exact serialization for a
+    /// chunk's <c>"t":"fact"</c> lines (docs/gp-adoption/01-sync-spec.md) — "same fields FactJournal
+    /// already emits into facts.jsonl" — without a second implementation of the field mapping.
+    /// </summary>
+    internal static JsonObject ToJson(JournalFact fact) => new()
     {
         ["id"] = fact.Id,
         ["subject"] = fact.Subject,

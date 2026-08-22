@@ -52,13 +52,19 @@ public static class CliApp
             "scan" => ScanCommand.Run(homePath, rest, stdout, stderr),
             "index" => IndexCommand.Run(homePath, rest, stdout, stderr),
             "explain" => ExplainCommand.Run(homePath, rest, stdout, stderr),
+            "timeline" => TimelineCommand.Run(homePath, rest, stdout, stderr),
+            "browse" => BrowseCommand.Run(homePath, rest, stdout, stderr),
             "backup" => BackupCommand.Run(homePath, rest, stdout, stderr),
             "repo" => RepoCommand.Run(homePath, rest, stdout, stderr),
             "queue" => QueueCommand.Run(homePath, rest, stdout, stderr),
             "repair" => RepairCommand.Run(homePath, rest, stdout, stderr),
+            "review" => ReviewCommand.Run(homePath, rest, stdout, stderr),
             "compact" => CompactCommand.Run(homePath, rest, stdout, stderr),
             "export" => ExportCommand.Run(homePath, rest, stdout, stderr),
             "import" => ImportCommand.Run(homePath, rest, stdout, stderr),
+            "sync" => SyncCommand.Run(homePath, rest, stdout, stderr),
+            "directive" => DirectiveCommand.Run(homePath, rest, stdout, stderr),
+            "profile" => ProfileCommand.Run(homePath, rest, stdout, stderr),
             _ => Usage(stderr),
         };
     }
@@ -102,13 +108,18 @@ public static class CliApp
         writer.WriteLine("  scan [path] [options]              report what indexing would read there, and what it would skip");
         writer.WriteLine("  index [path] [options]             turn a repo's files into code facts; incremental after the first run");
         writer.WriteLine("  explain <query> [options]          show why recall ranks what it ranks, and what it leaves out");
+        writer.WriteLine("  timeline <fact-id> [options]       facts recorded around one fact, across every subject");
+        writer.WriteLine("  browse                             walk the entity tree interactively; jump to timeline or history");
         writer.WriteLine("  backup <take|list|prune|restore|replay|import>  snapshot the store, or put the facts back");
         writer.WriteLine("  repo <enroll|decline|later|reset|list> [path]  record or inspect the decision to keep a checkout indexed");
         writer.WriteLine("  queue <status|compact>             report the file-touched edit queue, or fold it down");
         writer.WriteLine("  repair [--apply]                   rebuild derived state — the lexical index, denormalized paths — never facts");
+        writer.WriteLine("  review <list|clear <id>> [--apply]  list facts with a review date set, or clear one");
         writer.WriteLine("  compact [--path <prefix>] [--apply]  prune regenerable code facts: closed ones, or a whole subtree with --path");
         writer.WriteLine("  export [--path <prefix>] [--out <file>]  write facts as a portable JSONL bundle (stdout by default)");
         writer.WriteLine("  import <file> [--apply]            add a bundle's facts; never rewrites or closes what the store already has");
+        writer.WriteLine("  sync <export|import|status> [--apply]  exchange facts with other machines through a shared directory");
+        writer.WriteLine("  profile <show|set <default|full>>  which MCP tools this server connection advertises");
         writer.WriteLine();
         writer.WriteLine("queue options:");
         writer.WriteLine("  compact [--apply]                  keep the newest entry per file and delete the rest");
@@ -120,6 +131,13 @@ public static class CliApp
         writer.WriteLine("  restore [name] [--apply]           put a snapshot back, keeping the current store as a new snapshot");
         writer.WriteLine("  replay [file] [--apply]            read facts.jsonl into the store, adding what it does not have");
         writer.WriteLine("  import [dir] [--apply]             bring in user facts from the old user-facts/ JSON directory");
+        writer.WriteLine();
+        writer.WriteLine("sync options:");
+        writer.WriteLine("  export --apply                     write a chunk of this machine's new facts and closes");
+        writer.WriteLine("  export --if-due                    skip if nothing has changed since the last export; what session start runs");
+        writer.WriteLine("  import --apply                     apply every peer machine's pending chunks");
+        writer.WriteLine("  import --if-new                    skip if no peer machine directories exist; what session start runs");
+        writer.WriteLine("  status                              pending chunks per machine, and deferred/stalled/conflicted closes");
         writer.WriteLine();
         writer.WriteLine("repo options:");
         writer.WriteLine("  enroll [path]                       index this checkout now and keep it current as files change");
@@ -147,6 +165,10 @@ public static class CliApp
         writer.WriteLine("  --budget <n>                       token budget to test against (default 500)");
         writer.WriteLine("  --limit <n>                        candidates to print (default 20)");
         writer.WriteLine("  --session <id>                     treat this host session's notes as working memory");
+        writer.WriteLine();
+        writer.WriteLine("timeline options:");
+        writer.WriteLine("  --before <n>                       facts to show before the anchor (default 5)");
+        writer.WriteLine("  --after <n>                        facts to show after the anchor (default 5)");
         writer.WriteLine();
         writer.WriteLine("model subcommands:");
         writer.WriteLine("  list                               show every model, its size and tradeoff, and whether it is installed");

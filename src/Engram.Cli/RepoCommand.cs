@@ -415,7 +415,7 @@ internal static class RepoCommand
     {
         try
         {
-            MaintenanceLauncher.Spawn(ExecutablePath.Current, home.Root, root, MaintenanceLauncher.MaintenanceJobs.EnrollmentIndex);
+            MaintenanceLauncher.Spawn(ExecutablePath.Current, home.Root, syncEnabled: false, root, MaintenanceLauncher.MaintenanceJobs.EnrollmentIndex);
             error = null;
             return true;
         }

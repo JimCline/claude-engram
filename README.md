@@ -56,6 +56,8 @@ vector lane on its own, rather than being deliberately probed, is still the open
 | [`docs/engram-path-grammar.md`](docs/engram-path-grammar.md) | How code entities are addressed — versioned, v2 |
 | [`docs/engram-design.html`](docs/engram-design.html) | Visual design sheet |
 | [`docs/engram-progress.md`](docs/engram-progress.md) | What landed recently, what is verified vs. merely argued, and the open work |
+| [`docs/memory-expansion-spec.md`](docs/memory-expansion-spec.md) | Overview and index of the memory-expansion feature set below |
+| [`docs/memory-expansion/`](docs/memory-expansion/) | Per-feature specs: sync, conflict verdicts, tool profiles, lifecycle, browse/timeline, standing directives |
 
 Licensed under [Apache-2.0](LICENSE).
 
@@ -586,6 +588,133 @@ later picks the same memory back up.
 Nothing in the hooks does anything at all until `engram init` has run — every hook exits
 0 silently when the home has no `config.toml`. That is deliberate, and it is why a
 plugin loaded without an initialised home produces no telemetry and no primer.
+
+## Memory expansion
+
+Six features on top of the base store, in this order: cross-machine sync, conflict
+verdicts, MCP tool profiles, lifecycle primitives (review-due, session pin), an
+interactive browser and timeline, and standing directives. A seventh — an Obsidian
+export — was specced and scratched; see `docs/memory-expansion/06-export-spec.md` for
+why. None of the six below changes the schema in a way existing facts need to migrate
+for; each is additive.
+
+### Syncing across machines
+
+Cross-machine sync replicates authored facts between machines you control, over
+whatever transport you already trust — git, iCloud Drive, Google Drive, Dropbox.
+Engram writes immutable JSONL chunk files and never shells out to git itself; you move
+the chunks however you already move files, and folder-sync services need no code of
+their own because `[sync] dir` already covers them. It is opt-in and off by default.
+
+```
+engram sync export [--apply] [--scope all|user|repo:<name>]
+engram sync import [--apply]
+engram sync status
+engram sync compact [--apply] [--if-large]
+```
+
+```toml
+[sync]
+enabled = false         # gates only the ambient session-start invocation
+dir = "/absolute/path"  # required, no ~
+scope = "all"            # all | user | repo:<identity>
+stale_after_days = 14
+retain_days = 90         # must be >= stale_after_days
+```
+
+`enabled = false` only stops sync from running unattended at session start — an
+explicit `sync export/import/compact --apply` runs regardless, the same precedent
+`index --auto` set. Chunk writes are atomic (write-then-rename), and a reader waits for
+a chunk to parse cleanly end-to-end before treating it as final. Retention is
+time-windowed rather than acknowledgement-based: a closed fact older than `retain_days`
+drops out of future chunks, so a machine that reconnects after that window has lost
+that history — `sync status` warns once a peer has gone quiet past `stale_after_days`.
+`sync compact` only ever deletes within its own machine's subdirectory, never a peer's,
+which matters under folder-sync where a delete propagates. What this does not do: no
+cloud tier, no three-way merge, no auto-resolution by timestamp — a conflicting close
+record surfaces in `sync status`, it is never silently dropped or picked for you.
+`engram_remember` takes an optional `sync: bool` parameter (triggered by "share engram"
+plus content) to mark a fact for replication as it is written.
+
+### Flagging conflicts and near-duplicates
+
+With `[remember] candidates` enabled, `engram_remember` checks a new fact against what
+is already stored — through the same FTS/token-overlap/vector lanes recall uses, gated
+by D44's 2+-lane corroboration bar — and can return up to three related live facts. The
+model records how the two relate with the new `engram_judge` tool: `supersedes`,
+`conflicts_with`, `scoped` (same topic, different context), or `not_conflict`. A
+verdict is an annotation, never a mutation — it closes and edits neither fact — and
+shows up under `engram_expand … history` for both.
+
+```toml
+[remember]
+candidates = false   # off until scan cost is measured at 50k+ facts
+```
+
+Candidates only surface on a fresh `engram_remember` call, not when `supersedes` is
+already set — a caller that named its target isn't guessing. This is deliberately not
+same-slot collision detection: D57's per-statement addressing already makes an exact
+restatement dedupe silently, so this catches near-duplicates and disagreements, not
+literal repeats. Verdicts are local annotations only; sync above does not replicate
+them across machines.
+
+### Choosing which tools the agent sees
+
+`engram profile show` / `engram profile set default|full` picks how many MCP tools a
+connection advertises, trading prompt-token schema cost for surface area — it changes
+what is offered, not what is permitted. `default` is eight tools (`recall`, `remember`,
+`forget`, `revise`, `expand`, `browse`, `judge`, `index_repo`); `full` adds the three
+lifecycle tools (`start`, `status`, `stop`). This is orthogonal to the permissions grant
+above: excluding a tool from a profile makes its grant moot for that connection, and
+including it still respects whatever `engram permissions` decided. The split is a rule,
+not a maintained list — `default` is everything except the lifecycle tools — so a new
+tool lands in `default` automatically unless it is itself lifecycle. Takes effect on
+the next connection; measured saving is roughly 235 tokens per session on `default`.
+
+### Marking a fact for later, or pinning one for now
+
+`review_after` is an optional parameter on `engram_remember` and `engram_revise` — a
+relative duration (`3d`, `2w`, `12h`) or an ISO date. It does not change ranking; it
+surfaces the fact in `engram review list` and in `doctor` once the date passes.
+`engram review clear <id> [--apply]` is dry-run first, like everything that touches the
+store.
+
+`engram_pin(fact_id)` / `engram_unpin(fact_id)` is session-scoped: a pinned fact takes
+top rank in `engram_recall` whenever the query would already match it — it is never
+injected into results it would not otherwise reach. The pin dies with the session, so
+an unreleased one costs nothing; there is nothing left to release once the session that
+made it ends.
+
+### Browsing memory interactively, and reconstructing a timeline
+
+`engram browse` is now also an interactive terminal navigator over the same entity tree
+`engram_browse` returns to the model — live fact counts per node, `Enter` to descend,
+`t` to jump to timeline, `h` for a fact's own history, `b`/`q` to back out and quit.
+`engram timeline <fact-id> [--before N] [--after N]` (default 5 each way) reads facts
+in chronological order around a target fact, across every subject, for reconstructing
+what was happening around it — distinct from `engram_expand … history`, which is one
+entity's own revision chain. Both are read-only.
+
+### Standing directives
+
+`engram directive add "<text>"` records a standing rule the way `CLAUDE.md` does, but
+authored from the CLI mid-session rather than by hand-editing a file, and carried by
+sync to other machines. Directives are delivered verbatim and unconditionally in the
+primer at every context reset and to every subagent — never retrieval-gated, so one
+cannot silently drop out because nothing recalled it.
+
+```
+engram directive add "<text>"
+engram directive list [--all]
+engram directive remove <id> --apply
+engram directive revise <id> "<text>" --apply
+```
+
+They store as ordinary facts at `/directives` (predicate `directs`) — no schema change
+— but are excluded from recall and from the fact/topic counts, and carry a separate,
+fixed 250-token budget outside the normal primer allowance so they cannot be crowded
+out by anything else competing for primer space. `add` is the only way one gets
+created; nothing is promoted into a directive automatically.
 
 ## Testing against an isolated instance
 

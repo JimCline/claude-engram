@@ -70,6 +70,8 @@ public static class RecallRanker
     /// </summary>
     private const string NoMatchSentinel = "\"zzz_engram_no_such_token_sentinel_zzz\"";
 
+    private static readonly IReadOnlySet<long> EmptyPinnedFactIds = new HashSet<long>();
+
     // Four stable texts (spec §2.2): built once per (overlap built?, vector available?, vec table
     // name) combination and held, so every recall in a process reuses the same CommandText instead
     // of paying to assemble it again. The vec table name is keyed in because it is not stable across
@@ -104,7 +106,8 @@ public static class RecallRanker
         long? currentSessionId,
         DateTimeOffset now,
         VectorLaneQuery vectorQuery,
-        int minCandidates = 0)
+        int minCandidates = 0,
+        IReadOnlySet<long>? pinnedFactIds = null)
     {
         ArgumentNullException.ThrowIfNull(connection);
         ArgumentNullException.ThrowIfNull(query);
@@ -168,6 +171,12 @@ public static class RecallRanker
         }
 
         var coverage = RecallEngine.ClassifyCoverage(matchedTotal, corroboratedTotal);
+
+        // A ranking boost among already-matched candidates, never a second relevance signal
+        // (D44/D60) — applied before ApplyBudget so a pinned fact's reordering is what the budget
+        // packs against, not an afterthought layered on top of an already-cut digest.
+        candidates = RecallEngine.ApplyPinBoost(candidates, pinnedFactIds ?? EmptyPinnedFactIds).ToList();
+
         var tokensUsed = RecallEngine.ApplyBudget(candidates, budgetTokens);
 
         return new RankOutcome(
@@ -193,9 +202,11 @@ public static class RecallRanker
         int seedK,
         long? currentSessionId,
         DateTimeOffset now,
-        VectorLaneQuery vectorQuery)
+        VectorLaneQuery vectorQuery,
+        IReadOnlySet<long>? pinnedFactIds = null)
     {
-        var outcome = Rank(connection, query, budgetTokens, seedK, currentSessionId, now, vectorQuery);
+        var outcome = Rank(
+            connection, query, budgetTokens, seedK, currentSessionId, now, vectorQuery, pinnedFactIds: pinnedFactIds);
 
         var includedLines = new List<string>();
         var sessionFactCount = 0;
@@ -303,6 +314,7 @@ public static class RecallRanker
         var subjectName = reader.GetString(reader.GetOrdinal("subject_name"));
         var path = reader.GetString(reader.GetOrdinal("path"));
         var versions = reader.GetInt32(reader.GetOrdinal("versions"));
+        var judged = reader.GetInt32(reader.GetOrdinal("relations")) > 0;
         var labelIndex = NullableInt(reader, "label_index");
 
         var ageDays = AgeDaysOf(createdAt, now);
@@ -310,7 +322,7 @@ public static class RecallRanker
         var line = origin switch
         {
             FactOrigin.LongTerm => RecallEngine.FormatFactLine(
-                new CannedFact(handle, subjectName, string.Empty, body, scope, string.Empty, ageDays, null, versions, detailsChars)),
+                new CannedFact(handle, subjectName, string.Empty, body, scope, string.Empty, ageDays, null, versions, detailsChars, judged)),
             FactOrigin.CurrentSession => RecallEngine.FormatSessionFactLine(
                 ToSessionFact(factId, body, path, subjectName, ageDays, detailsChars, agentNames)),
             FactOrigin.PriorSession => RecallEngine.FormatPriorSessionFactLine(
@@ -398,6 +410,7 @@ public static class RecallRanker
     private static string BuildStatementText(bool overlapAvailable, bool vectorAvailable, string vecTable)
     {
         var sessionPrefix = SessionFacts.Root + "/"; // "/sessions/" — kept in sync with the C# constant
+        var directivePrefix = DirectiveFacts.Root + "/"; // "/directives/" — kept in sync with the C# constant
         var rrfK = RecallEngine.RrfK.ToString(CultureInfo.InvariantCulture);
 
         var sb = new StringBuilder();
@@ -546,7 +559,12 @@ public static class RecallRanker
         }
 
         sb.Append("  LEFT JOIN prior_sessions ps ON ps.session_id = f.session_id\n");
-        sb.Append("  WHERE f.valid_to IS NULL\n),\n\n");
+        // A directive is delivered unconditionally by the primer (D-1) and answers a
+        // class-addressed question through engram_browse, not a content-addressed one through
+        // recall (D-5) — excluded here, where the candidate set drawn from every lane is
+        // materialized, rather than at any one lane's own query, so it can never surface
+        // regardless of which lane matched it, and never inflates matched/corroborated counts.
+        sb.Append($"  WHERE f.valid_to IS NULL\n    AND substr(e.path, 1, {directivePrefix.Length}) <> '{directivePrefix}'\n),\n\n");
 
         sb.Append(
             """
@@ -561,12 +579,17 @@ public static class RecallRanker
 
             -- The outer ORDER BY is repeated: LIMIT inside a CTE bounds the rows, but SQLite does not
             -- guarantee the outer query preserves that order. Free at <= 501 rows.
-            -- The versions subquery is outside the LIMIT, so it runs at most 501 times instead of once
-            -- per candidate. Groups on path+predicate (D57), not subject_id, matching FactStore.VersionCounts.
+            -- The versions and relations subqueries are outside the LIMIT, so each runs at most 501
+            -- times instead of once per candidate. versions groups on path+predicate (D57), not
+            -- subject_id, matching FactStore.VersionCounts. relations counts fact_relation rows
+            -- naming this fact on either side, matching FactRelations.RelationCounts — the source
+            -- of the "· judged" marker; ranking itself is unchanged.
             SELECT b.*,
                    (SELECT COUNT(*) FROM fact f2
                       JOIN entity e2 ON e2.id = f2.subject_id
-                     WHERE e2.path = b.path AND f2.predicate = b.predicate) AS versions
+                     WHERE e2.path = b.path AND f2.predicate = b.predicate) AS versions,
+                   (SELECT COUNT(*) FROM fact_relation fr
+                     WHERE fr.fact_id = b.fact_id OR fr.related_id = b.fact_id) AS relations
             FROM bounded b
             ORDER BY CASE WHEN b.origin = 0 THEN 0 ELSE 1 END, b.fused DESC, b.handle;
             """);

@@ -132,6 +132,19 @@ public static class DefaultConfig
         # that store closed is a decision only its owner should make.
         precedence = "engram-first"
 
+        [mcp]
+        # Which tools this server connection advertises. Trimming the schema bytes sent to the
+        # model for tools not in routine use — not a permissions setting, and not related to
+        # which tools Claude Code prompts before calling (that is client-side and unaffected).
+        #
+        #   default  everything except start/status/stop — the everyday set
+        #   full     every tool, including start/status/stop
+        #
+        # default is the default: those three are for controlling the server process itself,
+        # which routine memory use never needs and which "engram start"/"stop"/"status" already
+        # cover from the command line.
+        tool_profile = "default"
+
         [primer]
         max_tokens = 300
 

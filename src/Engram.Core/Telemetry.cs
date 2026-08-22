@@ -11,6 +11,17 @@ public static class TelemetryEventKind
     public const string Browse = "browse";
     public const string Expand = "expand";
     public const string Revise = "revise";
+
+    /// <summary>
+    /// An <c>engram timeline</c> CLI call. A single completion event, no phases — an instant
+    /// read rather than a background job, the same shape as <see cref="Recall"/>'s telemetry
+    /// (docs/memory-expansion/05-browse-tui-spec.md).
+    /// </summary>
+    public const string Timeline = "timeline";
+
+    /// <summary>An <c>engram_judge</c> call recording a verdict between two facts.</summary>
+    public const string Judge = "judge";
+
     public const string SessionStart = "session-start";
 
     /// <summary>
@@ -92,6 +103,18 @@ public static class TelemetryEventKind
     public const string Enrollment = "enrollment";
 
     /// <summary>
+    /// A <c>sync export</c>/<c>sync import</c> run moving between started, finished, and failed
+    /// (docs/memory-expansion/01-sync-spec.md).
+    /// </summary>
+    /// <remarks>
+    /// A kind declared but never emitted reads as a feature switched off (D56), so this exists
+    /// only alongside <see cref="Engram.Cli.SyncCommand"/>, its one emission site. Phases only —
+    /// no counts inside the event (D55); counts live in <c>sync_chunk_state</c> and the CLI's own
+    /// report.
+    /// </remarks>
+    public const string Sync = "sync";
+
+    /// <summary>
     /// Every kind Engram emits.
     /// </summary>
     /// <remarks>
@@ -101,9 +124,9 @@ public static class TelemetryEventKind
     /// </remarks>
     public static IReadOnlyList<string> All { get; } =
     [
-        Recall, Remember, Digest, Browse, Expand, Revise,
+        Recall, Remember, Digest, Browse, Expand, Revise, Timeline, Judge,
         SessionStart, ServerStart, ServerStop, SessionOpen, SubagentStart, PreCompact, PostCompact,
-        FileTouched, UserPrompt, MemoryGuard, Index, Embedding, Enrollment,
+        FileTouched, UserPrompt, MemoryGuard, Index, Embedding, Enrollment, Sync,
     ];
 }
 
@@ -164,7 +187,24 @@ public sealed record TelemetryRecord(
     /// resulted, and <c>reset</c> produces no resulting state at all — it deletes the row.
     /// Harmonizing the two vocabularies would make <c>reset</c> unrepresentable, so do not.
     /// </remarks>
-    [property: JsonPropertyName("decision")] string? Decision = null);
+    [property: JsonPropertyName("decision")] string? Decision = null,
+
+    /// <summary>
+    /// How many directives a primer delivered. Only <see cref="TelemetryEventKind.SessionStart"/>
+    /// and <see cref="TelemetryEventKind.SubagentStart"/> set it, and never alongside
+    /// <see cref="FactCount"/> — a primer record's <see cref="FactCount"/> stays null (D46), and
+    /// this is a distinct number for a distinct delivery channel (D-1), not a substitute for it.
+    /// </summary>
+    [property: JsonPropertyName("directive_count")] int? DirectiveCount = null,
+
+    /// <summary>
+    /// The tool profile this connection registered under (<c>default</c> or <c>full</c>). Only
+    /// <see cref="TelemetryEventKind.SessionOpen"/> sets it, stamped from the same config read
+    /// that selected the profile for the connection rather than a fresh read at record-write
+    /// time — the two can disagree if config changes in between, and a stamp that disagrees with
+    /// the live connection is worse than no stamp (docs/memory-expansion/03-tool-profiles-spec.md).
+    /// </summary>
+    [property: JsonPropertyName("tool_profile")] string? ToolProfile = null);
 
 [JsonSerializable(typeof(TelemetryRecord))]
 internal sealed partial class TelemetryJsonContext : JsonSerializerContext;
