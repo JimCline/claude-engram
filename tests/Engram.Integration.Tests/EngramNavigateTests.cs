@@ -220,6 +220,94 @@ public class EngramNavigateTests
         Assert.Contains("(no declaration recorded)", result);
     }
 
+    // R1: navigate telemetry is D71's adoption evidence for the M3 override, and nothing
+    // asserted it was actually written. Covers both a hit and a not-yet-indexed relation, since
+    // B1's fix runs the same Telemetry.Append call for every branch of Navigate.
+    [Fact]
+    public void Navigate_EmitsNavigateTelemetry_ForBothAHitAndAPhaseThreeRelation()
+    {
+        using var sandbox = new SandboxHome();
+        var repo = CreateFixture(sandbox, "fixture-repo");
+        using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
+        Index(connection, sandbox, repo);
+
+        EngramMcpTools.Navigate(sandbox.Home, Session, "Widget", "defined_at");
+        EngramMcpTools.Navigate(sandbox.Home, Session, "anything", "callers");
+
+        var records = File.ReadAllLines(Telemetry.ResolvePath(sandbox.Home))
+            .Select(Telemetry.TryParse)
+            .Where(r => r?.Kind == TelemetryEventKind.Navigate)
+            .ToList();
+
+        Assert.Equal(2, records.Count);
+
+        var hit = records[0]!;
+        Assert.Equal("defined_at", hit.Relation);
+        Assert.True(hit.Found);
+        Assert.Contains("Exact", hit.Tiers);
+
+        var notYetIndexed = records[1]!;
+        Assert.Equal("callers", notYetIndexed.Relation);
+        Assert.False(notYetIndexed.Found);
+        Assert.Equal(string.Empty, notYetIndexed.Tiers);
+    }
+
+    // R2: proves the LIKE-escaping (S2) does something. Unescaped, "_" is a single-character
+    // wildcard, so the query "Foo_ar" would match the symbol "FooBar" as a substring.
+    [Fact]
+    public void DefinedAt_LiteralUnderscoreInQuery_DoesNotActAsAWildcard()
+    {
+        using var sandbox = new SandboxHome();
+        var repo = CreateFixture(sandbox, "fixture-repo", "FooBar.cs", "public sealed class FooBar { }");
+        using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
+        Index(connection, sandbox, repo);
+
+        var result = EngramMcpTools.Navigate(sandbox.Home, Session, "Foo_ar", "defined_at");
+
+        Assert.Contains("No symbol named", result);
+    }
+
+    // R2, imports path-suffix predicate: unescaped, "A_.cs" would match the path ending in
+    // "AB.cs" through the same single-character wildcard.
+    [Fact]
+    public void Imports_LiteralUnderscoreInQuery_DoesNotActAsAWildcard()
+    {
+        using var sandbox = new SandboxHome();
+        var repo = CreateFixture(sandbox, "fixture-repo", "AB.cs", "using System.Text;\n\npublic sealed class AB { }");
+        using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
+        Index(connection, sandbox, repo);
+
+        var result = EngramMcpTools.Navigate(sandbox.Home, Session, "A_.cs", "imports");
+
+        Assert.Contains("No file matching", result);
+    }
+
+    // R3: the original LIMIT -1 unbounded bug (S1) lived in the imports path, and no test
+    // observed the clamp actually firing at 100 rather than merely not crashing.
+    [Fact]
+    public void Imports_LimitIsClampedAtOneHundred()
+    {
+        using var sandbox = new SandboxHome();
+        var repoPath = Path.Combine(sandbox.Home.Root, "many-imports-repo");
+        Directory.CreateDirectory(repoPath);
+        for (var i = 0; i < 105; i++)
+        {
+            var dir = Path.Combine(repoPath, $"dir{i}");
+            Directory.CreateDirectory(dir);
+            File.WriteAllText(
+                Path.Combine(dir, "Common.cs"),
+                $"using System.Text;\n\npublic sealed class Common{i} {{ }}");
+        }
+
+        using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
+        Index(connection, sandbox, repoPath);
+
+        var result = EngramMcpTools.Navigate(sandbox.Home, Session, "Common.cs", "imports", limit: 1_000_000);
+
+        var matchCount = result.Split('\n').Count(line => line.TrimStart().StartsWith("[path-suffix]"));
+        Assert.Equal(100, matchCount);
+    }
+
     private static string CreateFixture(SandboxHome sandbox, string repoDirName) =>
         CreateFixture(sandbox, repoDirName, "Program.cs", ProgramCs);
 

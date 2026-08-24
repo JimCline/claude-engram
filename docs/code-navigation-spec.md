@@ -1,7 +1,6 @@
 # Code navigation — specification
 
-**Status:** Phase 1 shipped (TS/JS + C# only — see §3.0), with one defect open (§3.5).
-Phases 2–4 design, not implemented.
+**Status:** Phase 1 shipped (TS/JS + C# only — see §3.0). Phases 2–4 design, not implemented.
 **Goal:** an LLM answers *where is Z defined*, *what does Y import*, *who calls X* from engram's
 own surface instead of `Read`/`Grep`, across more languages than C# alone.
 
@@ -45,7 +44,8 @@ Consequences the dispatch got wrong:
   stated rationale for gating M3 — "the one carrying the D1 sidecar risk" — is therefore
   **retired**: that risk was paid down already. See §6.
 
-**How a symbol is addressed and named.** Both matter to §3.5 and were verified:
+**How a symbol is addressed and named**, since Phase 3's resolution join depends on both and this
+spec got it wrong once (§3.5):
 
 ```csharp
 // CodePaths.cs:37
@@ -54,10 +54,26 @@ public static string ForSymbol(string filePath, string symbolName) =>
 ```
 
 Callers pass a grammar-v2 *fragment* as `symbolName` — a scope chain, so a nested symbol is
-`Outer.Inner` (`DeepAnalysis.cs:112`, `CodeAnalyzer.cs:79`). `entity.name` is then derived inside
-`FactStore.EnsureEntity` (`FactStore.cs:663-676`): a caller-supplied `displayName` if given,
-otherwise **everything after the last `/` in the path**. The code write path
-(`FactStore.cs:80`) passes no `displayName`.
+`Outer.Inner` (`DeepAnalysis.cs:112`, `CodeAnalyzer.cs:79`). **`entity.name` is nonetheless the
+bare leaf name** (`Inner`), because the code write path is two steps and the first one names the
+entity explicitly:
+
+```csharp
+// CodeIndexer.cs:545-547
+// EnsureEntity first, because Remember cannot carry a display name and a
+// section's heading is not recoverable from its slug.
+FactStore.EnsureEntity(connection, transaction, write.EntityPath, write.Kind, timestamp, write.DisplayName);
+FactStore.Remember(connection, transaction, new FactWrite(…), now, closeReason);
+```
+
+`EnsureEntity` **short-circuits on an existing path** (`FactStore.cs:652-661`), returning the row's
+id without touching its name, so `Remember`'s own displayName-less call (`FactStore.cs:80`) is a
+no-op for any entity `CodeIndexer` created a line earlier. Both symbol-candidate producers supply
+the leaf: `CodeAnalyzer.cs:60-84` from the regex capture, `DeepTier.Merge` as
+`DisplayName = symbol.Name`. So the scope chain lives in `path` and the leaf lives in `name`,
+which is exactly what §5.2's join wants.
+
+**That ordering is load-bearing and unguarded — see §3.5.**
 
 **No structural edges exist, at any tier, and no component even models them.** `CodeAnalyzer`
 emits exactly three predicates — `about`, `declared-as`, `imports`. There is no `calls`,
@@ -81,7 +97,7 @@ sidecar already computes — see §5.1.
 **`fact.object_id` is unreachable from the write path the indexer uses.** Two write paths exist
 and only one can set it:
 
-- `FactStore.Remember` ← what `CodeIndexer` calls (`CodeIndexer.cs:547`). Its `FactWrite` record
+- `FactStore.Remember` ← what `CodeIndexer` calls (`CodeIndexer.cs:548`). Its `FactWrite` record
   (`FactStore.cs:6-16`) **has no `Object` or `ObjectKind` field**, and its `INSERT`
   (`FactStore.cs:723-728`) does not name `object_id`.
 - `FactJournal.Insert` ← backup replay only. Its `JournalFact` carries `Object`/`ObjectKind` and
@@ -287,13 +303,13 @@ coverage digest.
 - `defined_at(name)` — resolve against `entity` where `kind = 'symbol'`, returning `path` and the
   `declared-as` body (the declaration line). **Matching is on the symbol's name, not on its path**
   — three tiers, tried in order: exact, then case-insensitive, then substring. Each row carries
-  which tier matched, so a substring hit is never mistaken for an exact one.
+  which tier matched, so a substring hit is never mistaken for an exact one. `entity.name` holds
+  the bare leaf name (§0), so the exact tier is the one that ordinarily fires.
 - `imports(path)` — the `imports` fact for a file. This one *is* addressed by path.
 
 An earlier draft of this section said matching was "exact on the last path segment first", which
-described `imports`'s addressing and was applied to both. That wording is what §3.5 is about: it
-is wrong for `defined_at`, and the implementation it produced does not do what a reader of either
-sentence would expect.
+described `imports`'s addressing and was applied to both. It is wrong for `defined_at` and is
+corrected above. See §3.5 for what chasing that wording produced.
 
 Answers are `file:line`-handled and compact, in the style `FactStore` output already uses.
 
@@ -339,50 +355,63 @@ directly and does not go through `RecallRanker`: navigation is a deterministic l
 it through a fused lexical/vector ranker would make *who calls X* a relevance question. That is
 G3 in the gap analysis and it is correct.
 
-### 3.5 OPEN DEFECT — `entity.name` is not a symbol name, so two of three match tiers are dead
+### 3.5 RETRACTED — the `entity.name` defect, and the invariant it did surface
 
-Found while correcting §3.4's wording; it is a real behaviour defect, not a documentation one. The
-chain is short and every link is verified in §0:
+An earlier revision of this section asserted an open defect: that `entity.name` for a symbol held
+`FactStore.cs#Remember`, so `SymbolResolver`'s exact and case-insensitive tiers could never fire.
+**That was wrong, and it is retracted rather than deleted so the error stays auditable.**
 
-1. A symbol's path is `{fileEntityPath}#{fragment}` — `CodePaths.ForSymbol`, `CodePaths.cs:37`.
-2. The code write path calls `EnsureEntity` **without** a `displayName` (`FactStore.cs:80`).
-3. `EnsureEntity` therefore derives the name as everything after the **last `/`**
-   (`FactStore.cs:674-675`).
-4. `SymbolResolver` matches `e.name = $name`, then `= $name COLLATE NOCASE`, then
-   `LIKE '%' || $name || '%'` (`SymbolResolver.cs:39/45/51`).
+What I got wrong: I read `FactStore.cs:80` — `Remember`'s internal `EnsureEntity` call, which
+genuinely passes no `displayName` — as the operative write for code symbols. It is not.
+`CodeIndexer.cs:547` calls `EnsureEntity` **with** `write.DisplayName` one line earlier, and
+`EnsureEntity` short-circuits on an existing path (`FactStore.cs:652-661`), so `Remember`'s call
+is a no-op for an entity the indexer just created. Both candidate producers already supply the
+bare leaf. The Implementor falsified the claim before acting on it — two fixture-store runs, flat
+and nested, reading `entity.name` back through the real write path — which is what §3.5 itself
+demanded and is the correct outcome of D60's rule.
 
-So `entity.name` for a symbol is `FactStore.cs#Remember` — filename, separator and fragment — and
-a lookup for `Remember` cannot match tiers 1 or 2. **Every `defined_at` call falls through to the
-substring tier.** Three consequences, in rising order of severity:
+**The process lesson, which is the part worth keeping.** A call site is not a write path. I traced
+one function's own `EnsureEntity` call and generalized from it without reading the caller that
+wraps it, and the wrong conclusion was *plausible* — it explained a real wording bug in §3.4 and
+predicted a failure mode consistent with everything else I knew. Plausibility is what made it
+dangerous. The cheap check that would have caught it is the one E7 always specified: dump twenty
+`entity` rows. Run the query before writing the section, not after.
 
-- Every answer is labelled *substring*, so the match-tier signal §3.4 just specified is a constant
-  and tells the model nothing.
-- Precision is poor with no better tier to prefer: `Remember` also matches `RememberBatch` and
-  `NotRemembered`.
-- **The `LIMIT` can truncate the true answer.** The query orders by `e.path`
-  (`SymbolResolver.cs:60-61`), so results are path-ordered rather than match-quality-ordered, and
-  a common name in a large store can fill the limit with near-misses while the exact declaration
-  never appears. That is a wrong answer, not a slow one.
+**What survives, as a real and unguarded invariant.** The correctness of every symbol's name
+depends on the *ordering* at `CodeIndexer.cs:545-547`, and nothing enforces it:
 
-**Fix at the write, not at the reader.** `EnsureEntity` already takes `displayName` for exactly
-this case — its own comment says a caller supplies it when the name "is not recoverable from the
-path". Pass the symbol's **leaf name**: for fragment `Outer.Inner`, the name is `Inner`, and the
-scope chain stays in `path`, where it already lives and already disambiguates. Rejected
-alternative: teaching `SymbolResolver` to parse after `#`. It moves the parsing to every reader,
-leaves `entity.name` meaning something no comment claims, and Phase 3 would need the same parse a
-second time — rule 1 again.
+- `EnsureEntity`'s short-circuit means an entity's name is **write-once**. Whoever creates the row
+  wins permanently; no later call corrects it.
+- So reversing those two lines — or introducing any path that reaches `Remember` for a code symbol
+  first — silently names every symbol from its path, and every `defined_at` answer degrades to the
+  substring tier, exactly as the retracted section described. The bug I described is not impossible;
+  it is one statement reorder away.
+- The existing comment at `:545-546` explains *why* the order exists, which is right and is what
+  made this recoverable. But a comment is not a guard.
 
-**Existing stores hold the wrong names, and that is repairable.** `entity.name` is denormalized
-display metadata derived from `path`, so by D8 it is derived state that `repair` may recompute —
-it is explicitly not belief content, and no fact body, predicate or validity window is touched.
-Either a `repair` pass or an `AnalyzerVersion` bump forcing re-extraction is acceptable; **the
-repair is preferable**, because a bump re-runs extraction to fix a field extraction did not
-produce.
+**Recommended, small, and not urgent:** a tier-2 test that indexes a nested symbol and asserts
+`defined_at` on the bare leaf returns an **exact**-tier match. Assert the tier, not the returned
+symbol — a symbol-identity assertion passes under substring matching too, which is why this
+ordering is currently unguarded despite a green suite. Falsify it by swapping the two lines.
 
-**Falsification, per D60:** the guard is a test asserting `defined_at` on a bare symbol name
-returns an **exact**-tier match. It must be shown to fail before the change — and note that a test
-merely asserting *the right symbol is returned* passes today via substring, which is how this
-survived a green suite. Assert the tier.
+That is the whole remaining item. **No code change is required**, and this is not a Phase-1 defect.
+
+### 3.6 Naming rules that Phase 2 and Phase 3 inherit
+
+Stated separately because §3.5's retraction must not take them with it — each is independently
+true and load-bearing later:
+
+- **`entity.name` is the bare leaf; `entity.path` carries the scope chain.** This is the shape
+  §5.2's resolution join is designed against, and it is confirmed rather than assumed (§0).
+- **`entity.name` is denormalized display metadata derived from addressing, not belief content.**
+  So by D8 it is repairable derived state if it is ever found wrong in an existing store — which
+  matters precisely because the short-circuit makes it write-once, and a store indexed before a
+  naming fix keeps the old name forever. `repair` is the remedy, not an `AnalyzerVersion` bump: a
+  bump re-runs extraction to fix a field extraction did not produce.
+- **Any new entity-creating write path must pass `displayName` explicitly** where the leaf is not
+  the last `/`-segment. Follow `CodeIndexer.cs:545-547`'s two-step, comment and all. §4.3 restates
+  this for object entities, where the table is three to six times the corpus and getting it wrong
+  would be considerably more expensive.
 
 ---
 
@@ -450,9 +479,12 @@ going to be — `calls` is not a special case bolted onto a substrate designed f
   call site changes.
 - `FactStore.Remember` resolves the object through `FactStore.EnsureEntity` (the same call
   `FactJournal.cs:534` already makes) and names `object_id` in its `INSERT`.
-- **Object entities must pass `displayName` explicitly**, for §3.5's reason: an object path's last
-  `/`-segment is not its name either, and repeating that defect in a table three to six times the
-  size of the corpus would be considerably worse.
+- **Object entities must be named explicitly**, per §3.6: an object path's last `/`-segment is not
+  its name either. Note that `Remember`'s own `EnsureEntity` call cannot carry a display name —
+  that is what `CodeIndexer.cs:545-546`'s comment says, and it applies to the object side too — so
+  either the object entity is created by the caller first, in the same two-step shape, or
+  `Remember` gains an object display-name parameter. **Prefer the two-step**, for symmetry with the
+  subject side and because it keeps `FactWrite` from growing a field whose only job is naming.
 - **`FindLiveFactId` must become object-aware.** For an edge write it matches
   (subject, predicate, object); for an objectless write, (subject, predicate) with
   `object_id IS NULL`. **Getting this wrong is silent and destructive**: left as-is, writing
@@ -638,12 +670,13 @@ lean, so the reasoning is recorded rather than just the outcome:
 
 **The join binds on the leaf name, and the qualifier ranks rather than filters.** §4.2 keeps callee
 names as written, so the join's left side may be `join`, `path.join`, or `os.path.join` while the
-right side is a declaration whose leaf name is `join`. Match on the leaf; use the qualifier to
-order candidates, never to exclude them — a qualifier is a receiver expression, not a namespace,
-and filtering on it discards the true target whenever the receiver is a local variable. This is the
-same rule as *ambiguity is reported, not resolved by preference*, applied one level down. **It also
-depends on §3.5 being fixed**: while `entity.name` is `file.cs#Frag`, a leaf-name join matches
-nothing and `callees` returns empty, which reads as *this calls nothing*.
+right side is an entity whose `name` is the bare leaf `join` (§0, §3.6). Match on the leaf; use the
+qualifier to order candidates, never to exclude them — a qualifier is a receiver expression, not a
+namespace, and filtering on it discards the true target whenever the receiver is a local variable.
+This is the same rule as *ambiguity is reported, not resolved by preference*, applied one level
+down. The left side needs the same care as the right: **the join's own leaf extraction — last
+segment after `.` — is one implementation shared with whatever else needs it**, or two callers
+disagree about what `os.path.join`'s leaf is.
 
 What query-time resolution costs, stated plainly:
 
@@ -706,11 +739,6 @@ Two things materially reduce the risk, and both belong in the record:
    attribute a tool call to a session anyway. The Phase-1 scope cut (§3.0) does not weaken this and
    arguably sharpens it: C# and TS/JS in a C# repository is the population whose behaviour matters.
 
-**Adoption data is not readable until §3.5 is fixed.** Every `defined_at` answer is currently a
-substring match, so low-quality results would depress usage for a reason that has nothing to do
-with whether the model wants the surface. Do not read the first adoption numbers as D6's answer
-until the exact-match tier works.
-
 **Still unconfirmed by Jim.** This spec records the override on the Orchestrator's report of his
 request; I have no direct confirmation from him, and D71 has now been committed to the decision
 log on that basis. If the attribution is wrong, D71 needs a correcting entry — not a silent edit,
@@ -767,9 +795,9 @@ instrument — pull it into Phase 1 if the cost is trivial, which it appears to 
 
 ## 8. NEEDS-EVIDENCE
 
-Design questions I could not settle by reasoning. **E1, E2, E5 and E6 were run by the Implementor
-during P0 and are resolved; their outcomes are recorded here rather than removed, because a spec
-that deletes its own evidence trail cannot be audited.**
+Design questions I could not settle by reasoning. **E1, E2, E5, E6 and E7 were run and are
+resolved; their outcomes are recorded here rather than removed, because a spec that deletes its own
+evidence trail cannot be audited.**
 
 | # | Question | Status |
 |---|---|---|
@@ -778,7 +806,8 @@ that deletes its own evidence trail cannot be audited.**
 | **E3** | How many `calls` edges does a real repository produce, against a store's live-fact count? | **PARTIALLY RESOLVED — see the note below.** Proxy measurement on this repository: 18,307 call-shaped matches (~3.4×) and 32,784 including declarations (~6.2×) against ~5,308 live facts. |
 | **E5** | Does `NativeLibrary.Load` of four more grammars hold under Native AOT in the published binary? | **RESOLVED.** Holds in a published AOT binary — the only honest answer, per D45's IL3000 history. |
 | **E6** | Does adding two partial indexes (§4.1) change any query plan on the recall path? | **RESOLVED.** Paired plan and timing, per D60; no measurable cost. |
-| **E7** | What are the actual `entity.name` values for symbols in a real store, and how many distinct symbol names collide once §3.5 is fixed? | **OPEN, cheap.** `SELECT path, name FROM entity WHERE kind='symbol' LIMIT 20;` against a store with this repo indexed, then `SELECT name, COUNT(*) FROM entity WHERE kind='symbol' GROUP BY name HAVING COUNT(*) > 1 ORDER BY 2 DESC LIMIT 20;`. The first **confirms §3.5's chain end-to-end** — the one link I inferred rather than read is `fileEntityPath`'s exact shape. The second sizes the ambiguity the exact tier will surface, which decides whether `defined_at` needs a disambiguation story beyond *return all and mark ambiguous*. |
+| **E7** | What are the actual `entity.name` values for symbols in a real store? | **RESOLVED, and it retracted §3.5.** Two fixture-store runs through the real `CodeIndexer.Index` write path — flat and nested — return bare leaf names (`Widget`, `Inner`), never `file#Fragment`. **This is the query I specified and then reasoned past instead of running; see §3.5.** |
+| **E8** | Once `defined_at` is exercised at scale, how often does one bare leaf name resolve to several declarations? | **OPEN, cheap, not blocking.** `SELECT name, COUNT(*) FROM entity WHERE kind='symbol' GROUP BY name HAVING COUNT(*) > 1 ORDER BY 2 DESC LIMIT 20;`. Sizes the ambiguity the exact tier surfaces, deciding whether `defined_at` needs more than *return all and mark ambiguous* (§5.2), and whether `ORDER BY e.path` plus `LIMIT` is good enough once a name is genuinely common. |
 
 **E4 is resolved** and folded into §0 and §5.1: no component carries invocation data, so Phase 3
 extends `DeepAnalysis`, the Roslyn sidecar, and the tree-sitter extractor together.
@@ -816,9 +845,13 @@ volume bound (§4.5) or side index (§5.2) is specified against.
   what they index, never who decides it.
 - **`FactStore.ReadLive`'s default result set** — everything live, edges included. The backup
   journal reads through it and a recovery tool must not lose rows to a latency change (§4.5).
-- **`CodePaths.ForSymbol`'s output** — `{filePath}#{fragment}` is the address, and §3.5 changes
-  `entity.name` only. A path change forces a re-index of every store and breaks D2's rename
-  identity; the defect is in the *name*, which is denormalized display metadata.
+- **`CodeIndexer.cs:545-547`'s ordering** — `EnsureEntity` with the display name, *then*
+  `Remember`. `EnsureEntity` short-circuits on an existing path, so a symbol's name is write-once
+  and whichever call creates the row wins permanently. Reversing these two statements silently
+  names every symbol from its path and collapses `defined_at` onto the substring tier (§3.5).
+- **`CodePaths.ForSymbol`'s output** — `{filePath}#{fragment}` is the address. A path change forces
+  a re-index of every store and breaks D2's rename identity. The scope chain belongs in `path`; the
+  leaf belongs in `name` (§3.6).
 - Non-`regenerable` facts — extraction never supersedes testimony (D19).
 - `CodePaths.GrammarVersion` — not bumped by this spec; a bump forces a full re-index everywhere.
 - **`object_id` never holds a resolved declaration** (§4.2/§5.2). It is name-keyed, it is immutable
@@ -844,6 +877,9 @@ authoritative. Two notes survive:
   unfiltered `ReadLive` scan, which is the larger exposure and was found later. Not worth a
   decision entry of its own until Phase 3 measures it.
 
-§3.5 does **not** get a decision entry. It is a defect with a fix, not a decision between
-alternatives — the plan records arguments and measurements, and "the name field held the wrong
-string" is neither.
+**§3.5's retraction gets no decision entry either**, and the reason is worth stating so it is not
+re-litigated: nothing was decided and nothing changed. A spec section asserted a defect, the
+falsify-first rule caught it before any code moved, and the section now records the error and the
+one real invariant it surfaced. The plan records arguments and measurements; "the Architect misread
+a call site" is neither. What *would* warrant an entry is the guard §3.5 recommends, if it is ever
+generalized into a rule about entity-naming order — it is not one yet.
