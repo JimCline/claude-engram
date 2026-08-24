@@ -5182,3 +5182,75 @@ That report is the finding, not the clearance: whatever can be edited freely can
 silently with the suite green. Each of these passes. None of them can fail. The only reliable
 detector is to break the thing and watch the red, which is why every guard in this series was
 accepted on its falsification and not on its result.
+
+## D70 — Code edges are object-bearing facts; the `edge` table's design is superseded
+
+Argument, in the plan's style: the `edge` table (schema:206-217) was designed with `created_at` and
+no `valid_to`/`superseded_by`, making it a snapshot — the same limitation this project rejected in
+the tool it was compared against, and incompatible with a store whose entire thesis is that beliefs
+have validity windows. `fact.subject_id` + `predicate` + `fact.object_id` is already a directed
+typed edge and inherits temporality, supersession, provenance, and the regenerable/protected
+distinction for free. Building `edge` as designed would have meant a second, non-temporal
+representation of the same relation, and two representations of one thing diverge the first time
+one is tuned.
+
+What it costs, stated plainly: `ux_fact_live` becomes two disjoint partial indexes, because adding
+`object_id` to the existing one is silently wrong — SQL treats NULLs as distinct, so every ordinary
+belief would stop superseding its predecessor with nothing erroring. The invariant that makes the
+pair compose is that **a predicate is either always object-bearing or never**, enforced by lint.
+The table stays in the schema, unused and marked, rather than being dropped.
+
+## D71 — M3 opens by owner override, and D6's gate is recorded unmet
+
+Argument: D6 gates M3 on evidence that missed recalls are substantially code-structure questions —
+a question about *model* behaviour, arising from the observation that every predecessor died
+because the LLM never called the memory tool. A direct user request is evidence of user demand, not
+of model adoption, and recording it as satisfying D6 would corrupt a gate in the direction that
+looks like success — the failure mode D43 traced a wrong conclusion back to.
+
+So the gate is recorded **unmet and overridden by the product owner**, which is legitimate and
+different. Two things reduce the risk and are part of the decision: D6's stated rationale cites
+"the D1 sidecar risk", which is retired — `src/Engram.Sidecar.Roslyn/` exists, works, and is
+tested — so M3 is cheaper than when it was costed; and the override is made answerable rather than
+blind, because Phase 1 ships a navigation surface for a fraction of M3's cost and instruments it,
+producing the adoption evidence D6 wanted from the cheap end of the work.
+
+Recorded consequence: if `navigate` telemetry after a reasonable period shows the model does not
+reach for the surface, that is D6's answer arriving late, and Phases 3–4 should be re-argued rather
+than continued on momentum.
+
+## D72 — A code edge names its target; it does not address it
+
+Argument: `object_id` on a code edge holds a **name-keyed symbol entity — the callee as written at
+the call site** — and never a resolved declaration. Cross-file resolution is therefore a query-time
+join, not stored state.
+
+The alternative that looks obvious is to resolve at index time and store the resolved target, so
+traversal is a cheap indexed join. It fails on engram's own incrementality: the blob-SHA skip
+(`CodeIndexer.cs:234`) never revisits an unchanged file, so when a symbol moves, every caller's
+edge points at the old address and **no caller's file changed** — nothing re-resolves them. The
+graph rots in precisely the situation navigation is most wanted, a refactor.
+
+A hybrid — store the resolved target *and* the name, treat staleness as D8-repairable derived
+state — was considered and rejected on storage shape rather than on instinct. The append-only
+invariant lists **object** among immutable belief content, so a resolved target baked into
+`object_id` cannot be repaired; it can only be churned through supersession, manufacturing belief
+revisions for an event nobody observed.
+
+The split that resolves it: the edge is *observed belief content* — this caller calls something
+spelled `Foo` — which never rots and changes only when the caller's own file changes, which is
+exactly when the indexer revisits it. The name→declaration binding is *derived state*, so it lives
+in a join and is recomputable by definition. This dissolves the rot rather than mitigating it: a
+moved symbol yields correct answers on the next query with no re-index and no repair pass.
+
+Costs accepted: ambiguity is paid per query and is **reported, never resolved by preference** — a
+name binding to several declarations returns all of them marked ambiguous, because picking one by
+ranking would make navigation a relevance question. Note the asymmetry, which cuts the other way
+from the intuition that query-time resolution is slower: `callers(X)` needs no join at all, only a
+lookup of facts whose `object_id` is `X`'s name entity, and that is the direction most often asked.
+Only `callees` joins.
+
+Uniformity is the corroborating argument: `imports` objects are name-keyed module strings already,
+so this is the substrate's general rule and not a special case for `calls`. A name→declaration side
+index in the `fact_token` style is deliberately deferred, gated on measured edge volume and a
+timing rather than a plan (D60).

@@ -114,6 +114,15 @@ public static class TelemetryEventKind
     /// </remarks>
     public const string Sync = "sync";
 
+    /// <summary>An <c>engram_navigate</c> call (spec §7.2) — the deterministic-lookup surface D71
+    /// rests its D6-override justification on, so it must be instrumented from Phase 1.</summary>
+    /// <remarks>
+    /// Its own kind rather than <see cref="Recall"/>: navigation is not a relevance question,
+    /// folding it in would inflate a D18/D43 recall-adoption number with calls recall never
+    /// serviced.
+    /// </remarks>
+    public const string Navigate = "navigate";
+
     /// <summary>
     /// Every kind Engram emits.
     /// </summary>
@@ -126,7 +135,7 @@ public static class TelemetryEventKind
     [
         Recall, Remember, Digest, Browse, Expand, Revise, Timeline, Judge,
         SessionStart, ServerStart, ServerStop, SessionOpen, SubagentStart, PreCompact, PostCompact,
-        FileTouched, UserPrompt, MemoryGuard, Index, Embedding, Enrollment, Sync,
+        FileTouched, UserPrompt, MemoryGuard, Index, Embedding, Enrollment, Sync, Navigate,
     ];
 }
 
@@ -204,7 +213,29 @@ public sealed record TelemetryRecord(
     /// time — the two can disagree if config changes in between, and a stamp that disagrees with
     /// the live connection is worse than no stamp (docs/memory-expansion/03-tool-profiles-spec.md).
     /// </summary>
-    [property: JsonPropertyName("tool_profile")] string? ToolProfile = null);
+    [property: JsonPropertyName("tool_profile")] string? ToolProfile = null,
+
+    /// <summary>
+    /// The relation an <c>engram_navigate</c> call resolved: <c>defined_at</c>, <c>imports</c>,
+    /// <c>callers</c>, <c>callees</c>, <c>neighbors</c>, or an unrecognized value verbatim. Only
+    /// <see cref="TelemetryEventKind.Navigate"/> sets it.
+    /// </summary>
+    [property: JsonPropertyName("relation")] string? Relation = null,
+
+    /// <summary>
+    /// Whether an <c>engram_navigate</c> call had anything to answer with. Only
+    /// <see cref="TelemetryEventKind.Navigate"/> sets it — this, not <see cref="FactCount"/>,
+    /// is D71's adoption signal; <see cref="FactCount"/> means facts returned by a recall-shaped
+    /// call and must stay null here (D46's rule about a nearby number in the wrong field).
+    /// </summary>
+    [property: JsonPropertyName("found")] bool? Found = null,
+
+    /// <summary>
+    /// Comma-separated match tiers among the rows an <c>engram_navigate</c> call returned (e.g.
+    /// <c>"Exact"</c> or <c>"Exact,Substring"</c>), empty when nothing was found. Only
+    /// <see cref="TelemetryEventKind.Navigate"/> sets it.
+    /// </summary>
+    [property: JsonPropertyName("tiers")] string? Tiers = null);
 
 [JsonSerializable(typeof(TelemetryRecord))]
 internal sealed partial class TelemetryJsonContext : JsonSerializerContext;

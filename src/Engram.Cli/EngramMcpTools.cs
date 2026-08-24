@@ -661,6 +661,191 @@ public sealed class EngramMcpTools
             : $"[{fact_id}] was not pinned for this session. Nothing changed.";
     }
 
+    // Match tier only — extraction tier (§7.1) is a Phase 4 stamp with no schema yet; an absent
+    // field would read as tier 0, the failure §3.4 already forbids for callers/callees/neighbors
+    // returning empty instead of "not yet indexed", so every row-bearing response says so instead.
+    private const string ExtractionTierUnrecordedHeader =
+        "(extraction tier not recorded until Phase 4 — rows below carry match tier only)\n";
+
+    private sealed record NavigateOutcome(string Text, bool Found, IReadOnlyList<string> Tiers)
+    {
+        public static NavigateOutcome NotFound(string text) => new(text, Found: false, Tiers: []);
+    }
+
+    [McpServerTool(Name = "engram_navigate")]
+    [Description(
+        "Where is a symbol defined, or what does a file import — a deterministic lookup over indexed " +
+        "code, not a search. Use it instead of Read/Grep to answer 'where is Z defined' or 'what does " +
+        "Y import'. relation is defined_at or imports this phase; callers, callees, and neighbors are " +
+        "recognized but answer 'not yet indexed' rather than an empty result, since an empty list would " +
+        "read as 'nothing calls this' when the graph simply is not built yet.")]
+    public static string Navigate(
+        EngramHome home,
+        McpSessionId session,
+        [Description("A symbol name for defined_at, or a file path for imports.")] string query,
+        [Description("One of: defined_at, imports, callers, callees, neighbors.")] string relation,
+        [Description("Restrict matches to one repo's indexed code, by its slug.")] string? repo = null,
+        [Description("Maximum matches returned. Defaults to 20, clamped to 1-100.")] int limit = 20)
+    {
+        limit = Math.Clamp(limit, 1, 100);
+        var normalizedRelation = relation.Trim().ToLowerInvariant();
+
+        NavigateOutcome outcome;
+        if (normalizedRelation is "callers" or "callees" or "neighbors")
+        {
+            outcome = NavigateOutcome.NotFound(
+                $"'{normalizedRelation}' is not yet indexed — code edges (calls, references) are "
+                    + "Phase 3 work that has not landed. This is not a negative result; it means the "
+                    + "question cannot be answered yet, not that the answer is empty.");
+        }
+        else
+        {
+            using var connection = EngramDatabase.OpenInitialized(home);
+            outcome = normalizedRelation switch
+            {
+                "defined_at" => NavigateDefinedAt(connection, query, repo, limit),
+                "imports" => NavigateImports(connection, query, repo, limit),
+                _ => NavigateOutcome.NotFound(
+                    $"Unknown relation '{relation}'. Use defined_at or imports (callers, callees, and "
+                        + "neighbors are recognized but not yet indexed)."),
+            };
+        }
+
+        Telemetry.Append(home, new TelemetryRecord(
+            Timestamp: DateTime.UtcNow.ToString("o"),
+            SessionId: session.Value,
+            Kind: TelemetryEventKind.Navigate,
+            Relation: normalizedRelation,
+            Found: outcome.Found,
+            Tiers: string.Join(",", outcome.Tiers)));
+
+        return outcome.Text;
+    }
+
+    private static NavigateOutcome NavigateDefinedAt(SqliteConnection connection, string query, string? repo, int limit)
+    {
+        var repoNeedle = RepoNeedle(repo);
+        if (repoNeedle is not null && !RepoIndexed(connection, repoNeedle))
+        {
+            return NavigateOutcome.NotFound($"Repo '{repo}' is not indexed. Nothing to search.");
+        }
+
+        var matches = SymbolResolver.Resolve(connection, query, limit, repoNeedle);
+
+        if (matches.Count == 0)
+        {
+            return NavigateOutcome.NotFound(
+                $"No symbol named '{query}' found (checked exact, case-insensitive, and substring match).");
+        }
+
+        var builder = new System.Text.StringBuilder();
+        builder.Append(ExtractionTierUnrecordedHeader);
+        builder.Append(CountText(matches.Count, "match")).Append(" for '").Append(query).Append("':\n");
+
+        foreach (var match in matches)
+        {
+            var declared = FactStore.History(connection, match.Path, "declared-as")
+                .FirstOrDefault(f => f.ValidTo is null);
+
+            builder.Append("  [").Append(match.Tier).Append("] ").Append(match.Path).Append(": ")
+                .Append(declared?.Body ?? "(no declaration recorded)")
+                .Append('\n');
+        }
+
+        var tiers = matches.Select(m => m.Tier.ToString()).Distinct().ToList();
+        return new NavigateOutcome(builder.ToString().TrimEnd('\n'), Found: true, Tiers: tiers);
+    }
+
+    private static NavigateOutcome NavigateImports(SqliteConnection connection, string query, string? repo, int limit)
+    {
+        var repoNeedle = RepoNeedle(repo);
+        if (repoNeedle is not null && !RepoIndexed(connection, repoNeedle))
+        {
+            return NavigateOutcome.NotFound($"Repo '{repo}' is not indexed. Nothing to search.");
+        }
+
+        var exact = QueryFileEntities(connection, "e.path = $q", query, limit, repoNeedle)
+            .Select(path => (Path: path, Tier: "exact"))
+            .ToList();
+
+        var matches = exact.Count > 0
+            ? exact
+            : QueryFileEntities(
+                    connection,
+                    "e.path LIKE '%/' || $q ESCAPE '\\'",
+                    SymbolResolver.LikeEscape(query),
+                    limit,
+                    repoNeedle)
+                .Select(path => (Path: path, Tier: "path-suffix"))
+                .ToList();
+
+        if (matches.Count == 0)
+        {
+            return NavigateOutcome.NotFound(
+                $"No file matching '{query}' found (checked exact path, then path ending in '/{query}').");
+        }
+
+        var builder = new System.Text.StringBuilder();
+        builder.Append(ExtractionTierUnrecordedHeader);
+        builder.Append(CountText(matches.Count, "file")).Append(" matching '").Append(query).Append("':\n");
+
+        foreach (var match in matches)
+        {
+            var imports = FactStore.History(connection, match.Path, "imports")
+                .FirstOrDefault(f => f.ValidTo is null);
+
+            builder.Append("  [").Append(match.Tier).Append("] ").Append(match.Path).Append(": ")
+                .Append(imports?.Body ?? "no imports recorded")
+                .Append('\n');
+        }
+
+        var tiers = matches.Select(m => m.Tier).Distinct().ToList();
+        return new NavigateOutcome(builder.ToString().TrimEnd('\n'), Found: true, Tiers: tiers);
+    }
+
+    private static List<string> QueryFileEntities(
+        SqliteConnection connection, string pathPredicate, string query, int limit, string? repoContains)
+    {
+        using var command = connection.CreateCommand();
+        var repoClause = repoContains is null ? string.Empty : " AND e.path LIKE '%' || $repo || '%'";
+        command.CommandText =
+            $"SELECT e.path FROM entity e WHERE e.kind = 'file' AND {pathPredicate}{repoClause} ORDER BY e.path LIMIT $limit;";
+        command.Parameters.AddWithValue("$q", query);
+        command.Parameters.AddWithValue("$limit", limit);
+        if (repoContains is not null)
+        {
+            command.Parameters.AddWithValue("$repo", repoContains);
+        }
+
+        var paths = new List<string>();
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            paths.Add(reader.GetString(0));
+        }
+
+        return paths;
+    }
+
+    // Bracketing slashes make this segment-exact — "/code/engram/" cannot match
+    // "/code/engram-docs/" — and CodePaths.Slug is the exact normalization the indexer applies
+    // to a repo name when it composes CodePaths.RepoRoot, so a query using the real repo name
+    // filters to the same paths the indexer wrote (code-nav fixup B2/constraints 1-2). Slug's
+    // output is restricted to [a-z0-9-], so the needle never itself needs LIKE-escaping.
+    private static string? RepoNeedle(string? repo) => repo is null ? null : $"/code/{CodePaths.Slug(repo)}/";
+
+    // Distinguishes "this repo isn't indexed" from "no match in this repo" (D60's rule already
+    // applied to callers/callees/neighbors) — without it, an unknown repo silently falls into
+    // the generic not-found message and reads as "no symbol", not as "wrong repo".
+    private static bool RepoIndexed(SqliteConnection connection, string repoNeedle)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT 1 FROM entity WHERE path LIKE '%' || $repo || '%' LIMIT 1;";
+        command.Parameters.AddWithValue("$repo", repoNeedle);
+        using var reader = command.ExecuteReader();
+        return reader.Read();
+    }
+
     private static void AppendChildren(System.Text.StringBuilder builder, BrowseNode node, string indent)
     {
         foreach (var child in node.Children)

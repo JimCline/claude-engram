@@ -12,22 +12,24 @@ namespace Engram.Integration.Tests;
 /// </summary>
 public class McpToolSurfaceBudgetTests
 {
-    // Measured 5,610 characters across the ten tools in EngramMcpTools on 2026-08-20, when
-    // engram_pin and engram_unpin joined for per-session pin (docs/memory-expansion/04-lifecycle-
-    // spec.md) and engram_remember/engram_revise each gained a `review_after` parameter for the
-    // review-due marker from the same spec. This is the deliberate-feature-addition case the
-    // ceiling exists to let through, not the silent-drift case it otherwise guards against, so it
-    // is re-baselined off this measured actual rather than carrying forward unspent headroom.
+    // Measured 6,263 characters across the eleven tools in EngramMcpTools on 2026-08-24, when
+    // engram_navigate joined for code navigation (docs/code-navigation-spec.md §3.4): defined_at
+    // and imports are a deterministic lookup RecallRanker cannot answer (navigation is not a
+    // relevance question), so they need their own tool rather than a parameter on engram_recall.
+    // This is the deliberate-feature-addition case the ceiling exists to let through, not the
+    // silent-drift case it otherwise guards against, so it is re-baselined off this measured
+    // actual rather than carrying forward unspent headroom. Re-baselined again same day, 6,263 ->
+    // 6,281, after a reviewer fixup pass folded `limit`'s clamp range into its own description.
     // EngramServerTools's three tools (start/status/stop) are argued as cost in D17 but are
     // not reflected over by ToolMethods() and are not counted in this figure — a separate,
     // unmeasured gap. Raising this number is a deliberate edit that needs a reason in the
     // commit message, not a knob to turn when a description outgrows it.
-    private const int MaxDefinitionChars = 5610;
+    private const int MaxDefinitionChars = 6281;
 
-    // 8 -> 10 when engram_pin and engram_unpin joined for per-session pin
-    // (docs/memory-expansion/04-lifecycle-spec.md): a pin's effect on ranking has to be callable
-    // independently of remember/revise/recall, so it cannot ride an existing tool's contract.
-    private const int ExpectedToolCount = 10;
+    // 10 -> 11 when engram_navigate joined for code navigation (docs/code-navigation-spec.md
+    // §3.4): defined_at/imports read entity and fact tables directly rather than going through
+    // RecallRanker, so it cannot ride an existing tool's contract either.
+    private const int ExpectedToolCount = 11;
 
     [Fact]
     public void ToolDefinitions_StayUnderCharacterCeiling()

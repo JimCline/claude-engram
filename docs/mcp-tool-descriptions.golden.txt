@@ -39,6 +39,17 @@ Record a verdict on how two facts relate: supersedes, conflicts_with, scoped, or
   param: reason
   Why this verdict — what distinguishes or reconciles the two facts.
 
+tool: engram_navigate
+Where is a symbol defined, or what does a file import — a deterministic lookup over indexed code, not a search. Use it instead of Read/Grep to answer 'where is Z defined' or 'what does Y import'. relation is defined_at or imports this phase; callers, callees, and neighbors are recognized but answer 'not yet indexed' rather than an empty result, since an empty list would read as 'nothing calls this' when the graph simply is not built yet.
+  param: query
+  A symbol name for defined_at, or a file path for imports.
+  param: relation
+  One of: defined_at, imports, callers, callees, neighbors.
+  param: repo
+  Restrict matches to one repo's indexed code, by its slug.
+  param: limit
+  Maximum matches returned. Defaults to 20, clamped to 1-100.
+
 tool: engram_pin
 Pin a fact for this session: engram_recall guarantees it top position whenever the query matches it, without pulling it into results it would not otherwise match. Use it to keep a fact from being crowded out of the digest for the rest of a task where it keeps mattering. The pin does not persist past this session — engram_unpin releases it early.
   param: fact_id
