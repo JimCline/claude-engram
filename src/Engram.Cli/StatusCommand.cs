@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Engram.Core;
 
 namespace Engram.Cli;
@@ -6,10 +7,20 @@ internal static class StatusCommand
 {
     public static int Run(string? homePath, string[] rest, TextWriter stdout, TextWriter stderr)
     {
-        if (rest.Length != 0)
+        var json = false;
+
+        for (var i = 0; i < rest.Length; i++)
         {
-            CliApp.PrintUsage(stderr);
-            return 1;
+            switch (rest[i])
+            {
+                case "--json":
+                    json = true;
+                    break;
+
+                default:
+                    CliApp.PrintUsage(stderr);
+                    return 1;
+            }
         }
 
         var home = EngramHome.ResolveFromProcess(homePath);
@@ -18,6 +29,13 @@ internal static class StatusCommand
 
         var lifecycle = new ServerLifecycle(new ProcessInspector(), new HttpServerHealthChecker(), new ProcessServerLauncher());
         var status = lifecycle.Status(home, EngramVersion.Current, ServerLifecycleTimeouts.Default.HealthCheckTimeout);
+
+        if (json)
+        {
+            var payload = BuildJson(home, initialized, executablePath, status);
+            stdout.WriteLine(JsonSerializer.Serialize(payload, StatusJsonContext.Default.StatusJson));
+            return ExitCodeFor(status.Kind);
+        }
 
         stdout.WriteLine($"home: {home.Root} ({(initialized ? "initialised" : "not initialised")})");
 
@@ -32,7 +50,7 @@ internal static class StatusCommand
                 stdout.WriteLine($"version: {health.Version}");
                 stdout.WriteLine($"uptime: {FormatUptime(uptime)}");
                 WriteLaunchedFrom(status, executablePath, stdout);
-                return 0;
+                break;
 
             // Answering correctly, from a build that is not this one — which is what an upgraded
             // binary and an un-restarted server look like, and is not the server's fault.
@@ -42,25 +60,58 @@ internal static class StatusCommand
                 stdout.WriteLine($"port: {status.Health.Port}");
                 WriteLaunchedFrom(status, executablePath, stdout);
                 stdout.WriteLine("restart it to pick up this build: engram stop, then engram start");
-                return 1;
+                break;
 
             case ServerStatusKind.Stale:
                 stdout.WriteLine("server: not running (stale pid file)");
-                return 1;
+                break;
 
             case ServerStatusKind.Wedged:
                 stdout.WriteLine($"server: not running (pid {status.Recorded!.Pid} is not answering)");
-                return 1;
+                break;
 
             case ServerStatusKind.Reused:
                 stdout.WriteLine("server: not running (pid file referred to a different process)");
-                return 1;
+                break;
 
             case ServerStatusKind.NotRunning:
             default:
                 stdout.WriteLine("server: not running");
-                return 1;
+                break;
         }
+
+        return ExitCodeFor(status.Kind);
+    }
+
+    /// <summary>The one place the 0-vs-1 rule lives, so the human and JSON renderers cannot disagree.</summary>
+    internal static int ExitCodeFor(ServerStatusKind kind) => kind == ServerStatusKind.Running ? 0 : 1;
+
+    internal static StatusJson BuildJson(EngramHome home, bool initialized, string executablePath, StatusResult status)
+    {
+        var health = status.Health;
+        var startedFrom = status.LaunchedFrom is { Length: > 0 } launchedFrom ? launchedFrom : null;
+        var thisBinary = startedFrom is not null && !string.Equals(startedFrom, executablePath, StringComparison.Ordinal)
+            ? executablePath
+            : null;
+
+        return new StatusJson(
+            Home: home.Root,
+            Initialised: initialized,
+            Server: status.Kind.ToString(),
+            Pid: status.Kind switch
+            {
+                ServerStatusKind.Running or ServerStatusKind.VersionMismatch => health!.Pid,
+                ServerStatusKind.Wedged => status.Recorded!.Pid,
+                _ => null,
+            },
+            Port: health?.Port,
+            Version: health?.Version,
+            StartTimeUtc: health?.StartTimeUtc,
+            UptimeSeconds: status.Kind == ServerStatusKind.Running
+                ? (long)Math.Max(0, (DateTimeOffset.UtcNow - health!.StartTimeUtc).TotalSeconds)
+                : null,
+            StartedFrom: startedFrom,
+            ThisBinary: thisBinary);
     }
 
     /// <summary>
