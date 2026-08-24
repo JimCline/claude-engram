@@ -308,6 +308,27 @@ public class EngramNavigateTests
         Assert.Equal(100, matchCount);
     }
 
+    // Architect follow-up to the §3.5 retraction: nothing pinned CodeIndexer.cs:547-548's
+    // EnsureEntity-before-Remember ordering for a nested symbol specifically. Asserts the tier
+    // (not just that the symbol was found), since a symbol-identity assertion passes under the
+    // substring tier too.
+    [Fact]
+    public void DefinedAt_NestedSymbol_BareLeafNameReturnsExactTierMatch()
+    {
+        using var sandbox = new SandboxHome();
+        var repo = CreateFixture(
+            sandbox,
+            "fixture-repo",
+            "Outer.cs",
+            "using System.Text;\n\npublic sealed class Outer\n{\n    public sealed class Inner { }\n}\n");
+        using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
+        Index(connection, sandbox, repo);
+
+        var result = EngramMcpTools.Navigate(sandbox.Home, Session, "Inner", "defined_at");
+
+        Assert.Contains("[Exact]", result);
+    }
+
     private static string CreateFixture(SandboxHome sandbox, string repoDirName) =>
         CreateFixture(sandbox, repoDirName, "Program.cs", ProgramCs);
 
