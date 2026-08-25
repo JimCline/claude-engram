@@ -258,9 +258,14 @@ public static class LanguageRegistry
                     export class Scanner {
                         depth = 1;
                         private cache = "";
+                        #id = "";
                         probe(): void;
                         probe(deep: boolean): void;
                         probe(deep?: boolean): void {}
+                        private reset(): void {}
+                        #clear(): void {}
+                        @deprecated
+                        private legacy(): void {}
                         get size(): number { return this.depth; }
                     }
                     """,
@@ -274,9 +279,13 @@ public static class LanguageRegistry
                     "Scanner",
                     "Scanner/depth",
                     "Scanner/cache",
+                    "Scanner/#id",
                     "Scanner/probe()",
                     "Scanner/probe(deep: boolean)",
                     "Scanner/probe(deep?: boolean)",
+                    "Scanner/reset",
+                    "Scanner/#clear",
+                    "Scanner/legacy",
                     "Scanner/size",
                     "scan",
                 ]),

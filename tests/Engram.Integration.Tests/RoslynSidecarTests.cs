@@ -511,6 +511,232 @@ public class RoslynSidecarTests
     }
 
     [Fact]
+    public void Analyze_EmitsAMethodWithNoAccessibilityModifier()
+    {
+        const string source =
+            """
+            namespace Demo;
+
+            public sealed class Widget
+            {
+                void Tick() { }
+            }
+            """;
+
+        var widget = Analyze("WidgetNoModifier.cs", source);
+        Assert.Contains(widget.Symbols, s => s.Name == "Tick" && s.Kind == "method");
+    }
+
+    [Fact]
+    public void Analyze_EmitsInterfaceMembers_AndEveryNonPublicAccessibility()
+    {
+        const string source =
+            """
+            namespace Demo;
+
+            public interface IWidget
+            {
+                void Ping();
+            }
+
+            public sealed class Widget : IWidget
+            {
+                public void Ping() { }
+                internal void InternalOnly() { }
+                protected void ProtectedOnly() { }
+                private protected void PrivateProtectedOnly() { }
+            }
+            """;
+
+        var widget = Analyze("WidgetAccessibility.cs", source);
+        Assert.Contains(widget.Symbols, s => s.Name == "Ping" && s.Scope == "IWidget");
+        Assert.Contains(widget.Symbols, s => s.Name == "InternalOnly");
+        Assert.Contains(widget.Symbols, s => s.Name == "ProtectedOnly");
+        Assert.Contains(widget.Symbols, s => s.Name == "PrivateProtectedOnly");
+    }
+
+    // §5.3 exclusions are keyed on syntax kind, not visibility (D48) — indexers, operators,
+    // enum members, and local functions stay unemitted regardless of how widely members are
+    // now indexed. Falsify by adding a case for one of these kinds to EmitMember's switch.
+    [Fact]
+    public void Analyze_StillExcludesIndexersAndOperatorsAndLocalFunctions()
+    {
+        const string source =
+            """
+            namespace Demo;
+
+            public sealed class Widget
+            {
+                public int this[int i] => i;
+                public static Widget operator +(Widget a, Widget b) => a;
+
+                private void Outer()
+                {
+                    void Local() { }
+                    Local();
+                }
+            }
+            """;
+
+        var widget = Analyze("WidgetExcluded.cs", source);
+        var members = widget.Symbols.Where(s => s.Scope == "Widget").Select(s => s.Name).ToList();
+        Assert.Equal(["Outer"], members);
+    }
+
+    [Fact]
+    public void Analyze_StillExcludesEnumMembers()
+    {
+        var color = Analyze("ColorExcluded.cs", "namespace Demo;\n\npublic enum Color { Red, Green }\n");
+        Assert.DoesNotContain(color.Symbols, s => s.Name is "Red" or "Green");
+    }
+
+    [Fact]
+    public void CallsOf_ACallInsideAPrivateMethod_AttributesToThatMethod()
+    {
+        const string source =
+            """
+            namespace Demo;
+
+            public sealed class Widget
+            {
+                private void Secret()
+                {
+                    Helper();
+                }
+
+                private void Helper() { }
+            }
+            """;
+
+        var widget = Analyze("WidgetPrivateCall.cs", source);
+        string? secretFragment = null;
+        foreach (var (fragment, symbol) in DeepTier.Fragments(widget.Symbols))
+        {
+            if (symbol.Name == "Secret")
+            {
+                secretFragment = fragment;
+            }
+        }
+
+        Assert.NotNull(secretFragment);
+        var call = widget.Calls.Single(c => c.Callee == "Helper");
+        Assert.Equal(secretFragment, call.EnclosingFragment);
+    }
+
+    [Fact]
+    public void CallsOf_ACallInsideALocalFunction_AttributesToTheEnclosingPrivateMethod()
+    {
+        const string source =
+            """
+            namespace Demo;
+
+            public sealed class Widget
+            {
+                private void Outer()
+                {
+                    void Local()
+                    {
+                        Helper();
+                    }
+
+                    Local();
+                }
+
+                private void Helper() { }
+            }
+            """;
+
+        var widget = Analyze("WidgetLocalFunctionCall.cs", source);
+        string? outerFragment = null;
+        foreach (var (fragment, symbol) in DeepTier.Fragments(widget.Symbols))
+        {
+            if (symbol.Name == "Outer")
+            {
+                outerFragment = fragment;
+            }
+        }
+
+        Assert.NotNull(outerFragment);
+        var call = widget.Calls.Single(c => c.Callee == "Helper");
+        Assert.Equal(outerFragment, call.EnclosingFragment);
+    }
+
+    // The reported defect that motivated the all-members spec: `engram_navigate defined_at
+    // "WriteEntry"` failed to find a real `private static` method because tier 2 filtered
+    // non-public members before this change.
+    [Fact]
+    public void Indexing_EmitsAPrivateStaticMethod_TheReportedDefect()
+    {
+        const string source =
+            """
+            namespace Demo;
+
+            public static class MemoryReport
+            {
+                public static void Append()
+                {
+                    WriteEntry();
+                }
+
+                private static void WriteEntry()
+                {
+                }
+            }
+            """;
+
+        using var sandbox = new SandboxHome();
+        var repo = Path.Combine(sandbox.Home.Root, "report-repo");
+        Directory.CreateDirectory(repo);
+        File.WriteAllText(Path.Combine(repo, "MemoryReport.cs"), source);
+        using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
+
+        var report = Index(connection, sandbox, repo, sidecarPath: SidecarBinary(), full: false);
+
+        var writeEntryPath = CodePaths.ForSymbol(
+            CodePaths.ForFile(report.RepoPath, "MemoryReport.cs"), "MemoryReport/WriteEntry");
+
+        var facts = FactStore.ReadLive(connection);
+        Assert.Contains(facts, f => f.SubjectPath == writeEntryPath && f.Predicate == "declared-as");
+    }
+
+    // §7.2 gate: a store stamped by an older analyzer version must force a full re-read even
+    // when the caller passes `full: false` — the gate is what must catch the mismatch, not the
+    // caller. Running this with `full: true` would bypass the gate and prove nothing (§7.1).
+    [Fact]
+    public void AVersionMismatch_ForcesAFullReread_WithFullFalse()
+    {
+        const string source =
+            """
+            namespace Demo;
+
+            public sealed class Widget
+            {
+                private int count;
+            }
+            """;
+
+        using var sandbox = new SandboxHome();
+        var repo = Path.Combine(sandbox.Home.Root, "version-repo");
+        Directory.CreateDirectory(repo);
+        File.WriteAllText(Path.Combine(repo, "Widget.cs"), source);
+        using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
+
+        Index(connection, sandbox, repo, sidecarPath: SidecarBinary(), full: false);
+        Assert.Equal(CodeIndexer.CurrentVersion, CodeIndexer.StoredVersion(connection));
+
+        using (var command = connection.CreateCommand())
+        {
+            command.CommandText = "UPDATE schema_meta SET value = '2.4' WHERE key = 'code_index_version';";
+            command.ExecuteNonQuery();
+        }
+
+        var report = Index(connection, sandbox, repo, sidecarPath: SidecarBinary(), full: false);
+
+        Assert.True(report.VersionForcedFull);
+        Assert.Equal(CodeIndexer.CurrentVersion, CodeIndexer.StoredVersion(connection));
+    }
+
+    [Fact]
     public void SidecarProject_HasNoProjectReferenceToEngramCore()
     {
         var text = File.ReadAllText(Path.Combine(RepoRoot(), "src", "Engram.Sidecar.Roslyn", "engram-roslyn.csproj"));
