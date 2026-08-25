@@ -32,17 +32,16 @@ analysis and is not edited further.
   at write time, `navigate` telemetry field), landed `e6bed64`, pushed to
   `origin/code-graph`.
 
-## Open
+- [x] **D22 — a readable report of everything Engram knows.** `engram report` ships
+  (`MemoryReport.cs`, `ReportCommand.cs`, wired in `CliApp.cs`), per
+  `docs/engram-d22-report-spec.md` (rev 3). Unlike `browse`, it includes closed and
+  superseded facts (marked as such, including forget/revision reasons), does not
+  truncate, and emits a Markdown artifact. Reviewed and passed. Pin state is
+  deliberately excluded (§5.6.1) — it's ephemeral, per-MCP-session, and has no
+  coherent cross-process reading; the report's audit surface does not and cannot
+  cover it.
 
-- [ ] **D22 — a readable report of everything Engram knows.** Not started. No `report`
-  verb exists. `engram browse` (memory-expansion feature 5, shipped 2026-08-21) is
-  related but does **not** satisfy this: it queries only live facts (excludes closed/
-  superseded), and caps output at 5 facts per node — directly contradicting D22's own
-  requirements ("including closed and superseded facts, marked as such"; "no truncation,
-  ever"). D22 also specifies a Markdown artifact output; browse is an interactive
-  terminal TUI, a different shape. Needs its own design pass, not a browse extension —
-  browse was built for feature 5's interactive-navigation goal, not D22's audit/
-  retraction-verification goal.
+## Open
 
 - [ ] **BENCHMARKS.md.** Doesn't exist at the repo root. Low effort per the original
   analysis ("Engram's culture already demands numbers over estimates ... promoting them

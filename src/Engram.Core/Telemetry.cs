@@ -123,6 +123,11 @@ public static class TelemetryEventKind
     /// </remarks>
     public const string Navigate = "navigate";
 
+    /// <summary>An <c>engram report</c> run (D22 §3.6) — a human-typed audit verb, never folded
+    /// into <see cref="Recall"/> or <see cref="Remember"/>, whose adoption numbers it must not
+    /// move.</summary>
+    public const string Report = "report";
+
     /// <summary>
     /// Every kind Engram emits.
     /// </summary>
@@ -135,7 +140,7 @@ public static class TelemetryEventKind
     [
         Recall, Remember, Digest, Browse, Expand, Revise, Timeline, Judge,
         SessionStart, ServerStart, ServerStop, SessionOpen, SubagentStart, PreCompact, PostCompact,
-        FileTouched, UserPrompt, MemoryGuard, Index, Embedding, Enrollment, Sync, Navigate,
+        FileTouched, UserPrompt, MemoryGuard, Index, Embedding, Enrollment, Sync, Navigate, Report,
     ];
 }
 
@@ -244,7 +249,33 @@ public sealed record TelemetryRecord(
     /// it — the D43 failure mode this guards against. Only <see cref="TelemetryEventKind.Navigate"/>
     /// sets it.
     /// </summary>
-    [property: JsonPropertyName("extraction_tiers")] string? ExtractionTiers = null);
+    [property: JsonPropertyName("extraction_tiers")] string? ExtractionTiers = null,
+
+    /// <summary>
+    /// How many facts an <c>engram report</c> run enumerated, total. Only
+    /// <see cref="TelemetryEventKind.Report"/> sets this — never <see cref="FactCount"/>, which
+    /// means facts returned to the model on a <c>recall</c> record and nothing on a primer; a
+    /// nearby number in that field is exactly what D43 traced a wrong conclusion back to.
+    /// </summary>
+    [property: JsonPropertyName("report_total_facts")] int? ReportTotalFacts = null,
+
+    /// <summary>How many of those facts were live. Only <see cref="TelemetryEventKind.Report"/> sets this.</summary>
+    [property: JsonPropertyName("report_live_facts")] int? ReportLiveFacts = null,
+
+    /// <summary>How many of those facts were closed. Only <see cref="TelemetryEventKind.Report"/> sets this.</summary>
+    [property: JsonPropertyName("report_closed_facts")] int? ReportClosedFacts = null,
+
+    /// <summary>
+    /// How many regenerable facts <c>--authored-only</c> excluded; zero when the flag was not
+    /// passed. Only <see cref="TelemetryEventKind.Report"/> sets this.
+    /// </summary>
+    [property: JsonPropertyName("report_excluded_facts")] int? ReportExcludedFacts = null,
+
+    /// <summary>
+    /// Size of the rendered document in bytes — the cheap signal of whether it is growing past
+    /// usefulness. Only <see cref="TelemetryEventKind.Report"/> sets this.
+    /// </summary>
+    [property: JsonPropertyName("report_bytes_written")] int? ReportBytesWritten = null);
 
 [JsonSerializable(typeof(TelemetryRecord))]
 internal sealed partial class TelemetryJsonContext : JsonSerializerContext;
