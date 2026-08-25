@@ -508,6 +508,50 @@ public class StoreRepairerTests
         Assert.Empty(BackupStore.List(sandbox.Home));
     }
 
+    /// <summary>
+    /// Code-navigation Phase 4 spec §9 item 13: repair never writes <c>analyzer_tier</c> — it is
+    /// structurally excluded from what §4.3 licenses derived-state repair to touch, by D8. Seeds
+    /// a store needing a real FTS rebuild (the same desync as
+    /// <see cref="FtsDesync_IsDetected_AndRebuildRestoresSearch"/>) so <c>apply</c> genuinely
+    /// writes, then asserts the code fact's tier is untouched either way. Falsified by adding an
+    /// <c>UPDATE fact SET analyzer_tier = 0</c> beside repair's FTS rebuild, confirming this test
+    /// reds, then reverting.
+    /// </summary>
+    [Fact]
+    public void Repair_NeverWritesAnalyzerTier_WhileRebuildingTheIndex()
+    {
+        using var sandbox = new SandboxHome();
+        long factId;
+
+        using (var connection = EngramDatabase.OpenInitialized(sandbox.Home))
+        {
+            factId = FactStore.Remember(
+                connection,
+                new FactWrite(
+                    "/projects/acme/code/api/src/A.cs#Widget", "symbol", "declared-as",
+                    "public sealed class Widget", "code", "observed", Regenerable: true, AnalyzerTier: null),
+                T0).FactId;
+
+            var live = FactStore.ReadById(connection, factId)!;
+            using var desync = connection.CreateCommand();
+            desync.CommandText =
+                "INSERT INTO fact_fts(fact_fts, rowid, body, predicate, path) "
+                + "VALUES('delete', $id, $body, $predicate, $path);";
+            desync.Parameters.AddWithValue("$id", factId);
+            desync.Parameters.AddWithValue("$body", live.Body);
+            desync.Parameters.AddWithValue("$predicate", live.Predicate);
+            desync.Parameters.AddWithValue("$path", live.SubjectPath);
+            desync.ExecuteNonQuery();
+        }
+
+        using (var connection = EngramDatabase.OpenInitialized(sandbox.Home))
+        {
+            var applied = StoreRepairer.Repair(connection, sandbox.Home, apply: true, T0);
+            Assert.True(applied.FtsRebuilt);
+            Assert.Null(FactStore.ReadById(connection, factId)!.AnalyzerTier);
+        }
+    }
+
     private static string FactPath(SqliteConnection connection, long factId)
     {
         using var command = connection.CreateCommand();

@@ -104,7 +104,7 @@ public class EngramNavigateTests
     }
 
     [Fact]
-    public void Response_CarriesExtractionTierUnrecordedHeader()
+    public void Response_CarriesTheExtractionTierHeader_ForARegexOnlyIndex()
     {
         using var sandbox = new SandboxHome();
         var repo = CreateFixture(sandbox, "fixture-repo");
@@ -113,7 +113,7 @@ public class EngramNavigateTests
 
         var result = EngramMcpTools.Navigate(sandbox.Home, Session, "Widget", "defined_at");
 
-        Assert.Contains("extraction tier not recorded", result);
+        Assert.Contains("(extraction tier: regex)", result);
     }
 
     // Prefix-sharing slugs: "/code/engram/" must not match "/code/engram-docs/" (fixup B2,

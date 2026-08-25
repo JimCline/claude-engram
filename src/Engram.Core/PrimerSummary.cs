@@ -100,7 +100,7 @@ public sealed record PrimerSummary(
             while (reader.Read())
             {
                 candidates.Add(FactCatalog.ToCannedFact(
-                    FactStore.ReadStoredFact(reader), now, topicNames, reader.GetInt32(15)));
+                    FactStore.ReadStoredFact(reader), now, topicNames, reader.GetInt32(16)));
             }
         }
 

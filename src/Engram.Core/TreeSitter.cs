@@ -228,7 +228,7 @@ public sealed unsafe class TreeSitter : IDisposable
 
             var calls = ExtractCalls(lang, language, root, source, symbols, declNodes);
 
-            return new DeepAnalysis(relativePath, symbols, modules, null, calls);
+            return new DeepAnalysis(relativePath, symbols, modules, null, calls, Tier: 1);
         }
         finally
         {

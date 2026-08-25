@@ -235,7 +235,16 @@ public sealed record TelemetryRecord(
     /// <c>"Exact"</c> or <c>"Exact,Substring"</c>), empty when nothing was found. Only
     /// <see cref="TelemetryEventKind.Navigate"/> sets it.
     /// </summary>
-    [property: JsonPropertyName("tiers")] string? Tiers = null);
+    [property: JsonPropertyName("tiers")] string? Tiers = null,
+
+    /// <summary>
+    /// Comma-separated extraction tiers among the rows an <c>engram_navigate</c> call returned
+    /// (e.g. <c>"regex"</c> or <c>"regex,semantic"</c>), empty when nothing was found. This is a
+    /// separate axis from <see cref="Tiers"/> (match confidence) and must never be folded into
+    /// it — the D43 failure mode this guards against. Only <see cref="TelemetryEventKind.Navigate"/>
+    /// sets it.
+    /// </summary>
+    [property: JsonPropertyName("extraction_tiers")] string? ExtractionTiers = null);
 
 [JsonSerializable(typeof(TelemetryRecord))]
 internal sealed partial class TelemetryJsonContext : JsonSerializerContext;

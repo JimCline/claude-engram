@@ -15,7 +15,8 @@ public sealed record FactWrite(
     long? SessionId = null,
     string? Details = null,
     string? ObjectPath = null,
-    string? ObjectKind = null);
+    string? ObjectKind = null,
+    int? AnalyzerTier = null);
 
 /// <summary>A fact as stored, with its subject joined back in.</summary>
 public sealed record StoredFact(
@@ -33,7 +34,8 @@ public sealed record StoredFact(
     long? ValidTo,
     long? SupersededBy,
     long CreatedAt,
-    string? Details);
+    string? Details,
+    int? AnalyzerTier);
 
 public sealed record RememberResult(long FactId, long? SupersededFactId);
 
@@ -192,6 +194,25 @@ public static class FactStore
 
         return true;
     }
+
+    /// <summary>
+    /// Records the deepest extraction tier a fact's body has ever been observed at (code-navigation
+    /// Phase 4 spec §9 item 15). The caller re-observed the same body via a tier-<paramref name="tier"/>
+    /// run, so it may fill a NULL <c>analyzer_tier</c> or raise a shallower one — never lower a
+    /// deeper one already on record. The monotone guard is the WHERE clause itself, not a
+    /// read-compare-write in C#, because the latter races a concurrent indexer touching the same row.
+    /// This is not a belief-content edit (D8/D-append-only): <c>analyzer_tier</c> is addressing
+    /// metadata about how the fact was extracted, not the fact's predicate/body/validity.
+    /// </summary>
+    public static void UpgradeAnalyzerTier(
+        SqliteConnection connection, SqliteTransaction transaction, long factId, int tier) =>
+        Execute(
+            connection,
+            transaction,
+            "UPDATE fact SET analyzer_tier = $tier "
+                + "WHERE id = $id AND (analyzer_tier IS NULL OR analyzer_tier < $tier);",
+            ("$tier", tier),
+            ("$id", factId));
 
     /// <summary>
     /// Renames a subtree: every entity and fact whose path is <paramref name="oldPrefix"/>
@@ -730,7 +751,7 @@ public static class FactStore
     internal const string FactColumns =
         "f.id, f.subject_id, e.path, e.name, f.predicate, f.body, f.scope, "
         + "f.learned_via, f.regenerable, f.evidence, f.valid_from, f.valid_to, "
-        + "f.superseded_by, f.created_at, f.details";
+        + "f.superseded_by, f.created_at, f.details, f.analyzer_tier";
 
     private const string SelectFactColumns =
         $"""
@@ -753,10 +774,10 @@ public static class FactStore
             """
             INSERT INTO fact
               (subject_id, object_id, predicate, body, path, scope, learned_via, regenerable,
-               evidence, session_id, valid_from, created_at, details)
+               evidence, session_id, valid_from, created_at, details, analyzer_tier)
             VALUES
               ($subject, $object, $predicate, $body, $path, $scope, $learnedVia, $regenerable,
-               $evidence, $session, $now, $now, $details);
+               $evidence, $session, $now, $now, $details, $analyzerTier);
             SELECT last_insert_rowid();
             """,
             ("$subject", subjectId),
@@ -770,7 +791,8 @@ public static class FactStore
             ("$evidence", (object?)write.Evidence ?? DBNull.Value),
             ("$session", (object?)write.SessionId ?? DBNull.Value),
             ("$now", timestamp),
-            ("$details", (object?)write.Details ?? DBNull.Value))!.Value;
+            ("$details", (object?)write.Details ?? DBNull.Value),
+            ("$analyzerTier", (object?)write.AnalyzerTier ?? DBNull.Value))!.Value;
 
         FactTokenIndex.Add(connection, transaction, factId);
 
@@ -835,7 +857,8 @@ public static class FactStore
         ValidTo: reader.IsDBNull(11) ? null : reader.GetInt64(11),
         SupersededBy: reader.IsDBNull(12) ? null : reader.GetInt64(12),
         CreatedAt: reader.GetInt64(13),
-        Details: reader.IsDBNull(14) ? null : reader.GetString(14));
+        Details: reader.IsDBNull(14) ? null : reader.GetString(14),
+        AnalyzerTier: reader.IsDBNull(15) ? null : reader.GetInt32(15));
 
     private static int Execute(
         SqliteConnection connection,

@@ -212,7 +212,7 @@ public class RoslynSidecarTests
     {
         var filePath = "/projects/demo/code/repo/src/Widget.cs";
         var tierZero = CodeAnalyzer.Analyze(filePath, BraceStyleCs, LanguageRegistry.Resolve("Widget.cs"));
-        var analysis = new DeepAnalysis("Widget.cs", [], [], null, [new DeepCall("Outer", "Inner", 3)]);
+        var analysis = new DeepAnalysis("Widget.cs", [], [], null, [new DeepCall("Outer", "Inner", 3)], Tier: 2);
 
         var merged = DeepTier.Merge(filePath, tierZero, analysis);
 
@@ -229,7 +229,7 @@ public class RoslynSidecarTests
     {
         var filePath = "/projects/demo/code/repo/src/Widget.cs";
         var tierZero = CodeAnalyzer.Analyze(filePath, BraceStyleCs, LanguageRegistry.Resolve("Widget.cs"));
-        var analysis = new DeepAnalysis("Widget.cs", [], [], null, [new DeepCall(null, "configure", 1)]);
+        var analysis = new DeepAnalysis("Widget.cs", [], [], null, [new DeepCall(null, "configure", 1)], Tier: 2);
 
         var merged = DeepTier.Merge(filePath, tierZero, analysis);
 
@@ -247,7 +247,8 @@ public class RoslynSidecarTests
         var tierZero = CodeAnalyzer.Analyze(filePath, BraceStyleCs, LanguageRegistry.Resolve("Widget.cs"));
         var analysis = new DeepAnalysis(
             "Widget.cs", [], [], null,
-            [new DeepCall("Outer", "Inner", 5), new DeepCall("Outer", "Inner", 2), new DeepCall("Outer", "Inner", 9)]);
+            [new DeepCall("Outer", "Inner", 5), new DeepCall("Outer", "Inner", 2), new DeepCall("Outer", "Inner", 9)],
+            Tier: 2);
 
         var merged = DeepTier.Merge(filePath, tierZero, analysis);
 
@@ -279,7 +280,7 @@ public class RoslynSidecarTests
         var tierZero = CodeAnalyzer.Analyze(filePath, BraceStyleCs, LanguageRegistry.Resolve("Widget.cs"));
 
         var merged = DeepTier.Merge(
-            filePath, tierZero, new DeepAnalysis("Widget.cs", [], [], "did not parse", []));
+            filePath, tierZero, new DeepAnalysis("Widget.cs", [], [], "did not parse", [], Tier: 2));
 
         Assert.Equal(tierZero, merged);
     }
@@ -333,6 +334,25 @@ public class RoslynSidecarTests
         Assert.DoesNotContain(facts, f => f.SubjectPath == innerPath);
         var nestedPath = CodePaths.ForSymbol(CodePaths.ForFile(report.RepoPath, "Widget.cs"), "Widget/Inner");
         Assert.Contains(facts, f => f.SubjectPath == nestedPath && f.Predicate == "declared-as");
+    }
+
+    // code-navigation Phase 4 spec §9 item 7 (C# half): a Roslyn-sidecar-indexed C# file's
+    // facts read analyzer_tier = 2 in the database.
+    [Fact]
+    public void IndexWithSidecar_StampsAnalyzerTierTwo_OnTheDatabaseRow()
+    {
+        using var sandbox = new SandboxHome();
+        var repo = Path.Combine(sandbox.Home.Root, "widget-repo");
+        Directory.CreateDirectory(repo);
+        File.WriteAllText(Path.Combine(repo, "Widget.cs"), WidgetCs);
+        using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
+
+        var report = Index(connection, sandbox, repo, sidecarPath: SidecarBinary(), full: false);
+        var widgetPath = CodePaths.ForSymbol(CodePaths.ForFile(report.RepoPath, "Widget.cs"), "Widget");
+
+        var declared = FactStore.ReadLive(connection)
+            .Single(f => f.SubjectPath == widgetPath && f.Predicate == "declared-as");
+        Assert.Equal(2, declared.AnalyzerTier);
     }
 
     [Fact]

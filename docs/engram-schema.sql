@@ -149,7 +149,13 @@ CREATE TABLE fact (
   valid_from    INTEGER NOT NULL,
   valid_to      INTEGER,            -- NULL = currently believed
   superseded_by INTEGER REFERENCES fact(id),
-  created_at    INTEGER NOT NULL
+  created_at    INTEGER NOT NULL,
+
+  -- How deeply this fact was extracted (code-navigation Phase 4 spec §3): 0 = tier-0 regex,
+  -- 1 = tree-sitter, 2 = Roslyn, NULL = not a code fact or written before this column existed.
+  -- Stamped at write time, never derived or backfilled — a producer states its own tier or the
+  -- column stays NULL; nothing may infer it from LanguageRegistry after the fact (§7.1).
+  analyzer_tier INTEGER
 );
 
 -- The collision check on the write path (spec 4.3 step 2) is a lookup against
@@ -474,7 +480,7 @@ CREATE TABLE fact_review (
 
 
 CREATE TABLE schema_meta (key TEXT PRIMARY KEY, value TEXT);
-INSERT INTO schema_meta(key, value) VALUES ('schema_version', '13');
+INSERT INTO schema_meta(key, value) VALUES ('schema_version', '14');
 
 -- Built by a fresh CREATE, and pre-stamped ready: an empty table matches whatever
 -- FactTokenIndex.Rebuild would produce over zero facts, so a new store needs no rebuild pass.

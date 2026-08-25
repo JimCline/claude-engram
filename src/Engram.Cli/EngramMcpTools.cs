@@ -661,15 +661,28 @@ public sealed class EngramMcpTools
             : $"[{fact_id}] was not pinned for this session. Nothing changed.";
     }
 
-    // Match tier only — extraction tier (§7.1) is a Phase 4 stamp with no schema yet; an absent
-    // field would read as tier 0, the failure §3.4 already forbids for callers/callees/neighbors
-    // returning empty instead of "not yet indexed", so every row-bearing response says so instead.
-    private const string ExtractionTierUnrecordedHeader =
-        "(extraction tier not recorded until Phase 4 — rows below carry match tier only)\n";
-
-    private sealed record NavigateOutcome(string Text, bool Found, IReadOnlyList<string> Tiers)
+    // §5.2: NULL and 0 must render distinctly and never collapse/sort together.
+    private static string ExtractionTierLabel(int? tier) => tier switch
     {
-        public static NavigateOutcome NotFound(string text) => new(text, Found: false, Tiers: []);
+        0 => "regex",
+        1 => "syntactic",
+        2 => "semantic",
+        _ => "not recorded",
+    };
+
+    // §5.3: "a qualifier that always fires is noise" — state it once in the header when every
+    // row shares one extraction tier; say nothing in the header when rows differ, and mark each
+    // row instead (the caller does that marking when this returns null).
+    private static string? UniformExtractionTierNote(IReadOnlyList<int?> tiers) =>
+        tiers.Count > 0 && tiers.Distinct().Count() == 1
+            ? $"(extraction tier: {ExtractionTierLabel(tiers[0])})\n"
+            : null;
+
+    private sealed record NavigateOutcome(
+        string Text, bool Found, IReadOnlyList<string> Tiers, IReadOnlyList<string> ExtractionTiers)
+    {
+        public static NavigateOutcome NotFound(string text) =>
+            new(text, Found: false, Tiers: [], ExtractionTiers: []);
     }
 
     [McpServerTool(Name = "engram_navigate")]
@@ -718,7 +731,8 @@ public sealed class EngramMcpTools
             Kind: TelemetryEventKind.Navigate,
             Relation: normalizedRelation,
             Found: outcome.Found,
-            Tiers: string.Join(",", outcome.Tiers)));
+            Tiers: string.Join(",", outcome.Tiers),
+            ExtractionTiers: string.Join(",", outcome.ExtractionTiers)));
 
         return outcome.Text;
     }
@@ -739,22 +753,37 @@ public sealed class EngramMcpTools
                 $"No symbol named '{query}' found (checked exact, case-insensitive, and substring match).");
         }
 
+        var rows = matches
+            .Select(match => (
+                match,
+                declared: FactStore.History(connection, match.Path, "declared-as")
+                    .FirstOrDefault(f => f.ValidTo is null)))
+            .ToList();
+
+        var extractionTiers = rows.Select(r => r.declared?.AnalyzerTier).ToList();
+        var uniformNote = UniformExtractionTierNote(extractionTiers);
+
         var builder = new System.Text.StringBuilder();
-        builder.Append(ExtractionTierUnrecordedHeader);
+        builder.Append(uniformNote);
         builder.Append(CountText(matches.Count, "match")).Append(" for '").Append(query).Append("':\n");
 
-        foreach (var match in matches)
+        foreach (var (match, declared) in rows)
         {
-            var declared = FactStore.History(connection, match.Path, "declared-as")
-                .FirstOrDefault(f => f.ValidTo is null);
+            builder.Append("  [").Append(match.Tier).Append(']');
+            if (uniformNote is null)
+            {
+                builder.Append('[').Append(ExtractionTierLabel(declared?.AnalyzerTier)).Append(']');
+            }
 
-            builder.Append("  [").Append(match.Tier).Append("] ").Append(match.Path).Append(": ")
+            builder.Append(' ').Append(match.Path).Append(": ")
                 .Append(declared?.Body ?? "(no declaration recorded)")
                 .Append('\n');
         }
 
         var tiers = matches.Select(m => m.Tier.ToString()).Distinct().ToList();
-        return new NavigateOutcome(builder.ToString().TrimEnd('\n'), Found: true, Tiers: tiers);
+        var extractionTierLabels = extractionTiers.Select(ExtractionTierLabel).Distinct().ToList();
+        return new NavigateOutcome(
+            builder.ToString().TrimEnd('\n'), Found: true, Tiers: tiers, ExtractionTiers: extractionTierLabels);
     }
 
     private static NavigateOutcome NavigateImports(SqliteConnection connection, string query, string? repo, int limit)
@@ -786,29 +815,45 @@ public sealed class EngramMcpTools
                 $"No file matching '{query}' found (checked exact path, then path ending in '/{query}').");
         }
 
+        var rows = matches
+            .Select(match =>
+            {
+                var imports = FactStore.History(connection, match.Path, "imports")
+                    .Where(f => f.ValidTo is null)
+                    .ToList();
+                var modules = ImportedModuleNames(connection, imports.Select(f => f.Id))
+                    .OrderBy(name => name, StringComparer.Ordinal)
+                    .ToList();
+                var body = modules.Count > 0
+                    ? "imports " + string.Join(", ", modules)
+                    : "no imports recorded";
+
+                return (match, body, tier: imports.FirstOrDefault()?.AnalyzerTier);
+            })
+            .ToList();
+
+        var extractionTiers = rows.Select(r => r.tier).ToList();
+        var uniformNote = UniformExtractionTierNote(extractionTiers);
+
         var builder = new System.Text.StringBuilder();
-        builder.Append(ExtractionTierUnrecordedHeader);
+        builder.Append(uniformNote);
         builder.Append(CountText(matches.Count, "file")).Append(" matching '").Append(query).Append("':\n");
 
-        foreach (var match in matches)
+        foreach (var (match, body, tier) in rows)
         {
-            var imports = FactStore.History(connection, match.Path, "imports")
-                .Where(f => f.ValidTo is null)
-                .ToList();
-            var modules = ImportedModuleNames(connection, imports.Select(f => f.Id))
-                .OrderBy(name => name, StringComparer.Ordinal)
-                .ToList();
-            var body = modules.Count > 0
-                ? "imports " + string.Join(", ", modules)
-                : "no imports recorded";
+            builder.Append("  [").Append(match.Tier).Append(']');
+            if (uniformNote is null)
+            {
+                builder.Append('[').Append(ExtractionTierLabel(tier)).Append(']');
+            }
 
-            builder.Append("  [").Append(match.Tier).Append("] ").Append(match.Path).Append(": ")
-                .Append(body)
-                .Append('\n');
+            builder.Append(' ').Append(match.Path).Append(": ").Append(body).Append('\n');
         }
 
         var tiers = matches.Select(m => m.Tier).Distinct().ToList();
-        return new NavigateOutcome(builder.ToString().TrimEnd('\n'), Found: true, Tiers: tiers);
+        var extractionTierLabels = extractionTiers.Select(ExtractionTierLabel).Distinct().ToList();
+        return new NavigateOutcome(
+            builder.ToString().TrimEnd('\n'), Found: true, Tiers: tiers, ExtractionTiers: extractionTierLabels);
     }
 
     private static NavigateOutcome NavigateCallers(SqliteConnection connection, string query, string? repo, int limit)
@@ -832,8 +877,11 @@ public sealed class EngramMcpTools
                 $"No recorded call sites naming '{query}' ({CoverageCaveat(result.Coverage)}).");
         }
 
+        var extractionTiers = result.Callers.Select(c => c.AnalyzerTier).ToList();
+        var uniformNote = UniformExtractionTierNote(extractionTiers);
+
         var builder = new System.Text.StringBuilder();
-        builder.Append(ExtractionTierUnrecordedHeader);
+        builder.Append(uniformNote);
         if (result.QueryTier != SymbolMatchTier.Exact)
         {
             builder.Append("No exact match for '").Append(query).Append("'; showing callers of ")
@@ -856,7 +904,13 @@ public sealed class EngramMcpTools
         builder.Append(":\n");
         foreach (var caller in result.Callers)
         {
-            builder.Append("  [").Append(RankLabel(caller.Signal)).Append("] ").Append(caller.CallerPath);
+            builder.Append("  [").Append(RankLabel(caller.Signal)).Append(']');
+            if (uniformNote is null)
+            {
+                builder.Append('[').Append(ExtractionTierLabel(caller.AnalyzerTier)).Append(']');
+            }
+
+            builder.Append(' ').Append(caller.CallerPath);
             if (caller.AttributedToType)
             {
                 builder.Append(" (attributed to the enclosing type — call site is a non-public member)");
@@ -865,7 +919,9 @@ public sealed class EngramMcpTools
             builder.Append('\n');
         }
 
-        return new NavigateOutcome(builder.ToString().TrimEnd('\n'), Found: true, Tiers: []);
+        var extractionTierLabels = extractionTiers.Select(ExtractionTierLabel).Distinct().ToList();
+        return new NavigateOutcome(
+            builder.ToString().TrimEnd('\n'), Found: true, Tiers: [], ExtractionTiers: extractionTierLabels);
     }
 
     private static NavigateOutcome NavigateCallees(SqliteConnection connection, string query, string? repo, int limit)
@@ -889,8 +945,11 @@ public sealed class EngramMcpTools
                 $"No recorded calls from '{query}' ({CoverageCaveat(result.Coverage)}).");
         }
 
+        var extractionTiers = result.Callees.Select(c => c.AnalyzerTier).ToList();
+        var uniformNote = UniformExtractionTierNote(extractionTiers);
+
         var builder = new System.Text.StringBuilder();
-        builder.Append(ExtractionTierUnrecordedHeader);
+        builder.Append(uniformNote);
         if (result.QueryTier != SymbolMatchTier.Exact)
         {
             builder.Append("No exact match for '").Append(query).Append("'; resolved by ")
@@ -906,7 +965,13 @@ public sealed class EngramMcpTools
         builder.Append(":\n");
         foreach (var callee in result.Callees)
         {
-            builder.Append("  [").Append(RankLabel(callee.Signal)).Append("] ").Append(callee.Callee);
+            builder.Append("  [").Append(RankLabel(callee.Signal)).Append(']');
+            if (uniformNote is null)
+            {
+                builder.Append('[').Append(ExtractionTierLabel(callee.AnalyzerTier)).Append(']');
+            }
+
+            builder.Append(' ').Append(callee.Callee);
             if (callee.DeclarationPath is not null)
             {
                 builder.Append(" -> ").Append(callee.DeclarationPath);
@@ -919,7 +984,9 @@ public sealed class EngramMcpTools
             builder.Append('\n');
         }
 
-        return new NavigateOutcome(builder.ToString().TrimEnd('\n'), Found: true, Tiers: []);
+        var extractionTierLabels = extractionTiers.Select(ExtractionTierLabel).Distinct().ToList();
+        return new NavigateOutcome(
+            builder.ToString().TrimEnd('\n'), Found: true, Tiers: [], ExtractionTiers: extractionTierLabels);
     }
 
     private static string TierLabel(SymbolMatchTier tier) => tier switch

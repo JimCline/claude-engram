@@ -98,6 +98,16 @@ public class SchemaMigrationTests
         Execute(connection, "ALTER TABLE repo_registry DROP COLUMN last_scan_suppressed_reason;");
 
     /// <summary>
+    /// The structural half of making a downgrade fixture version-N-shaped (N &lt; 14) for
+    /// <c>fact.analyzer_tier</c> — every fixture below version 14 needs this the same way
+    /// <see cref="DropSuppressionColumn"/> covers version 8's column, so the version-14
+    /// migration's unconditional <c>ALTER TABLE ADD COLUMN</c> cannot silently no-op against a
+    /// fixture that still has it (D60).
+    /// </summary>
+    private static void DropAnalyzerTierColumn(SqliteConnection connection) =>
+        Execute(connection, "ALTER TABLE fact DROP COLUMN analyzer_tier;");
+
+    /// <summary>
     /// The structural half of making a downgrade fixture version-N-shaped (N &lt; 9) for the
     /// cross-machine sync side tables — every fixture below version 9 needs this the same way
     /// <see cref="DropSuppressionColumn"/> covers version 8's column, so the version-9
@@ -163,6 +173,7 @@ public class SchemaMigrationTests
         DropFactRelationTable(connection);
         DropFactSyncRequestTable(connection);
         DropFactReviewTable(connection);
+        DropAnalyzerTierColumn(connection);
         Execute(connection, "DROP TABLE repo_enrollment;");
         Assert.Equal(1, EngramDatabase.ReadSchemaVersion(connection));
         return id;
@@ -196,6 +207,7 @@ public class SchemaMigrationTests
         DropFactRelationTable(connection);
         DropFactSyncRequestTable(connection);
         DropFactReviewTable(connection);
+        DropAnalyzerTierColumn(connection);
         Execute(connection, "DROP TABLE repo_enrollment;");
         Execute(connection, "UPDATE schema_meta SET value = '5' WHERE key = 'schema_version';");
         Assert.Equal(5, EngramDatabase.ReadSchemaVersion(connection));
@@ -225,6 +237,7 @@ public class SchemaMigrationTests
         DropFactRelationTable(connection);
         DropFactSyncRequestTable(connection);
         DropFactReviewTable(connection);
+        DropAnalyzerTierColumn(connection);
         Execute(connection, "DROP TABLE repo_enrollment;");
         Execute(connection, "UPDATE schema_meta SET value = '6' WHERE key = 'schema_version';");
         Assert.Equal(6, EngramDatabase.ReadSchemaVersion(connection));
@@ -260,6 +273,7 @@ public class SchemaMigrationTests
         DropFactRelationTable(connection);
         DropFactSyncRequestTable(connection);
         DropFactReviewTable(connection);
+        DropAnalyzerTierColumn(connection);
         Execute(connection, "UPDATE schema_meta SET value = '7' WHERE key = 'schema_version';");
         Assert.Equal(7, EngramDatabase.ReadSchemaVersion(connection));
     }
@@ -284,6 +298,7 @@ public class SchemaMigrationTests
         DropFactRelationTable(connection);
         DropFactSyncRequestTable(connection);
         DropFactReviewTable(connection);
+        DropAnalyzerTierColumn(connection);
         Execute(connection, "UPDATE schema_meta SET value = '8' WHERE key = 'schema_version';");
         Assert.Equal(8, EngramDatabase.ReadSchemaVersion(connection));
     }
@@ -306,6 +321,7 @@ public class SchemaMigrationTests
         DropFactRelationTable(connection);
         DropFactSyncRequestTable(connection);
         DropFactReviewTable(connection);
+        DropAnalyzerTierColumn(connection);
         Execute(connection, "UPDATE schema_meta SET value = '9' WHERE key = 'schema_version';");
         Assert.Equal(9, EngramDatabase.ReadSchemaVersion(connection));
     }
@@ -328,6 +344,7 @@ public class SchemaMigrationTests
 
         DropFactSyncRequestTable(connection);
         DropFactReviewTable(connection);
+        DropAnalyzerTierColumn(connection);
         Execute(connection, "UPDATE schema_meta SET value = '10' WHERE key = 'schema_version';");
         Assert.Equal(10, EngramDatabase.ReadSchemaVersion(connection));
     }
@@ -349,6 +366,7 @@ public class SchemaMigrationTests
             + "('/projects/acme/code/api', 'github.com/acme/api', '/tmp/api', 0);");
 
         DropFactReviewTable(connection);
+        DropAnalyzerTierColumn(connection);
         Execute(connection, "UPDATE schema_meta SET value = '11' WHERE key = 'schema_version';");
         Assert.Equal(11, EngramDatabase.ReadSchemaVersion(connection));
     }
@@ -367,8 +385,33 @@ public class SchemaMigrationTests
             connection,
             "CREATE UNIQUE INDEX ux_fact_live ON fact(subject_id, predicate) WHERE valid_to IS NULL;");
 
+        DropAnalyzerTierColumn(connection);
         Execute(connection, "UPDATE schema_meta SET value = '12' WHERE key = 'schema_version';");
         Assert.Equal(12, EngramDatabase.ReadSchemaVersion(connection));
+    }
+
+    /// <summary>
+    /// Version 14 added <c>fact.analyzer_tier</c> as an <c>ALTER TABLE ADD COLUMN</c> — the same
+    /// shape as version 8's <c>last_scan_suppressed_reason</c> (<see cref="WriteVersion7Store"/>),
+    /// so "version-13-shaped" means dropping just that column: the D60 shape, required here
+    /// because the migration's <c>ALTER TABLE ADD COLUMN</c> is unguarded and a fixture that only
+    /// stamped <c>schema_version</c> back without genuinely lacking the column would throw on
+    /// re-add rather than proving anything about the migration (code-navigation Phase 4 spec §9
+    /// item 3).
+    /// </summary>
+    private static long WriteVersion13Store(SandboxHome sandbox, string path, string body)
+    {
+        using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
+        var id = FactStore.Remember(
+            connection,
+            new FactWrite(path, "note", "states", body, "project", "stated"),
+            T0).FactId;
+
+        Execute(connection, "ALTER TABLE fact DROP COLUMN analyzer_tier;");
+        Execute(connection, "UPDATE schema_meta SET value = '13' WHERE key = 'schema_version';");
+        Assert.Equal(13, EngramDatabase.ReadSchemaVersion(connection));
+
+        return id;
     }
 
     /// <summary>Builds a store at version 2 holding one live fact and one closed one.</summary>
@@ -393,6 +436,7 @@ public class SchemaMigrationTests
         DropFactRelationTable(connection);
         DropFactSyncRequestTable(connection);
         DropFactReviewTable(connection);
+        DropAnalyzerTierColumn(connection);
         Execute(connection, "DROP TABLE repo_enrollment;");
         Assert.Equal(2, EngramDatabase.ReadSchemaVersion(connection));
         return (live, closed);
@@ -418,7 +462,7 @@ public class SchemaMigrationTests
 
         using var reopened = EngramDatabase.OpenInitialized(sandbox.Home);
 
-        Assert.Equal(13, EngramDatabase.ReadSchemaVersion(reopened));
+        Assert.Equal(EngramDatabase.SchemaVersion, EngramDatabase.ReadSchemaVersion(reopened));
         Assert.Equal(1L, IndexPartial(reopened, "ux_fact_live"));
         Assert.Equal(1L, IndexPartial(reopened, "ux_fact_edge_live"));
         Assert.Equal("subject_id,predicate partial=0", ThreadIndexShape(reopened));
@@ -806,6 +850,46 @@ public class SchemaMigrationTests
             command.CommandText = "SELECT identity FROM repo_registry WHERE identity = 'github.com/acme/api';";
             Assert.Equal("github.com/acme/api", (string)command.ExecuteScalar()!);
         }
+
+        var snapshot = Assert.Single(BackupStore.List(sandbox.Home));
+        Assert.Contains("pre-v" + EngramDatabase.SchemaVersion, snapshot.Name, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Items 1 and 2 (code-navigation Phase 4 spec §9): the migration applies (schema_version
+    /// reaches v14, not merely a column's presence — falsify by leaving <c>SchemaVersion</c> at
+    /// 13, which reddens because <c>ReadSchemaVersion</c> never advances) and the pre-existing
+    /// fact survives with <c>analyzer_tier IS NULL</c>, body and validity untouched.
+    /// </summary>
+    /// <remarks>
+    /// Falsified per §9 item 3 by temporarily removing the migration's <c>if (from &lt; 14)</c>
+    /// block so no <c>ALTER TABLE</c> runs: confirmed red — <c>OpenInitialized</c> throws
+    /// <c>InvalidOperationException</c> because <c>ReadSchemaVersion</c> never advances past 13
+    /// while <see cref="EngramDatabase.SchemaVersion"/> is 14 — then restored.
+    /// </remarks>
+    [Fact]
+    public void Migrating_AVersion13Store_AddsAnalyzerTierColumnWithoutTouchingExistingFacts()
+    {
+        using var sandbox = new SandboxHome(initialize: false);
+        const string Body = "It binds loopback only.";
+        var id = WriteVersion13Store(sandbox, "/knowledge/testing/kestrel", Body);
+        SqliteConnection.ClearAllPools();
+
+        using var reopened = EngramDatabase.OpenInitialized(sandbox.Home);
+
+        Assert.Equal(EngramDatabase.SchemaVersion, EngramDatabase.ReadSchemaVersion(reopened));
+
+        using (var command = reopened.CreateCommand())
+        {
+            command.CommandText = "SELECT COUNT(*) FROM pragma_table_info('fact') WHERE name = 'analyzer_tier';";
+            Assert.Equal(1L, (long)command.ExecuteScalar()!);
+        }
+
+        var fact = FactStore.ReadById(reopened, id);
+        Assert.NotNull(fact);
+        Assert.Equal(Body, fact.Body);
+        Assert.Null(fact.ValidTo);
+        Assert.Null(fact.AnalyzerTier);
 
         var snapshot = Assert.Single(BackupStore.List(sandbox.Home));
         Assert.Contains("pre-v" + EngramDatabase.SchemaVersion, snapshot.Name, StringComparison.Ordinal);

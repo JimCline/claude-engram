@@ -15,7 +15,8 @@ public sealed record CodeCandidate(
     string DisplayName,
     string Predicate,
     string Body,
-    string? Object = null);
+    string? Object = null,
+    int AnalyzerTier = 0);
 
 /// <summary>
 /// Tier-0 analysis (D24): managed, in-core, no dependencies, works on any file. Produces

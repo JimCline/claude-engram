@@ -538,6 +538,7 @@ public static class CodeIndexer
 
         var matched = new HashSet<(string, string, string?)>();
         var writes = new List<CodeCandidate>();
+        var tierUpgrades = new List<(long FactId, int Tier)>();
 
         foreach (var candidate in candidates)
         {
@@ -561,6 +562,11 @@ public static class CodeIndexer
                 if (existing.Body == candidate.Body)
                 {
                     counters.Unchanged++;
+
+                    // "Deepest tier ever observed" (§9 item 15): this run re-observed the same
+                    // body, so it may fill a NULL or upgrade a shallower recorded tier — never
+                    // downgrade. The monotone guard lives in FactStore's WHERE clause, not here.
+                    tierUpgrades.Add((existing.Id, candidate.AnalyzerTier));
                     continue;
                 }
             }
@@ -609,7 +615,8 @@ public static class CodeIndexer
                     Evidence: evidence,
                     Regenerable: true,
                     ObjectPath: objectPath,
-                    ObjectKind: objectPath is null ? null : "symbol-name"),
+                    ObjectKind: objectPath is null ? null : "symbol-name",
+                    AnalyzerTier: write.AnalyzerTier),
                 now,
                 closeReason);
         }
@@ -617,6 +624,11 @@ public static class CodeIndexer
         foreach (var stale in closes)
         {
             FactStore.Forget(connection, transaction, stale.Id, closeReason, now);
+        }
+
+        foreach (var (factId, tier) in tierUpgrades)
+        {
+            FactStore.UpgradeAnalyzerTier(connection, transaction, factId, tier);
         }
 
         Execute(
@@ -757,7 +769,8 @@ public static class CodeIndexer
     private const string SubtreePredicate =
         "substr(path, 1, $len) = $old AND (length(path) = $len OR substr(path, $len + 1, 1) IN ('/', '#'))";
 
-    private sealed record LiveFact(long Id, string Path, string Predicate, string? Object, string Body, bool Regenerable);
+    private sealed record LiveFact(
+        long Id, string Path, string Predicate, string? Object, string Body, bool Regenerable, int? AnalyzerTier);
 
     private static Dictionary<(string, string, string?), LiveFact> ReadLiveUnder(SqliteConnection connection, string filePath)
     {
@@ -766,7 +779,7 @@ public static class CodeIndexer
         using var command = connection.CreateCommand();
         command.CommandText =
             """
-            SELECT fact.id, fact.path, fact.predicate, o.path, fact.body, fact.regenerable
+            SELECT fact.id, fact.path, fact.predicate, o.path, fact.body, fact.regenerable, fact.analyzer_tier
             FROM fact
             LEFT JOIN entity o ON o.id = fact.object_id
             WHERE fact.valid_to IS NULL
@@ -784,7 +797,8 @@ public static class CodeIndexer
                 reader.GetString(2),
                 reader.IsDBNull(3) ? null : reader.GetString(3),
                 reader.GetString(4),
-                reader.GetInt64(5) != 0);
+                reader.GetInt64(5) != 0,
+                reader.IsDBNull(6) ? null : reader.GetInt32(6));
             facts[(fact.Path, fact.Predicate, fact.Object)] = fact;
         }
 

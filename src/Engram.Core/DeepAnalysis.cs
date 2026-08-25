@@ -32,7 +32,8 @@ public sealed record DeepAnalysis(
     IReadOnlyList<DeepSymbol> Symbols,
     IReadOnlyList<string> Imports,
     string? Error,
-    IReadOnlyList<DeepCall> Calls);
+    IReadOnlyList<DeepCall> Calls,
+    int Tier);
 
 /// <summary>
 /// How any deeper tier's view lands on tier 0's (D24): one implementation, shared by the
@@ -123,12 +124,14 @@ public static class DeepTier
 
             var symbolPath = CodePaths.ForSymbol(fileEntityPath, fragment);
             merged.Add(new CodeCandidate(
-                symbolPath, "symbol", symbol.Name, "declared-as", CodeAnalyzer.Cap(symbol.Declaration)));
+                symbolPath, "symbol", symbol.Name, "declared-as", CodeAnalyzer.Cap(symbol.Declaration),
+                AnalyzerTier: analysis.Tier));
 
             if (!string.IsNullOrWhiteSpace(symbol.Doc))
             {
                 merged.Add(new CodeCandidate(
-                    symbolPath, "symbol", symbol.Name, "about", CodeAnalyzer.Cap(symbol.Doc)));
+                    symbolPath, "symbol", symbol.Name, "about", CodeAnalyzer.Cap(symbol.Doc),
+                    AnalyzerTier: analysis.Tier));
             }
         }
 
@@ -141,7 +144,8 @@ public static class DeepTier
                 fileName,
                 "imports",
                 CodeAnalyzer.Cap("imports " + m),
-                Object: m));
+                Object: m,
+                AnalyzerTier: analysis.Tier));
         }
 
         foreach (var call in Deduplicate(analysis.Calls))
@@ -153,7 +157,8 @@ public static class DeepTier
             merged.Add(new CodeCandidate(
                 path, kind, display, "calls",
                 CodeAnalyzer.Cap("calls " + call.Callee),
-                Object: call.Callee));
+                Object: call.Callee,
+                AnalyzerTier: analysis.Tier));
         }
 
         return merged;

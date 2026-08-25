@@ -410,6 +410,25 @@ public sealed class CodeNavigationPhase3Tests
         Assert.NotEmpty(live);
     }
 
+    // code-navigation Phase 4 spec §9 item 7 (tree-sitter half): a tree-sitter-language
+    // `calls` fact reads analyzer_tier = 1 in the database.
+    [Fact]
+    public void IndexingATypeScriptFile_StampsAnalyzerTierOne_OnCallsFacts()
+    {
+        var dir = GrammarDir();
+        Assert.SkipWhen(dir is null, "ENGRAM_TEST_TREE_SITTER_DIR does not point at the compiled grammars.");
+
+        using var sandbox = new SandboxHome();
+        var repo = CreateFixture(sandbox, "ts-repo", "widget.ts",
+            "function outer() {\n  inner();\n}\n\nfunction inner() {\n  helper();\n}\n");
+        using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
+        Index(connection, sandbox, repo);
+
+        var live = FactStore.ReadLive(connection).Where(f => f.Predicate == "calls").ToList();
+        Assert.NotEmpty(live);
+        Assert.All(live, f => Assert.Equal(1, f.AnalyzerTier));
+    }
+
     // §8: CodeIndexer's generic (EntityPath, Predicate, Object) diff key already distinguishes
     // two distinct callees from the same caller — re-indexing must not close either edge.
     [Fact]

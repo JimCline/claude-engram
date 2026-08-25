@@ -153,7 +153,7 @@ public static class RoslynSidecar
 
         if (record["error"]?.GetValue<string>() is { } error)
         {
-            return new DeepAnalysis(path, [], [], error, []);
+            return new DeepAnalysis(path, [], [], error, [], Tier: 2);
         }
 
         var symbols = new List<DeepSymbol>();
@@ -232,6 +232,6 @@ public static class RoslynSidecar
             }
         }
 
-        return new DeepAnalysis(path, symbols, imports, null, calls);
+        return new DeepAnalysis(path, symbols, imports, null, calls, Tier: 2);
     }
 }

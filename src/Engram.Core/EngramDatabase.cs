@@ -20,7 +20,7 @@ namespace Engram.Core;
 /// </remarks>
 public static class EngramDatabase
 {
-    public const int SchemaVersion = 13;
+    public const int SchemaVersion = 14;
 
     public const int BusyTimeoutMilliseconds = 5000;
 
@@ -487,6 +487,15 @@ public static class EngramDatabase
             RebuildFactFts(connection);
 
             WriteMeta(connection, null, "schema_version", "13");
+        }
+
+        if (from < 14)
+        {
+            // Nullable, unindexed, no default (code-navigation Phase 4 spec §4.1). No
+            // RebuildFactFts call: this column is not read by the FTS index.
+            Execute(connection, null, "ALTER TABLE fact ADD COLUMN analyzer_tier INTEGER;");
+
+            WriteMeta(connection, null, "schema_version", "14");
         }
     }
 

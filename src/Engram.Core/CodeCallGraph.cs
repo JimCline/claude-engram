@@ -32,9 +32,10 @@ public enum ExtractionCoverage
 /// The label is mandatory wherever this is true: an unlabelled type subject reads as "the
 /// type calls this", which is false.
 /// </param>
-public sealed record CallerMatch(string CallerPath, CallRankSignal Signal, bool AttributedToType = false);
+public sealed record CallerMatch(
+    string CallerPath, CallRankSignal Signal, bool AttributedToType = false, int? AnalyzerTier = null);
 
-public sealed record CalleeMatch(string? DeclarationPath, string Callee, CallRankSignal Signal);
+public sealed record CalleeMatch(string? DeclarationPath, string Callee, CallRankSignal Signal, int? AnalyzerTier = null);
 
 public sealed record CallersResult(
     IReadOnlyList<CallerMatch> Callers,
@@ -80,7 +81,10 @@ public static class CodeCallGraph
 
         var ranked = calls
             .Select(c => new CallerMatch(
-                c.CallerPath, RankFrom(connection, c.CallerPath, declarationFiles), IsTypeDeclaration(connection, c.CallerPath)))
+                c.CallerPath,
+                RankFrom(connection, c.CallerPath, declarationFiles),
+                IsTypeDeclaration(connection, c.CallerPath),
+                c.AnalyzerTier))
             .OrderBy(m => m.Signal)
             .ThenBy(m => m.CallerPath, StringComparer.Ordinal)
             .ToList();
@@ -107,7 +111,7 @@ public static class CodeCallGraph
         var calls = LiveCallsFromSubjects(connection, declarations.Select(d => d.Path).ToList(), repoNeedle);
 
         var results = new List<CalleeMatch>();
-        foreach (var (callerPath, callee) in calls)
+        foreach (var (callerPath, callee, analyzerTier) in calls)
         {
             var leaf = CodePaths.LeafOf(callee);
             var qualifier = QualifierOf(callee);
@@ -115,7 +119,7 @@ public static class CodeCallGraph
 
             if (candidates.Count == 0)
             {
-                results.Add(new CalleeMatch(null, callee, CallRankSignal.NameOnly));
+                results.Add(new CalleeMatch(null, callee, CallRankSignal.NameOnly, analyzerTier));
                 continue;
             }
 
@@ -123,7 +127,7 @@ public static class CodeCallGraph
             {
                 var signal = RankFrom(
                     connection, callerPath, [FileOf(candidate.Path)], qualifier, ScopeOfDeclaration(candidate.Path), repoNeedle);
-                results.Add(new CalleeMatch(candidate.Path, callee, signal));
+                results.Add(new CalleeMatch(candidate.Path, callee, signal, analyzerTier));
             }
         }
 
@@ -195,7 +199,7 @@ public static class CodeCallGraph
         return matches;
     }
 
-    private static List<(string CallerPath, string Callee)> LiveCallsToObjects(
+    private static List<(string CallerPath, string Callee, int? AnalyzerTier)> LiveCallsToObjects(
         SqliteConnection connection, IReadOnlyList<string> objectPaths, string? repoNeedle)
     {
         if (objectPaths.Count == 0)
@@ -207,7 +211,7 @@ public static class CodeCallGraph
         var placeholders = string.Join(',', objectPaths.Select((_, i) => $"$o{i}"));
         var repoClause = repoNeedle is null ? string.Empty : " AND f.path LIKE '%' || $repo || '%'";
         command.CommandText =
-            $"SELECT f.path, o.name FROM fact f JOIN entity o ON o.id = f.object_id "
+            $"SELECT f.path, o.name, f.analyzer_tier FROM fact f JOIN entity o ON o.id = f.object_id "
                 + $"WHERE f.predicate = 'calls' AND f.valid_to IS NULL AND o.path IN ({placeholders}){repoClause};";
         for (var i = 0; i < objectPaths.Count; i++)
         {
@@ -219,17 +223,17 @@ public static class CodeCallGraph
             command.Parameters.AddWithValue("$repo", repoNeedle);
         }
 
-        var results = new List<(string, string)>();
+        var results = new List<(string, string, int?)>();
         using var reader = command.ExecuteReader();
         while (reader.Read())
         {
-            results.Add((reader.GetString(0), reader.GetString(1)));
+            results.Add((reader.GetString(0), reader.GetString(1), reader.IsDBNull(2) ? null : reader.GetInt32(2)));
         }
 
         return results;
     }
 
-    private static List<(string CallerPath, string Callee)> LiveCallsFromSubjects(
+    private static List<(string CallerPath, string Callee, int? AnalyzerTier)> LiveCallsFromSubjects(
         SqliteConnection connection, IReadOnlyList<string> subjectPaths, string? repoNeedle)
     {
         if (subjectPaths.Count == 0)
@@ -241,7 +245,7 @@ public static class CodeCallGraph
         var placeholders = string.Join(',', subjectPaths.Select((_, i) => $"$s{i}"));
         var repoClause = repoNeedle is null ? string.Empty : " AND f.path LIKE '%' || $repo || '%'";
         command.CommandText =
-            $"SELECT f.path, o.name FROM fact f JOIN entity o ON o.id = f.object_id "
+            $"SELECT f.path, o.name, f.analyzer_tier FROM fact f JOIN entity o ON o.id = f.object_id "
                 + $"WHERE f.predicate = 'calls' AND f.valid_to IS NULL AND f.path IN ({placeholders}){repoClause};";
         for (var i = 0; i < subjectPaths.Count; i++)
         {
@@ -253,11 +257,11 @@ public static class CodeCallGraph
             command.Parameters.AddWithValue("$repo", repoNeedle);
         }
 
-        var results = new List<(string, string)>();
+        var results = new List<(string, string, int?)>();
         using var reader = command.ExecuteReader();
         while (reader.Read())
         {
-            results.Add((reader.GetString(0), reader.GetString(1)));
+            results.Add((reader.GetString(0), reader.GetString(1), reader.IsDBNull(2) ? null : reader.GetInt32(2)));
         }
 
         return results;
