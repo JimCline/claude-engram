@@ -9,7 +9,7 @@ namespace Engram.Core;
 public static class CodePredicates
 {
     public static readonly IReadOnlySet<string> EdgeBearing =
-        new HashSet<string>(StringComparer.Ordinal) { "imports" };   // Phase 3 adds "calls"
+        new HashSet<string>(StringComparer.Ordinal) { "imports", "calls" };
 
     /// <summary>
     /// <see cref="EdgeBearing"/> as a quoted, comma-joined SQL list — sorted ordinally so it

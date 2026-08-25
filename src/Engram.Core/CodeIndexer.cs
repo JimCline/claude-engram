@@ -78,6 +78,45 @@ public static class CodeIndexer
 
     public static string CurrentVersion => $"{CodePaths.GrammarVersion}.{CodeAnalyzer.AnalyzerVersion}";
 
+    /// <summary>The stamp a run last wrote to <c>schema_meta</c>, or null if no run has ever
+    /// written one (a fresh store). Store-wide, not per-repo (D-code-nav gap b).</summary>
+    public static string? StoredVersion(SqliteConnection connection) => ReadMeta(connection, VersionKey);
+
+    /// <summary>
+    /// Whether <paramref name="filePath"/>'s calls/imports extraction can be trusted as complete
+    /// (Architect ruling, gap b): tier-0 languages structurally have nothing to extract, so a
+    /// tier-0 extension answers <see cref="ExtractionCoverage.NotApplicable"/> before either store
+    /// check runs. Otherwise, only a <c>file_state</c> row written under the current
+    /// <see cref="CurrentVersion"/> stamp means the file was actually processed at its language's
+    /// tier; anything else — no row, or a stale stamp — cannot distinguish "genuinely no calls"
+    /// from "never extracted", so it answers <see cref="ExtractionCoverage.Unknown"/>.
+    /// </summary>
+    public static ExtractionCoverage CoverageOf(SqliteConnection connection, string filePath)
+    {
+        var split = CodePaths.SplitRepoPath(filePath);
+        if (split is null)
+        {
+            return ExtractionCoverage.Unknown;
+        }
+
+        var (repoPath, relativePath) = split.Value;
+        if (LanguageRegistry.Resolve(relativePath).Tier == 0)
+        {
+            return ExtractionCoverage.NotApplicable;
+        }
+
+        if (StoredVersion(connection) != CurrentVersion)
+        {
+            return ExtractionCoverage.Unknown;
+        }
+
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT 1 FROM file_state WHERE repo_path = $repo AND path = $path;";
+        command.Parameters.AddWithValue("$repo", repoPath);
+        command.Parameters.AddWithValue("$path", relativePath);
+        return command.ExecuteScalar() is not null ? ExtractionCoverage.KnownZero : ExtractionCoverage.Unknown;
+    }
+
     public static IndexReport Index(
         SqliteConnection connection,
         EngramHome home,

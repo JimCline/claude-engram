@@ -296,14 +296,14 @@ CREATE VIRTUAL TABLE fact_fts USING fts5(
 -- words. The predicate list must stay identical across all four triggers and
 -- EngramDatabase.RebuildFactFts's interpolated copy.
 CREATE TRIGGER fact_fts_insert AFTER INSERT ON fact
-  WHEN new.predicate NOT IN ('imports') BEGIN
+  WHEN new.predicate NOT IN ('calls', 'imports') BEGIN
   INSERT INTO fact_fts(rowid, body, predicate, path)
     VALUES (new.id, new.body, new.predicate, new.path);
 END;
 
 CREATE TRIGGER fact_fts_close AFTER UPDATE OF valid_to ON fact
   WHEN old.valid_to IS NULL AND new.valid_to IS NOT NULL
-    AND old.predicate NOT IN ('imports') BEGIN
+    AND old.predicate NOT IN ('calls', 'imports') BEGIN
   INSERT INTO fact_fts(fact_fts, rowid, body, predicate, path)
     VALUES ('delete', old.id, old.body, old.predicate, old.path);
 END;
@@ -314,7 +314,7 @@ END;
 -- "database disk image is malformed (11)" — which made every closed fact
 -- undeletable and would have broken `compact` on its first prune.
 CREATE TRIGGER fact_fts_delete AFTER DELETE ON fact
-  WHEN old.valid_to IS NULL AND old.predicate NOT IN ('imports') BEGIN
+  WHEN old.valid_to IS NULL AND old.predicate NOT IN ('calls', 'imports') BEGIN
   INSERT INTO fact_fts(fact_fts, rowid, body, predicate, path)
     VALUES ('delete', old.id, old.body, old.predicate, old.path);
 END;
@@ -325,7 +325,7 @@ END;
 -- fact indexed under its old address with nothing to say so.
 CREATE TRIGGER fact_fts_repath AFTER UPDATE OF path ON fact
   WHEN new.valid_to IS NULL AND old.path <> new.path
-    AND new.predicate NOT IN ('imports') BEGIN
+    AND new.predicate NOT IN ('calls', 'imports') BEGIN
   INSERT INTO fact_fts(fact_fts, rowid, body, predicate, path)
     VALUES ('delete', old.id, old.body, old.predicate, old.path);
   INSERT INTO fact_fts(rowid, body, predicate, path)

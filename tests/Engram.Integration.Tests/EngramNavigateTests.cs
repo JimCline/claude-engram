@@ -83,8 +83,6 @@ public class EngramNavigateTests
     }
 
     [Theory]
-    [InlineData("callers")]
-    [InlineData("callees")]
     [InlineData("neighbors")]
     public void PhaseThreeRelations_AnswerNotYetIndexed_NeverAnEmptyResult(string relation)
     {

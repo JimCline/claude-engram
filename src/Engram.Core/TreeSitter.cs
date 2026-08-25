@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Text;
 
@@ -93,6 +94,8 @@ public sealed unsafe class TreeSitter : IDisposable
     private readonly delegate* unmanaged[Cdecl]<IntPtr, TsQueryMatch*, byte> queryCursorNextMatch;
     private readonly delegate* unmanaged[Cdecl]<TsNode, uint> nodeStartByte;
     private readonly delegate* unmanaged[Cdecl]<TsNode, uint> nodeEndByte;
+    private readonly delegate* unmanaged[Cdecl]<TsNode, TsNode> nodeParent;
+    private readonly delegate* unmanaged[Cdecl]<TsNode, byte> nodeIsNull;
 
     private TreeSitter(string directory)
     {
@@ -118,6 +121,8 @@ public sealed unsafe class TreeSitter : IDisposable
         queryCursorNextMatch = (delegate* unmanaged[Cdecl]<IntPtr, TsQueryMatch*, byte>)NativeLibrary.GetExport(core, "ts_query_cursor_next_match");
         nodeStartByte = (delegate* unmanaged[Cdecl]<TsNode, uint>)NativeLibrary.GetExport(core, "ts_node_start_byte");
         nodeEndByte = (delegate* unmanaged[Cdecl]<TsNode, uint>)NativeLibrary.GetExport(core, "ts_node_end_byte");
+        nodeParent = (delegate* unmanaged[Cdecl]<TsNode, TsNode>)NativeLibrary.GetExport(core, "ts_node_parent");
+        nodeIsNull = (delegate* unmanaged[Cdecl]<TsNode, byte>)NativeLibrary.GetExport(core, "ts_node_is_null");
 
         parser = parserNew();
     }
@@ -170,6 +175,7 @@ public sealed unsafe class TreeSitter : IDisposable
             var root = treeRootNode(tree);
 
             var symbols = new List<DeepSymbol>();
+            var declNodes = new Dictionary<DeepSymbol, TsNode>(ReferenceEqualityComparer.Instance);
             foreach (var captures in Matches(declarations, root, source))
             {
                 if (!captures.TryGetValue("name", out var nameNode))
@@ -191,7 +197,7 @@ public sealed unsafe class TreeSitter : IDisposable
                     continue;
                 }
 
-                symbols.Add(new DeepSymbol(
+                var symbol = new DeepSymbol(
                     Text(nameNode, source),
                     "symbol",
                     line,
@@ -199,7 +205,16 @@ public sealed unsafe class TreeSitter : IDisposable
                     Scope: scope,
                     Params: captures.TryGetValue("params", out var paramsNode)
                         ? Text(paramsNode, source)
-                        : null));
+                        : null);
+                symbols.Add(symbol);
+
+                // The declaration node for a call-site parent walk (§5.2) is this capture's
+                // own parent: a tree-sitter field never inserts an extra layer, so `@name`'s
+                // ts_node_parent is exactly the function_declaration/method_definition/etc.
+                // the pattern matched. Recording it here, keyed by the same DeepSymbol
+                // Fragments() below will pair a fragment with, is what lets the walk land on
+                // a byte-identical address without re-implementing "what is a declaration".
+                declNodes[symbol] = nodeParent(nameNode);
             }
 
             var modules = new List<string>();
@@ -211,12 +226,76 @@ public sealed unsafe class TreeSitter : IDisposable
                 }
             }
 
-            return new DeepAnalysis(relativePath, symbols, modules, null);
+            var calls = ExtractCalls(lang, language, root, source, symbols, declNodes);
+
+            return new DeepAnalysis(relativePath, symbols, modules, null, calls);
         }
         finally
         {
             treeDelete(tree);
         }
+    }
+
+    /// <summary>
+    /// Query and walk are independent of the declaration/import pair above (C2): a language
+    /// with no <see cref="LanguageDefinition.CallQuery"/> (tier 0, or C#, which goes through
+    /// the Roslyn sidecar instead) simply contributes no calls, rather than losing the
+    /// declarations and imports it already found.
+    /// </summary>
+    private List<DeepCall> ExtractCalls(
+        IntPtr lang,
+        LanguageDefinition language,
+        TsNode root,
+        byte[] source,
+        List<DeepSymbol> symbols,
+        Dictionary<DeepSymbol, TsNode> declNodes)
+    {
+        if (language.CallQuery is null)
+        {
+            return [];
+        }
+
+        var callQuery = Compile(lang, language.Id, "call", language.CallQuery);
+        if (callQuery is null)
+        {
+            return [];
+        }
+
+        var ranges = new Dictionary<(uint Start, uint End), string>();
+        foreach (var (fragment, symbol) in DeepTier.Fragments(symbols))
+        {
+            if (declNodes.TryGetValue(symbol, out var node))
+            {
+                ranges[(nodeStartByte(node), nodeEndByte(node))] = fragment;
+            }
+        }
+
+        var calls = new List<DeepCall>();
+        var newlineOffsets = NewlineOffsets(source);
+        foreach (var captures in Matches(callQuery, root, source))
+        {
+            if (!captures.TryGetValue("callee", out var calleeNode))
+            {
+                continue;
+            }
+
+            string? enclosing = null;
+            var ancestor = nodeParent(calleeNode);
+            while (nodeIsNull(ancestor) == 0)
+            {
+                if (ranges.TryGetValue((nodeStartByte(ancestor), nodeEndByte(ancestor)), out var fragment))
+                {
+                    enclosing = fragment;
+                    break;
+                }
+
+                ancestor = nodeParent(ancestor);
+            }
+
+            calls.Add(new DeepCall(enclosing, Text(calleeNode, source), LineNumberAt(newlineOffsets, nodeStartByte(calleeNode))));
+        }
+
+        return calls;
     }
 
     private IntPtr? LoadLanguage(string languageId, TreeSitterGrammar grammar)
@@ -428,6 +507,31 @@ public sealed unsafe class TreeSitter : IDisposable
         }
 
         return Encoding.UTF8.GetString(source, start, end - start).Trim();
+    }
+
+    /// <summary>Byte offsets of every '\n' in <paramref name="source"/>, ascending — built once
+    /// per file so <see cref="LineNumberAt"/> can binary-search rather than rescan from 0 for
+    /// every call site (was O(N) per call, O(N × call count) per file).</summary>
+    private static List<int> NewlineOffsets(byte[] source)
+    {
+        var offsets = new List<int>();
+        for (var i = 0; i < source.Length; i++)
+        {
+            if (source[i] == (byte)'\n')
+            {
+                offsets.Add(i);
+            }
+        }
+
+        return offsets;
+    }
+
+    /// <summary>1-based line number holding a byte offset, via binary search over <paramref name="newlineOffsets"/>.</summary>
+    private static int LineNumberAt(List<int> newlineOffsets, uint offset)
+    {
+        var index = newlineOffsets.BinarySearch((int)offset);
+        var newlinesBefore = index >= 0 ? index : ~index;
+        return newlinesBefore + 1;
     }
 
     private string QueryString(IntPtr query, uint id)

@@ -674,15 +674,15 @@ public sealed class EngramMcpTools
 
     [McpServerTool(Name = "engram_navigate")]
     [Description(
-        "Where is a symbol defined, or what does a file import — a deterministic lookup over indexed " +
-        "code, not a search. Use it instead of Read/Grep to answer 'where is Z defined' or 'what does " +
-        "Y import'. relation is defined_at or imports this phase; callers, callees, and neighbors are " +
-        "recognized but answer 'not yet indexed' rather than an empty result, since an empty list would " +
-        "read as 'nothing calls this' when the graph simply is not built yet.")]
+        "Where is a symbol defined, what does a file import, or who calls/is called by a symbol — a " +
+        "deterministic lookup over indexed code, not a search. Use it instead of Read/Grep to answer " +
+        "'where is Z defined', 'what does Y import', 'who calls Z', or 'what does Z call'. relation is " +
+        "defined_at, imports, callers, or callees; neighbors is recognized but answers 'not yet indexed' " +
+        "rather than an empty result.")]
     public static string Navigate(
         EngramHome home,
         McpSessionId session,
-        [Description("A symbol name for defined_at, or a file path for imports.")] string query,
+        [Description("A symbol name for defined_at/callers/callees, or a file path for imports.")] string query,
         [Description("One of: defined_at, imports, callers, callees, neighbors.")] string relation,
         [Description("Restrict matches to one repo's indexed code, by its slug.")] string? repo = null,
         [Description("Maximum matches returned. Defaults to 20, clamped to 1-100.")] int limit = 20)
@@ -691,11 +691,10 @@ public sealed class EngramMcpTools
         var normalizedRelation = relation.Trim().ToLowerInvariant();
 
         NavigateOutcome outcome;
-        if (normalizedRelation is "callers" or "callees" or "neighbors")
+        if (normalizedRelation is "neighbors")
         {
             outcome = NavigateOutcome.NotFound(
-                $"'{normalizedRelation}' is not yet indexed — code edges (calls, references) are "
-                    + "Phase 3 work that has not landed. This is not a negative result; it means the "
+                "'neighbors' is not yet indexed. This is not a negative result; it means the "
                     + "question cannot be answered yet, not that the answer is empty.");
         }
         else
@@ -705,9 +704,11 @@ public sealed class EngramMcpTools
             {
                 "defined_at" => NavigateDefinedAt(connection, query, repo, limit),
                 "imports" => NavigateImports(connection, query, repo, limit),
+                "callers" => NavigateCallers(connection, query, repo, limit),
+                "callees" => NavigateCallees(connection, query, repo, limit),
                 _ => NavigateOutcome.NotFound(
-                    $"Unknown relation '{relation}'. Use defined_at or imports (callers, callees, and "
-                        + "neighbors are recognized but not yet indexed)."),
+                    $"Unknown relation '{relation}'. Use defined_at, imports, callers, or callees "
+                        + "(neighbors is recognized but not yet indexed)."),
             };
         }
 
@@ -809,6 +810,140 @@ public sealed class EngramMcpTools
         var tiers = matches.Select(m => m.Tier).Distinct().ToList();
         return new NavigateOutcome(builder.ToString().TrimEnd('\n'), Found: true, Tiers: tiers);
     }
+
+    private static NavigateOutcome NavigateCallers(SqliteConnection connection, string query, string? repo, int limit)
+    {
+        var repoNeedle = RepoNeedle(repo);
+        if (repoNeedle is not null && !RepoIndexed(connection, repoNeedle))
+        {
+            return NavigateOutcome.NotFound($"Repo '{repo}' is not indexed. Nothing to search.");
+        }
+
+        var result = CodeCallGraph.Callers(connection, query, repoNeedle, limit);
+        if (!result.Found)
+        {
+            return NavigateOutcome.NotFound(
+                $"No symbol named '{query}' found (checked exact, case-insensitive, and substring match).");
+        }
+
+        if (result.Callers.Count == 0)
+        {
+            return NavigateOutcome.NotFound(
+                $"No recorded call sites naming '{query}' ({CoverageCaveat(result.Coverage)}).");
+        }
+
+        var builder = new System.Text.StringBuilder();
+        builder.Append(ExtractionTierUnrecordedHeader);
+        if (result.QueryTier != SymbolMatchTier.Exact)
+        {
+            builder.Append("No exact match for '").Append(query).Append("'; showing callers of ")
+                .Append(result.DeclarationCount).Append(' ').Append(TierLabel(result.QueryTier))
+                .Append(" match").Append(result.DeclarationCount == 1 ? "" : "es").Append(".\n");
+        }
+        else if (result.DeclarationCount > 1)
+        {
+            builder.Append(result.DeclarationCount).Append(" declarations of '").Append(query)
+                .Append("' exist in this store — these are calls to some '").Append(query)
+                .Append("', not necessarily one specific declaration.\n");
+        }
+
+        builder.Append(CountText(result.Callers.Count, "caller")).Append(" of '").Append(query).Append("'");
+        if (result.TotalMatches > result.Callers.Count)
+        {
+            builder.Append(" (showing ").Append(result.Callers.Count).Append(" of ").Append(result.TotalMatches).Append(')');
+        }
+
+        builder.Append(":\n");
+        foreach (var caller in result.Callers)
+        {
+            builder.Append("  [").Append(RankLabel(caller.Signal)).Append("] ").Append(caller.CallerPath);
+            if (caller.AttributedToType)
+            {
+                builder.Append(" (attributed to the enclosing type — call site is a non-public member)");
+            }
+
+            builder.Append('\n');
+        }
+
+        return new NavigateOutcome(builder.ToString().TrimEnd('\n'), Found: true, Tiers: []);
+    }
+
+    private static NavigateOutcome NavigateCallees(SqliteConnection connection, string query, string? repo, int limit)
+    {
+        var repoNeedle = RepoNeedle(repo);
+        if (repoNeedle is not null && !RepoIndexed(connection, repoNeedle))
+        {
+            return NavigateOutcome.NotFound($"Repo '{repo}' is not indexed. Nothing to search.");
+        }
+
+        var result = CodeCallGraph.Callees(connection, query, repoNeedle, limit);
+        if (!result.Found)
+        {
+            return NavigateOutcome.NotFound(
+                $"No symbol named '{query}' found (checked exact, case-insensitive, and substring match).");
+        }
+
+        if (result.Callees.Count == 0)
+        {
+            return NavigateOutcome.NotFound(
+                $"No recorded calls from '{query}' ({CoverageCaveat(result.Coverage)}).");
+        }
+
+        var builder = new System.Text.StringBuilder();
+        builder.Append(ExtractionTierUnrecordedHeader);
+        if (result.QueryTier != SymbolMatchTier.Exact)
+        {
+            builder.Append("No exact match for '").Append(query).Append("'; resolved by ")
+                .Append(TierLabel(result.QueryTier)).Append(" match.\n");
+        }
+
+        builder.Append(CountText(result.Callees.Count, "call")).Append(" from '").Append(query).Append("'");
+        if (result.TotalMatches > result.Callees.Count)
+        {
+            builder.Append(" (showing ").Append(result.Callees.Count).Append(" of ").Append(result.TotalMatches).Append(')');
+        }
+
+        builder.Append(":\n");
+        foreach (var callee in result.Callees)
+        {
+            builder.Append("  [").Append(RankLabel(callee.Signal)).Append("] ").Append(callee.Callee);
+            if (callee.DeclarationPath is not null)
+            {
+                builder.Append(" -> ").Append(callee.DeclarationPath);
+            }
+            else
+            {
+                builder.Append(" (no matching declaration found)");
+            }
+
+            builder.Append('\n');
+        }
+
+        return new NavigateOutcome(builder.ToString().TrimEnd('\n'), Found: true, Tiers: []);
+    }
+
+    private static string TierLabel(SymbolMatchTier tier) => tier switch
+    {
+        SymbolMatchTier.CaseInsensitive => "case-insensitive",
+        SymbolMatchTier.Substring => "substring",
+        _ => "exact",
+    };
+
+    private static string CoverageCaveat(ExtractionCoverage coverage) => coverage switch
+    {
+        ExtractionCoverage.NotApplicable => "not applicable to this language",
+        ExtractionCoverage.KnownZero => "extraction is current for this file; this is a real zero",
+        _ => "extraction coverage for this file is unknown — this may mean no calls, or that it has not been extracted",
+    };
+
+    private static string RankLabel(CallRankSignal signal) => signal switch
+    {
+        CallRankSignal.SameFile => "same-file",
+        CallRankSignal.QualifierAgreement => "qualifier-match",
+        CallRankSignal.ImportFilenameMatch => "import-filename-match",
+        CallRankSignal.SameRepo => "same-repo",
+        _ => "name-only",
+    };
 
     private static IEnumerable<string> ImportedModuleNames(SqliteConnection connection, IEnumerable<long> factIds)
     {

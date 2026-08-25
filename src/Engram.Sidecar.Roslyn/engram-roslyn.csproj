@@ -20,4 +20,10 @@
     <PackageReference Include="Microsoft.CodeAnalysis.CSharp" />
   </ItemGroup>
 
+  <!-- No ProjectReference to Engram.Core, and none should be added: the sidecar only ever
+       needed a fragment for calls, and it now emits an explicit id/enclosing_id instead —
+       core resolves id to fragment through the Fragments() it already computes (D-code-nav
+       B1). A reference here would drag in LLamaSharp's per-RID native payload (D45), the
+       same publish-size trap this project exists to stay clear of. -->
+
 </Project>

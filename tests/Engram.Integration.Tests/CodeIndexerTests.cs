@@ -413,6 +413,72 @@ public class CodeIndexerTests
         Assert.False(live.Regenerable);
     }
 
+    // gap b (Architect ruling): CoverageOf's three states, each pinned against the real
+    // indexer rather than a hand-built file_state row, since the version stamp and the
+    // repo/relative-path split are exactly what a real Index() run produces.
+    [Fact]
+    public void CoverageOf_ATier0File_IsNotApplicable()
+    {
+        using var sandbox = new SandboxHome();
+        var repo = CreateFixture(sandbox);
+        using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
+        Index(connection, sandbox, repo, apply: true);
+
+        var readmePath = CodeFacts(connection)
+            .Select(f => f.SubjectPath.Split('#')[0])
+            .First(p => p.EndsWith("/README.md", StringComparison.Ordinal));
+
+        Assert.Equal(ExtractionCoverage.NotApplicable, CodeIndexer.CoverageOf(connection, readmePath));
+    }
+
+    [Fact]
+    public void CoverageOf_ATier2FileIndexedUnderTheCurrentVersion_IsKnownZero()
+    {
+        using var sandbox = new SandboxHome();
+        var repo = CreateFixture(sandbox);
+        using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
+        Index(connection, sandbox, repo, apply: true);
+
+        var programPath = CodeFacts(connection)
+            .Select(f => f.SubjectPath.Split('#')[0])
+            .First(p => p.EndsWith("/Program.cs", StringComparison.Ordinal));
+
+        Assert.Equal(ExtractionCoverage.KnownZero, CodeIndexer.CoverageOf(connection, programPath));
+    }
+
+    [Fact]
+    public void CoverageOf_AFileNeverIndexed_IsUnknown()
+    {
+        using var sandbox = new SandboxHome();
+        var repo = CreateFixture(sandbox);
+        using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
+        Index(connection, sandbox, repo, apply: true);
+
+        var programPath = CodeFacts(connection)
+            .Select(f => f.SubjectPath.Split('#')[0])
+            .First(p => p.EndsWith("/Program.cs", StringComparison.Ordinal));
+        var neverIndexed = programPath.Replace("Program.cs", "NeverIndexed.cs", StringComparison.Ordinal);
+
+        Assert.Equal(ExtractionCoverage.Unknown, CodeIndexer.CoverageOf(connection, neverIndexed));
+    }
+
+    [Fact]
+    public void CoverageOf_AStaleVersionStamp_IsUnknown_EvenForAPreviouslyIndexedFile()
+    {
+        using var sandbox = new SandboxHome();
+        var repo = CreateFixture(sandbox);
+        using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
+        Index(connection, sandbox, repo, apply: true);
+
+        var programPath = CodeFacts(connection)
+            .Select(f => f.SubjectPath.Split('#')[0])
+            .First(p => p.EndsWith("/Program.cs", StringComparison.Ordinal));
+
+        Execute(connection, $"UPDATE schema_meta SET value = '0.0' WHERE key = '{CodeIndexer.VersionKey}';");
+
+        Assert.Equal(ExtractionCoverage.Unknown, CodeIndexer.CoverageOf(connection, programPath));
+    }
+
     [Fact]
     public void UnstagedEdit_InARealCheckout_IsStillDetected()
     {

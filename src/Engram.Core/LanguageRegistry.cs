@@ -60,7 +60,8 @@ public sealed record LanguageDefinition(
     LanguageFixture? Fixture,
     IReadOnlyList<TreeSitterGrammar>? Grammars = null,
     string? DeclarationQuery = null,
-    string? ImportQuery = null)
+    string? ImportQuery = null,
+    string? CallQuery = null)
 {
     /// <summary>The grammar that parses one of this row's extensions, or null at tier 0/2.</summary>
     public TreeSitterGrammar? GrammarFor(string extension)
@@ -166,6 +167,16 @@ public static class LanguageRegistry
         (call_expression function: (import) arguments: (arguments (string (string_fragment) @module)))
         """;
 
+    // Flat by design (§5.2): a nested query has no way to reach a call inside an if/for/try
+    // body (tree-sitter's query language has no descendant operator, and the field-chain
+    // patterns above only match a fixed statement shape), so attribution is a parent walk
+    // in TreeSitter.cs instead of a query shape. TS and JS get their own compiled query
+    // (D47) even though the pattern text is identical, since ts_query_new validates node
+    // types per grammar.
+    private const string TypeScriptCalls = "(call_expression function: (_) @callee)";
+
+    private const string JavaScriptCalls = "(call_expression function: (_) @callee)";
+
     /// <summary>Catch-all for files no row claims: impressions only, nothing extracted.</summary>
     public static readonly LanguageDefinition Text = new(
         Id: "text",
@@ -263,7 +274,8 @@ public static class LanguageRegistry
                 new(Library: "tsx", Symbol: "tree_sitter_tsx", Extensions: [".tsx"]),
             ],
             DeclarationQuery: TypeScriptDeclarations,
-            ImportQuery: ScriptImports),
+            ImportQuery: ScriptImports,
+            CallQuery: TypeScriptCalls),
         new(
             Id: "javascript",
             DisplayName: "JavaScript",
@@ -304,7 +316,8 @@ public static class LanguageRegistry
                 ]),
             Grammars: [new(Library: "javascript", Symbol: "tree_sitter_javascript", Extensions: [])],
             DeclarationQuery: JavaScriptDeclarations,
-            ImportQuery: ScriptImports),
+            ImportQuery: ScriptImports,
+            CallQuery: JavaScriptCalls),
         new(
             Id: "markdown",
             DisplayName: "Markdown",

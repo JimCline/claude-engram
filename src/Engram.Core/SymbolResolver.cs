@@ -35,8 +35,19 @@ public static class SymbolResolver
     /// out-of-scope exact match blocks the fallback to an in-scope substring match) (D-code-nav
     /// fixup B2). Callers own escaping; this method interpolates the raw value.
     /// </param>
+    /// <param name="ceiling">
+    /// The last tier this call may fall back to (Phase 3 §6.3). `defined_at` passes nothing —
+    /// a human typing a half-remembered name is well served by the substring rung. A
+    /// query-time edge join is not: applied per-edge at scale, substring is a fabrication
+    /// engine (`join` also matches `joinPath`, `rejoin`, `JoinedTable`), so the caller states
+    /// a ceiling rather than a second resolver being written for it (master §9's rule).
+    /// </param>
     public static IReadOnlyList<SymbolMatch> Resolve(
-        SqliteConnection connection, string name, int limit, string? pathContains = null)
+        SqliteConnection connection,
+        string name,
+        int limit,
+        string? pathContains = null,
+        SymbolMatchTier ceiling = SymbolMatchTier.Substring)
     {
         ArgumentNullException.ThrowIfNull(connection);
 
@@ -51,10 +62,20 @@ public static class SymbolResolver
             return Tag(exact, SymbolMatchTier.Exact);
         }
 
+        if (ceiling < SymbolMatchTier.CaseInsensitive)
+        {
+            return [];
+        }
+
         var caseInsensitive = Query(connection, "e.name = $name COLLATE NOCASE", name, limit, pathContains);
         if (caseInsensitive.Count > 0)
         {
             return Tag(caseInsensitive, SymbolMatchTier.CaseInsensitive);
+        }
+
+        if (ceiling < SymbolMatchTier.Substring)
+        {
+            return [];
         }
 
         var substring = Query(

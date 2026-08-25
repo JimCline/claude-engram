@@ -40,9 +40,9 @@ Record a verdict on how two facts relate: supersedes, conflicts_with, scoped, or
   Why this verdict — what distinguishes or reconciles the two facts.
 
 tool: engram_navigate
-Where is a symbol defined, or what does a file import — a deterministic lookup over indexed code, not a search. Use it instead of Read/Grep to answer 'where is Z defined' or 'what does Y import'. relation is defined_at or imports this phase; callers, callees, and neighbors are recognized but answer 'not yet indexed' rather than an empty result, since an empty list would read as 'nothing calls this' when the graph simply is not built yet.
+Where is a symbol defined, what does a file import, or who calls/is called by a symbol — a deterministic lookup over indexed code, not a search. Use it instead of Read/Grep to answer 'where is Z defined', 'what does Y import', 'who calls Z', or 'what does Z call'. relation is defined_at, imports, callers, or callees; neighbors is recognized but answers 'not yet indexed' rather than an empty result.
   param: query
-  A symbol name for defined_at, or a file path for imports.
+  A symbol name for defined_at/callers/callees, or a file path for imports.
   param: relation
   One of: defined_at, imports, callers, callees, neighbors.
   param: repo

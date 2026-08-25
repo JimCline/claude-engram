@@ -205,6 +205,73 @@ public class RoslynSidecarTests
         Assert.All(imports, c => Assert.NotNull(c.Object));
     }
 
+    // §10 item 7: a `calls` candidate survives DeepTier.Merge. No grammar needed — a
+    // hand-built DeepCall exercises Merge's calls-emit path directly (§5.4).
+    [Fact]
+    public void Merge_EmitsACallsCandidateForARealCall()
+    {
+        var filePath = "/projects/demo/code/repo/src/Widget.cs";
+        var tierZero = CodeAnalyzer.Analyze(filePath, BraceStyleCs, LanguageRegistry.Resolve("Widget.cs"));
+        var analysis = new DeepAnalysis("Widget.cs", [], [], null, [new DeepCall("Outer", "Inner", 3)]);
+
+        var merged = DeepTier.Merge(filePath, tierZero, analysis);
+
+        var call = Assert.Single(merged, c => c.Predicate == "calls");
+        Assert.Equal(CodePaths.ForSymbol(filePath, "Outer"), call.EntityPath);
+        Assert.Equal("symbol", call.Kind);
+        Assert.Equal("Inner", call.Object);
+    }
+
+    // §10 item 4 / §5.2.1: a call with no enclosing declaration attributes to the file
+    // entity, kind `file` — never dropped.
+    [Fact]
+    public void Merge_AttributesAModuleLevelCall_ToTheFileEntity()
+    {
+        var filePath = "/projects/demo/code/repo/src/Widget.cs";
+        var tierZero = CodeAnalyzer.Analyze(filePath, BraceStyleCs, LanguageRegistry.Resolve("Widget.cs"));
+        var analysis = new DeepAnalysis("Widget.cs", [], [], null, [new DeepCall(null, "configure", 1)]);
+
+        var merged = DeepTier.Merge(filePath, tierZero, analysis);
+
+        var call = Assert.Single(merged, c => c.Predicate == "calls");
+        Assert.Equal(filePath, call.EntityPath);
+        Assert.Equal("file", call.Kind);
+        Assert.Equal("configure", call.Object);
+    }
+
+    // §10 item 3 / §5.5: three calls to one target from one function collapse to one fact.
+    [Fact]
+    public void Merge_DeduplicatesRepeatedCallsToOneTarget_ToASingleCandidate()
+    {
+        var filePath = "/projects/demo/code/repo/src/Widget.cs";
+        var tierZero = CodeAnalyzer.Analyze(filePath, BraceStyleCs, LanguageRegistry.Resolve("Widget.cs"));
+        var analysis = new DeepAnalysis(
+            "Widget.cs", [], [], null,
+            [new DeepCall("Outer", "Inner", 5), new DeepCall("Outer", "Inner", 2), new DeepCall("Outer", "Inner", 9)]);
+
+        var merged = DeepTier.Merge(filePath, tierZero, analysis);
+
+        Assert.Single(merged, c => c.Predicate == "calls");
+    }
+
+    // §10 item 8: one unparseable sibling in the same batch does not cost the good file its
+    // calls — the sidecar's per-line try/catch (Program.cs's main loop) isolates failures.
+    [Fact]
+    public void Analyze_OneBadFileInABatch_StillYieldsTheGoodFilesCalls()
+    {
+        const string good = "namespace Demo; public class Good { public void Outer() { Inner(); } public void Inner() { } }";
+
+        var results = RoslynSidecar.Analyze(
+            SidecarBinary(),
+            [("Good.cs", good), ("Bad.cs", "this is not valid C# {{{")],
+            TimeSpan.FromSeconds(30));
+
+        Assert.NotNull(results);
+        var goodResult = results["Good.cs"];
+        Assert.Null(goodResult.Error);
+        Assert.Contains(goodResult.Calls, c => c.Callee == "Inner");
+    }
+
     [Fact]
     public void Merge_OnAPerFileError_KeepsTierZeroWholesale()
     {
@@ -212,7 +279,7 @@ public class RoslynSidecarTests
         var tierZero = CodeAnalyzer.Analyze(filePath, BraceStyleCs, LanguageRegistry.Resolve("Widget.cs"));
 
         var merged = DeepTier.Merge(
-            filePath, tierZero, new DeepAnalysis("Widget.cs", [], [], "did not parse"));
+            filePath, tierZero, new DeepAnalysis("Widget.cs", [], [], "did not parse", []));
 
         Assert.Equal(tierZero, merged);
     }
@@ -339,6 +406,46 @@ public class RoslynSidecarTests
             IndexingSettings.Default,
             new IndexOptions(repo, Apply: true, Drain: false, Full: full, SidecarPath: sidecarPath),
             DateTimeOffset.UtcNow);
+
+    // D-code-nav B1/item 24: a ProjectReference back to Engram.Core drags LLamaSharp's
+    // per-RID native payload into this publish target (D45), the exact trap the framework-
+    // dependent, no-RID setup above exists to avoid. Falsify by restoring the reference.
+    [Fact]
+    public void SidecarProject_HasNoProjectReferenceToEngramCore()
+    {
+        var text = File.ReadAllText(Path.Combine(RepoRoot(), "src", "Engram.Sidecar.Roslyn", "engram-roslyn.csproj"));
+        Assert.DoesNotContain("<ProjectReference", text, StringComparison.Ordinal);
+    }
+
+    // Microsoft.CodeAnalysis.CSharp's own RID-agnostic build already scaffolds an empty
+    // runtimes/<rid>/native/ tree with zero bytes in it, unrelated to D45 — so the guard
+    // checks for an actual native payload, not the directory's mere existence.
+    [Fact]
+    public void SidecarBuildOutput_CarriesNoLlamaNativePayload()
+    {
+        var dir = Path.GetDirectoryName(SidecarBinary())!;
+        var files = Directory.EnumerateFiles(dir, "*", SearchOption.AllDirectories).ToList();
+
+        Assert.DoesNotContain(files, f =>
+            Path.GetFileName(f).Contains("LLamaSharp", StringComparison.OrdinalIgnoreCase)
+            || Path.GetFileName(f).Contains("libllama", StringComparison.OrdinalIgnoreCase));
+
+        var runtimesDir = Path.Combine(dir, "runtimes");
+        Assert.False(
+            Directory.Exists(runtimesDir) && Directory.EnumerateFiles(runtimesDir, "*", SearchOption.AllDirectories).Any());
+    }
+
+    private static string RepoRoot()
+    {
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir is not null && !File.Exists(Path.Combine(dir.FullName, "docs", "engram-schema.sql")))
+        {
+            dir = dir.Parent;
+        }
+
+        Assert.NotNull(dir);
+        return dir!.FullName;
+    }
 
     /// <summary>
     /// The test csproj's ProjectReference builds the sidecar, so absence here is broken

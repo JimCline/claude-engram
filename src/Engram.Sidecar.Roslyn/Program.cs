@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using System.Text.Json.Nodes;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
@@ -67,10 +68,11 @@ static JsonObject Analyze(string path, string content)
     var root = CSharpSyntaxTree.ParseText(content).GetRoot();
 
     var symbols = new JsonArray();
+    var attribution = new List<SyntaxNode>();
     foreach (var declaration in root.DescendantNodes().OfType<BaseTypeDeclarationSyntax>())
     {
         var scope = ScopeOf(declaration);
-        Emit(symbols, declaration.Identifier.Text, KindOf(declaration), declaration, scope, parameters: null);
+        Emit(symbols, attribution, declaration.Identifier.Text, KindOf(declaration), declaration, scope, parameters: null);
 
         // Enums are BaseType but not Type: their members are values, not surface (D48).
         if (declaration is TypeDeclarationSyntax type)
@@ -81,7 +83,7 @@ static JsonObject Analyze(string path, string content)
             var inInterface = declaration is InterfaceDeclarationSyntax;
             foreach (var member in type.Members)
             {
-                EmitMember(symbols, member, memberScope, inInterface);
+                EmitMember(symbols, attribution, member, memberScope, inInterface);
             }
         }
     }
@@ -90,6 +92,7 @@ static JsonObject Analyze(string path, string content)
     {
         Emit(
             symbols,
+            attribution,
             declaration.Identifier.Text,
             "delegate",
             declaration,
@@ -112,10 +115,12 @@ static JsonObject Analyze(string path, string content)
         ["path"] = path,
         ["symbols"] = symbols,
         ["imports"] = imports,
+        ["calls"] = CallsOf(root, attribution),
     };
 }
 
-static void EmitMember(JsonArray symbols, MemberDeclarationSyntax member, string scope, bool inInterface)
+static void EmitMember(
+    JsonArray symbols, List<SyntaxNode> attribution, MemberDeclarationSyntax member, string scope, bool inInterface)
 {
     if (!inInterface && !member.Modifiers.Any(m =>
         m.IsKind(SyntaxKind.PublicKeyword)
@@ -128,48 +133,57 @@ static void EmitMember(JsonArray symbols, MemberDeclarationSyntax member, string
     switch (member)
     {
         case MethodDeclarationSyntax method:
-            Emit(symbols, method.Identifier.Text, "method", method, scope, method.ParameterList.ToString());
+            Emit(symbols, attribution, method.Identifier.Text, "method", method, scope, method.ParameterList.ToString());
             break;
         case ConstructorDeclarationSyntax constructor:
-            Emit(symbols, constructor.Identifier.Text, "constructor", constructor, scope, constructor.ParameterList.ToString());
+            Emit(symbols, attribution, constructor.Identifier.Text, "constructor", constructor, scope, constructor.ParameterList.ToString());
             break;
         case PropertyDeclarationSyntax property:
-            Emit(symbols, property.Identifier.Text, "property", property, scope, parameters: null);
+            Emit(symbols, attribution, property.Identifier.Text, "property", property, scope, parameters: null);
             break;
         case FieldDeclarationSyntax field:
             foreach (var declarator in field.Declaration.Variables)
             {
-                Emit(symbols, declarator.Identifier.Text, "field", field, scope, parameters: null);
+                // Each co-declared field gets its own attribution point (the declarator, not
+                // the shared field node) — two fields on one line must not share one address.
+                Emit(symbols, attribution, declarator.Identifier.Text, "field", field, scope, parameters: null, declarator);
             }
 
             break;
         case EventFieldDeclarationSyntax eventField:
             foreach (var declarator in eventField.Declaration.Variables)
             {
-                Emit(symbols, declarator.Identifier.Text, "event", eventField, scope, parameters: null);
+                Emit(symbols, attribution, declarator.Identifier.Text, "event", eventField, scope, parameters: null, declarator);
             }
 
             break;
         case EventDeclarationSyntax eventDeclaration:
-            Emit(symbols, eventDeclaration.Identifier.Text, "event", eventDeclaration, scope, parameters: null);
+            Emit(symbols, attribution, eventDeclaration.Identifier.Text, "event", eventDeclaration, scope, parameters: null);
             break;
     }
 }
 
 static void Emit(
     JsonArray symbols,
+    List<SyntaxNode> attribution,
     string name,
     string kind,
     MemberDeclarationSyntax declaration,
     string? scope,
-    string? parameters)
+    string? parameters,
+    SyntaxNode? attributionNode = null)
 {
+    var declarationLine = DeclarationLine(declaration);
+    var doc = DocSummary(declaration);
+    var id = attribution.Count;
+
     var symbol = new JsonObject
     {
+        ["id"] = id,
         ["name"] = name,
         ["kind"] = kind,
-        ["declaration"] = DeclarationLine(declaration),
-        ["doc"] = DocSummary(declaration),
+        ["declaration"] = declarationLine,
+        ["doc"] = doc,
     };
 
     if (scope is not null)
@@ -183,6 +197,54 @@ static void Emit(
     }
 
     ((IList<JsonNode?>)symbols).Add(symbol);
+    attribution.Add(attributionNode ?? declaration);
+}
+
+/// <summary>
+/// One JSON call entry per <see cref="InvocationExpressionSyntax"/>: the callee as written,
+/// its 1-based line, and the `id` of the nearest emitted symbol enclosing it. Emission is
+/// the public surface (`EmitMember` skips non-public members), so a call inside a private
+/// method or a local function attributes to the nearest emitted ancestor — usually the
+/// enclosing type — never to nothing. A walk that reaches the root leaves `enclosing_id`
+/// absent, which core attributes to the file (§5.2.1 of the Phase 3 spec). This emits an
+/// id, not a fragment: assembling the address is core's job (§5.3.1).
+/// </summary>
+static JsonArray CallsOf(SyntaxNode root, List<SyntaxNode> attribution)
+{
+    var idOf = new Dictionary<SyntaxNode, int>(ReferenceEqualityComparer.Instance);
+    for (var i = 0; i < attribution.Count; i++)
+    {
+        idOf[attribution[i]] = i;
+    }
+
+    var calls = new JsonArray();
+    foreach (var invocation in root.DescendantNodes().OfType<InvocationExpressionSyntax>())
+    {
+        int? enclosingId = null;
+        for (var ancestor = invocation.Parent; ancestor is not null; ancestor = ancestor.Parent)
+        {
+            if (idOf.TryGetValue(ancestor, out var id))
+            {
+                enclosingId = id;
+                break;
+            }
+        }
+
+        var call = new JsonObject
+        {
+            ["callee"] = invocation.Expression.ToString(),
+            ["line"] = invocation.Expression.GetLocation().GetLineSpan().StartLinePosition.Line + 1,
+        };
+
+        if (enclosingId is not null)
+        {
+            call["enclosing_id"] = enclosingId;
+        }
+
+        ((IList<JsonNode?>)calls).Add(call);
+    }
+
+    return calls;
 }
 
 static string? ScopeOf(SyntaxNode declaration)

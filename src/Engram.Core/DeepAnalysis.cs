@@ -15,12 +15,24 @@ public sealed record DeepSymbol(
     string? Scope = null,
     string? Params = null);
 
+/// <summary>One observed call site: who called, what name they wrote, where.</summary>
+public sealed record DeepCall(
+    string? EnclosingFragment,
+    string Callee,
+    int Line);
+
 /// <summary>One deeper-tier view of one file: what it saw, or why it could not look.</summary>
+/// <remarks>
+/// <paramref name="Calls"/> has no default value deliberately (§4 of the Phase 3 spec): a
+/// producer that is not updated to state its calls must fail to compile, not silently
+/// report "this file makes no calls" — which is indistinguishable from the truth.
+/// </remarks>
 public sealed record DeepAnalysis(
     string Path,
     IReadOnlyList<DeepSymbol> Symbols,
     IReadOnlyList<string> Imports,
-    string? Error);
+    string? Error,
+    IReadOnlyList<DeepCall> Calls);
 
 /// <summary>
 /// How any deeper tier's view lands on tier 0's (D24): one implementation, shared by the
@@ -132,8 +144,32 @@ public static class DeepTier
                 Object: m));
         }
 
+        foreach (var call in Deduplicate(analysis.Calls))
+        {
+            var (path, kind, display) = call.EnclosingFragment is { } fragment
+                ? (CodePaths.ForSymbol(fileEntityPath, fragment), "symbol", CodePaths.LeafOf(fragment))
+                : (fileEntityPath, "file", CodePaths.LeafOf(fileEntityPath));   // §5.2.1
+
+            merged.Add(new CodeCandidate(
+                path, kind, display, "calls",
+                CodeAnalyzer.Cap("calls " + call.Callee),
+                Object: call.Callee));
+        }
+
         return merged;
     }
+
+    /// <summary>
+    /// One fact per (caller, callee), not one per call site (§5.5): three calls to the same
+    /// target from one function are one belief. Keeps the lowest line so re-indexing an
+    /// unchanged file writes nothing. Null <see cref="DeepCall.EnclosingFragment"/>
+    /// participates as its own group, so a file's module-level calls never merge with a
+    /// same-named symbol's.
+    /// </summary>
+    private static IEnumerable<DeepCall> Deduplicate(IReadOnlyList<DeepCall> calls) =>
+        calls
+            .GroupBy(c => (c.EnclosingFragment, c.Callee))
+            .Select(g => g.OrderBy(c => c.Line).First());
 
     private static string CollapseWhitespace(string text) =>
         string.Join(' ', text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));

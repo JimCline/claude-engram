@@ -86,7 +86,7 @@ public class DeepTierFragmentsTests
         var merged = DeepTier.Merge(
             "/projects/p/code/r/Http.cs",
             [],
-            new DeepAnalysis("Http.cs", [first, second], [], null));
+            new DeepAnalysis("Http.cs", [first, second], [], null, []));
 
         var declared = Assert.Single(merged, c => c.Predicate == "declared-as");
         Assert.Equal("first", declared.Body);

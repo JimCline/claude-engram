@@ -271,6 +271,10 @@ public sealed class CodeNavigationPhase2Tests
         using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
         RunIndex(connection, sandbox, repo);
 
+        var liveFacts = FactStore.ReadLive(connection);
+        Assert.Contains(liveFacts, f => !CodePredicates.EdgeBearing.Contains(f.Predicate));
+        Assert.Contains(liveFacts, f => CodePredicates.EdgeBearing.Contains(f.Predicate));
+
         using var command = connection.CreateCommand();
         command.CommandText =
             """
@@ -316,6 +320,12 @@ public sealed class CodeNavigationPhase2Tests
 
         using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
         RunIndex(connection, sandbox, repo);
+
+        var edgeFactIds = FactStore.ReadLive(connection)
+            .Where(f => CodePredicates.EdgeBearing.Contains(f.Predicate))
+            .Select(f => f.Id)
+            .ToList();
+        Assert.NotEmpty(edgeFactIds);
 
         using var command = connection.CreateCommand();
         command.CommandText =
