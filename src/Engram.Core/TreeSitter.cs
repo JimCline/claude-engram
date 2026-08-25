@@ -188,15 +188,6 @@ public sealed unsafe class TreeSitter : IDisposable
                     ? Text(scopeNode, source)
                     : null;
 
-                // Grammar v2 (D48): a `private` member is implementation, not surface —
-                // the queries cannot express negation, so the modifier is read off the
-                // declaration line. The `#name` form never gets this far: the member
-                // patterns capture (property_identifier), which a private name is not.
-                if (scope is not null && line.StartsWith("private ", StringComparison.Ordinal))
-                {
-                    continue;
-                }
-
                 var symbol = new DeepSymbol(
                     Text(nameNode, source),
                     "symbol",

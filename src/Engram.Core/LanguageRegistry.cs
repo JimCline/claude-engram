@@ -110,11 +110,16 @@ public static class LanguageRegistry
     // not program-anchored, so a class matches wherever it sits, and each carries @scope
     // beside @name — the binding has no node navigation on purpose, nesting is the
     // pattern's shape, and ts_query_new validates that shape like everything else. @params
-    // feeds overload disambiguation; a `private` member is filtered on its declaration
-    // line, and `#name` members never match because (property_identifier) is not
-    // (private_property_identifier). Verified against the compiled grammars, where the
-    // vocabularies differ: TS names classes with (type_identifier) and has interface, enum,
-    // type alias and abstract class node types JS does not.
+    // feeds overload disambiguation. Members are captured at every visibility (all-members
+    // spec): a `private` member has no runtime effect in TS/JS and is captured the same as
+    // any other. `#name` members are the one true runtime-enforced privacy the language
+    // has — the grammar names that name a (private_property_identifier), a distinct node
+    // type from (property_identifier), so each member pattern below is duplicated once for
+    // it; the `#` is part of the captured text and is kept, since stripping it would
+    // collide `#count` with a public `count` in the same class. Verified against the
+    // compiled grammars, where the vocabularies differ: TS names classes with
+    // (type_identifier) and has interface, enum, type alias and abstract class node types
+    // JS does not.
     private const string TypeScriptDeclarations = """
         (program (function_declaration name: (identifier) @name parameters: (formal_parameters) @params))
         (program (generator_function_declaration name: (identifier) @name parameters: (formal_parameters) @params))
@@ -135,12 +140,16 @@ public static class LanguageRegistry
         (program (export_statement declaration: (lexical_declaration (variable_declarator name: (identifier) @name))))
         (program (export_statement declaration: (variable_declaration (variable_declarator name: (identifier) @name))))
         (class_declaration name: (type_identifier) @scope body: (class_body (method_definition name: (property_identifier) @name parameters: (formal_parameters) @params)))
+        (class_declaration name: (type_identifier) @scope body: (class_body (method_definition name: (private_property_identifier) @name parameters: (formal_parameters) @params)))
         (class_declaration name: (type_identifier) @scope body: (class_body (method_signature name: (property_identifier) @name parameters: (formal_parameters) @params)))
         (class_declaration name: (type_identifier) @scope body: (class_body (public_field_definition name: (property_identifier) @name)))
+        (class_declaration name: (type_identifier) @scope body: (class_body (public_field_definition name: (private_property_identifier) @name)))
         (abstract_class_declaration name: (type_identifier) @scope body: (class_body (method_definition name: (property_identifier) @name parameters: (formal_parameters) @params)))
+        (abstract_class_declaration name: (type_identifier) @scope body: (class_body (method_definition name: (private_property_identifier) @name parameters: (formal_parameters) @params)))
         (abstract_class_declaration name: (type_identifier) @scope body: (class_body (method_signature name: (property_identifier) @name parameters: (formal_parameters) @params)))
         (abstract_class_declaration name: (type_identifier) @scope body: (class_body (abstract_method_signature name: (property_identifier) @name parameters: (formal_parameters) @params)))
         (abstract_class_declaration name: (type_identifier) @scope body: (class_body (public_field_definition name: (property_identifier) @name)))
+        (abstract_class_declaration name: (type_identifier) @scope body: (class_body (public_field_definition name: (private_property_identifier) @name)))
         (interface_declaration name: (type_identifier) @scope body: (interface_body (method_signature name: (property_identifier) @name parameters: (formal_parameters) @params)))
         (interface_declaration name: (type_identifier) @scope body: (interface_body (property_signature name: (property_identifier) @name)))
         """;
@@ -155,7 +164,9 @@ public static class LanguageRegistry
         (program (export_statement declaration: (lexical_declaration (variable_declarator name: (identifier) @name))))
         (program (export_statement declaration: (variable_declaration (variable_declarator name: (identifier) @name))))
         (class_declaration name: (identifier) @scope body: (class_body (method_definition name: (property_identifier) @name parameters: (formal_parameters) @params)))
+        (class_declaration name: (identifier) @scope body: (class_body (method_definition name: (private_property_identifier) @name parameters: (formal_parameters) @params)))
         (class_declaration name: (identifier) @scope body: (class_body (field_definition property: (property_identifier) @name)))
+        (class_declaration name: (identifier) @scope body: (class_body (field_definition property: (private_property_identifier) @name)))
         """;
 
     // Shared across TS and JS: import statements, require(), and dynamic import() all use
@@ -262,6 +273,7 @@ public static class LanguageRegistry
                     "Options/limit",
                     "Scanner",
                     "Scanner/depth",
+                    "Scanner/cache",
                     "Scanner/probe()",
                     "Scanner/probe(deep: boolean)",
                     "Scanner/probe(deep?: boolean)",
@@ -310,6 +322,7 @@ public static class LanguageRegistry
                 [
                     "Runner",
                     "Runner/limit",
+                    "Runner/#secret",
                     "Runner/run()",
                     "Runner/run(times)",
                     "main",
