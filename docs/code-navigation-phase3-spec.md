@@ -320,6 +320,15 @@ inside non-public members, the coarse answer is nearly useless for the tier that
 facts, and the D48 conversation becomes worth having on its own terms. That is a measurement, not a
 design question, so it does not block.
 
+**Discharged, 2026-08-25, by `docs/code-graph-all-members-spec.md` — on terms this section
+explicitly reserved.** D48 was reopened, but not by Phase 3's own edge-precision motive, which is
+exactly what §5.3.2 forbade: Jim asked directly for every visibility to be indexed ("the whole
+point is for the LLM to know your code"), after `defined_at` failed to find a real private method.
+This section's type-attribution mechanism is unchanged and still fires — it now fires only for the
+kinds neither tier ever emitted as symbols (indexers, operators, enum-member initializers, local
+functions nested inside one of those), not for member visibility, which no longer decides
+anything here. The label text at `EngramMcpTools.cs` was corrected to say so.
+
 #### 5.3.3 The doc comment is wrong either way
 
 `Program.cs:200-208` states that a call inside a local function "simply walks past it to the true

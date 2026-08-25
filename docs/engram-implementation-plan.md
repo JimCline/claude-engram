@@ -2721,17 +2721,24 @@ addresses for one symbol.
 
 **What the tiers emit is policy, and the filter is syntactic.** Tier 2 emits every type
 declaration at any depth (v1 already emitted every top-level type regardless of visibility;
-types are structure) and the members that are surface: an explicit `public`, `internal`, or
-`protected` modifier, or membership in an interface, where the language makes them public
-implicitly. A bare private member is implementation, not interface — the same line the registry
-already draws for unexported `const`/`let`/`var`. Member kinds: methods, constructors,
-properties, fields, events; nested delegates keep their kind. Tier 1 emits class methods
-(including getters, setters, abstract methods, and overload signatures), public class fields,
-interface method and property signatures, and top-level function overload signatures; `#name`
-private members never match (`property_identifier` excludes them structurally) and a `private`
-modifier is filtered on the declaration line. Deliberately not emitted anywhere: enum members,
-indexers, operators, local functions — each is a large population of low-recall-value facts,
-and D44 already measured what a store full of near-noise does to lexical ranking. Method and
+types are structure) and, as of the all-members spec (`docs/code-graph-all-members-spec.md`),
+every member at every visibility — public, internal, protected, and bare private alike. The
+original policy in this paragraph read a bare private member as implementation, not interface,
+and excluded it; Jim overrode that directly ("private, public, protected, all members should be
+indexed in the graph... the whole point is for the LLM to know your code") after
+`engram_navigate defined_at` failed to find a `private static` method. The consumer is a model
+reading the implementation, not a caller programming against a public API, so the visibility
+line this paragraph used to draw no longer answers a question anyone was asking. Member kinds:
+methods, constructors, properties, fields, events; nested delegates keep their kind. Tier 1
+emits class methods (including getters, setters, abstract methods, and overload signatures) and
+class fields **at every visibility**, interface method and property signatures, and top-level
+function overload signatures; `#name` private members are captured through a second query
+pattern per member kind (`(private_property_identifier)`, a distinct tree-sitter node type from
+`(property_identifier)`, confirmed against the real pinned grammars) and the `private` keyword
+line-prefix filter is gone. What is still excluded, in both tiers, is unchanged from the
+original policy and rests on the same D44 measurement, not on visibility: enum members,
+indexers, operators, local functions — each is a large population of low-recall-value facts, and
+D44 already measured what a store full of near-noise does to lexical ranking. Method and
 constructor declaration lines cut at the body (a `declared-as` fact carries a signature, not an
 implementation); properties keep auto-accessor shapes (`{ get; set; }`) and drop computed
 bodies.

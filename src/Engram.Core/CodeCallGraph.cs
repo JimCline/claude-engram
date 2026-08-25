@@ -26,11 +26,13 @@ public enum ExtractionCoverage
 }
 
 /// <param name="AttributedToType">
-/// True when this call was written inside a C# non-public member: Roslyn does not emit that
-/// member as a symbol (D48's public-surface rule), so the call attributes to the nearest
-/// emitted ancestor — the enclosing type — rather than to nothing (Architect ruling, S3).
-/// The label is mandatory wherever this is true: an unlabelled type subject reads as "the
-/// type calls this", which is false.
+/// True when this call was written inside a member neither tier emits as a symbol — an
+/// indexer, an operator, an enum-member initializer, or a local function nested inside one
+/// of those (D48's kind exclusions; all-members spec §3) — so the call attributes to the
+/// nearest emitted ancestor, the enclosing type, rather than to nothing (Architect ruling,
+/// S3). Member visibility no longer decides this: every visibility is emitted. The label is
+/// mandatory wherever this is true: an unlabelled type subject reads as "the type calls
+/// this", which is false.
 /// </param>
 public sealed record CallerMatch(
     string CallerPath, CallRankSignal Signal, bool AttributedToType = false, int? AnalyzerTier = null);

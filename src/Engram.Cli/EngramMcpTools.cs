@@ -913,7 +913,7 @@ public sealed class EngramMcpTools
             builder.Append(' ').Append(caller.CallerPath);
             if (caller.AttributedToType)
             {
-                builder.Append(" (attributed to the enclosing type — call site is a non-public member)");
+                builder.Append(" (attributed to the enclosing type — call site is a kind not indexed as a symbol)");
             }
 
             builder.Append('\n');
