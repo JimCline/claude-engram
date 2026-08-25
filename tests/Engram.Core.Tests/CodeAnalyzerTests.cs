@@ -45,16 +45,21 @@ public class CodeAnalyzerTests
     }
 
     [Fact]
-    public void CSharp_Imports_AreOneSortedFact_SoReorderingIsNotAChange()
+    public void CSharp_Imports_AreOneObjectBearingFactPerModule_SoReorderingIsNotAChange()
     {
         var forward = "using Zebra.Lib;\nusing Alpha.Lib;\nclass C { }";
         var reversed = "using Alpha.Lib;\nusing Zebra.Lib;\nclass C { }";
 
-        var first = CodeAnalyzer.Analyze(FilePath, forward, CSharp()).Single(c => c.Predicate == "imports");
-        var second = CodeAnalyzer.Analyze(FilePath, reversed, CSharp()).Single(c => c.Predicate == "imports");
+        var first = CodeAnalyzer.Analyze(FilePath, forward, CSharp()).Where(c => c.Predicate == "imports").ToList();
+        var second = CodeAnalyzer.Analyze(FilePath, reversed, CSharp()).Where(c => c.Predicate == "imports").ToList();
 
-        Assert.Equal(first.Body, second.Body);
-        Assert.Equal("imports Alpha.Lib, Zebra.Lib", first.Body);
+        Assert.Equal(
+            first.Select(c => c.Object).OrderBy(o => o, StringComparer.Ordinal),
+            second.Select(c => c.Object).OrderBy(o => o, StringComparer.Ordinal));
+        Assert.Equal(
+            new[] { "Alpha.Lib", "Zebra.Lib" },
+            first.Select(c => c.Object).OrderBy(o => o, StringComparer.Ordinal));
+        Assert.All(first, c => Assert.Equal("imports " + c.Object, c.Body));
     }
 
     [Fact]

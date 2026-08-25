@@ -168,11 +168,17 @@ public class RoslynSidecarTests
         var tierZeroAbout = tierZero.Single(c => c.Predicate == "about" && c.EntityPath == filePath);
         Assert.Equal(tierZeroAbout.Body, merged.Single(c => c.Predicate == "about" && c.EntityPath == filePath).Body);
 
-        // The imports fact must not move on a tier swap: same address, same body.
-        var tierZeroImports = tierZero.Single(c => c.Predicate == "imports");
-        var mergedImports = merged.Single(c => c.Predicate == "imports");
-        Assert.Equal(tierZeroImports.EntityPath, mergedImports.EntityPath);
-        Assert.Equal(tierZeroImports.Body, mergedImports.Body);
+        // The imports facts must not move on a tier swap: same addresses, same bodies. Assert
+        // Object is non-null on both sides first — the tuple comparison below passes if both
+        // sides regressed to null together, which would not catch DeepTier.Merge dropping
+        // Object entirely.
+        var tierZeroImports = tierZero.Where(c => c.Predicate == "imports").ToList();
+        var mergedImports = merged.Where(c => c.Predicate == "imports").ToList();
+        Assert.All(tierZeroImports, c => Assert.NotNull(c.Object));
+        Assert.All(mergedImports, c => Assert.NotNull(c.Object));
+        Assert.Equal(
+            tierZeroImports.Select(c => (c.EntityPath, c.Object, c.Body)).OrderBy(t => t.Object, StringComparer.Ordinal),
+            mergedImports.Select(c => (c.EntityPath, c.Object, c.Body)).OrderBy(t => t.Object, StringComparer.Ordinal));
 
         // declared-as legitimately improves — Roslyn drops the brace tier 0 kept — but at
         // the same address, so the entity keeps its history.
@@ -181,6 +187,22 @@ public class RoslynSidecarTests
         Assert.Equal(tierZeroDeclared.EntityPath, mergedDeclared.EntityPath);
         Assert.NotEqual(tierZeroDeclared.Body, mergedDeclared.Body);
         Assert.Equal("public sealed class Widget", mergedDeclared.Body);
+    }
+
+    // §10 item 8, DeepTier.Merge's own imports emission site (the second of §5.6's two) —
+    // CodeAnalyzer.Analyze's candidates are guarded separately in CodeNavigationPhase2Tests.
+    [Fact]
+    public void Merge_EveryImportsCandidate_CarriesANonNullObject_StaticGuard()
+    {
+        var filePath = "/projects/demo/code/repo/src/Widget.cs";
+        var tierZero = CodeAnalyzer.Analyze(filePath, BraceStyleCs, LanguageRegistry.Resolve("Widget.cs"));
+        var analysis = Analyze(filePath: "Widget.cs", BraceStyleCs);
+
+        var merged = DeepTier.Merge(filePath, tierZero, analysis);
+        var imports = merged.Where(c => c.Predicate == "imports").ToList();
+
+        Assert.NotEmpty(imports);
+        Assert.All(imports, c => Assert.NotNull(c.Object));
     }
 
     [Fact]

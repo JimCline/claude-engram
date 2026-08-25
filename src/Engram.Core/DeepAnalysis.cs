@@ -120,15 +120,16 @@ public static class DeepTier
             }
         }
 
-        if (analysis.Imports.Count > 0)
+        var importedModules = new SortedSet<string>(analysis.Imports, StringComparer.Ordinal);
+        foreach (var m in importedModules)
         {
-            var modules = new SortedSet<string>(analysis.Imports, StringComparer.Ordinal);
             merged.Add(new CodeCandidate(
                 fileEntityPath,
                 "file",
                 fileName,
                 "imports",
-                CodeAnalyzer.Cap("imports " + string.Join(", ", modules))));
+                CodeAnalyzer.Cap("imports " + m),
+                Object: m));
         }
 
         return merged;

@@ -353,6 +353,24 @@ public class SchemaMigrationTests
         Assert.Equal(11, EngramDatabase.ReadSchemaVersion(connection));
     }
 
+    /// <summary>
+    /// Builds a store at version 12: <c>ux_fact_edge_live</c> does not exist yet, and
+    /// <c>ux_fact_live</c> is its pre-v13 combined form (no <c>object_id IS NULL</c> clause).
+    /// </summary>
+    private static void WriteVersion12Store(SandboxHome sandbox)
+    {
+        using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
+
+        Execute(connection, "DROP INDEX ux_fact_edge_live;");
+        Execute(connection, "DROP INDEX ux_fact_live;");
+        Execute(
+            connection,
+            "CREATE UNIQUE INDEX ux_fact_live ON fact(subject_id, predicate) WHERE valid_to IS NULL;");
+
+        Execute(connection, "UPDATE schema_meta SET value = '12' WHERE key = 'schema_version';");
+        Assert.Equal(12, EngramDatabase.ReadSchemaVersion(connection));
+    }
+
     /// <summary>Builds a store at version 2 holding one live fact and one closed one.</summary>
     private static (long Live, long Closed) WriteVersion2Store(SandboxHome sandbox)
     {
@@ -389,6 +407,31 @@ public class SchemaMigrationTests
         using var reopened = EngramDatabase.OpenInitialized(sandbox.Home);
 
         Assert.Equal(EngramDatabase.SchemaVersion, EngramDatabase.ReadSchemaVersion(reopened));
+    }
+
+    /// <summary>Phase 2 acceptance item 1: a genuine v12 fixture store migrates to v13.</summary>
+    [Fact]
+    public void Opening_AVersion12Store_MigratesToV13WithBothIndexesAndTheThreadIndexIntact()
+    {
+        using var sandbox = new SandboxHome(initialize: false);
+        WriteVersion12Store(sandbox);
+
+        using var reopened = EngramDatabase.OpenInitialized(sandbox.Home);
+
+        Assert.Equal(13, EngramDatabase.ReadSchemaVersion(reopened));
+        Assert.Equal(1L, IndexPartial(reopened, "ux_fact_live"));
+        Assert.Equal(1L, IndexPartial(reopened, "ux_fact_edge_live"));
+        Assert.Equal("subject_id,predicate partial=0", ThreadIndexShape(reopened));
+    }
+
+    private static long IndexPartial(SqliteConnection connection, string indexName)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT partial FROM pragma_index_list('fact') WHERE name = $name;";
+        command.Parameters.AddWithValue("$name", indexName);
+        var value = command.ExecuteScalar();
+        Assert.NotNull(value);
+        return (long)value!;
     }
 
     /// <summary>

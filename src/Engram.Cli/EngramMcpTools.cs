@@ -792,15 +792,36 @@ public sealed class EngramMcpTools
         foreach (var match in matches)
         {
             var imports = FactStore.History(connection, match.Path, "imports")
-                .FirstOrDefault(f => f.ValidTo is null);
+                .Where(f => f.ValidTo is null)
+                .ToList();
+            var modules = ImportedModuleNames(connection, imports.Select(f => f.Id))
+                .OrderBy(name => name, StringComparer.Ordinal)
+                .ToList();
+            var body = modules.Count > 0
+                ? "imports " + string.Join(", ", modules)
+                : "no imports recorded";
 
             builder.Append("  [").Append(match.Tier).Append("] ").Append(match.Path).Append(": ")
-                .Append(imports?.Body ?? "no imports recorded")
+                .Append(body)
                 .Append('\n');
         }
 
         var tiers = matches.Select(m => m.Tier).Distinct().ToList();
         return new NavigateOutcome(builder.ToString().TrimEnd('\n'), Found: true, Tiers: tiers);
+    }
+
+    private static IEnumerable<string> ImportedModuleNames(SqliteConnection connection, IEnumerable<long> factIds)
+    {
+        foreach (var id in factIds)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = "SELECT o.path FROM fact f JOIN entity o ON o.id = f.object_id WHERE f.id = $id;";
+            command.Parameters.AddWithValue("$id", id);
+            if (command.ExecuteScalar() is string path)
+            {
+                yield return CodePaths.SymbolNameOf(path) ?? path;
+            }
+        }
     }
 
     private static List<string> QueryFileEntities(

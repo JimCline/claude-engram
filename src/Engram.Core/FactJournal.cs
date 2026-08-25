@@ -333,12 +333,15 @@ public static class FactJournal
         // of how the belief closed, and replay does not rewrite that (D68).
         var inserted = new HashSet<long>();
 
-        // Subject+predicate pairs this replay has already claimed a live fact for. This is what the
-        // dry run has instead of a transaction: an apply sees its own inserts through the store
-        // query, so a journal holding two live facts for one subject — which only a merged bundle
-        // can — resolves there without help. A dry run inserts nothing, so without this it would
-        // count both as writable and promise a recovery the apply cannot deliver.
-        var claimed = new HashSet<(string Subject, string Predicate)>();
+        // Subject+predicate+object triples this replay has already claimed a live fact for — an
+        // objectless fact and an edge each collide only within their own v13 partial index, so the
+        // object is part of what "claimed" means. This is load-bearing on both paths now, not just
+        // the dry run: a second edge on the same (subject, predicate) but a different object is
+        // legal under ux_fact_edge_live, so an apply's own transaction no longer refuses a journal
+        // holding two live facts for one (subject, predicate, object) on its own — only this set
+        // does. A dry run inserts nothing, so without this it would count both as writable and
+        // promise a recovery neither path can deliver.
+        var claimed = new HashSet<(string Subject, string Predicate, string? Object)>();
 
         if (!apply)
         {
@@ -447,29 +450,45 @@ public static class FactJournal
         SqliteConnection connection,
         SqliteTransaction? transaction,
         JournalFact fact,
-        HashSet<(string Subject, string Predicate)> claimed)
+        HashSet<(string Subject, string Predicate, string? Object)> claimed)
     {
         if (fact.ValidTo is not null)
         {
             return false;
         }
 
-        if (!claimed.Add((fact.Subject, fact.Predicate)))
+        if (!claimed.Add((fact.Subject, fact.Predicate, fact.Object)))
         {
             return true;
         }
 
         using var command = connection.CreateCommand();
         command.Transaction = transaction;
-        command.CommandText =
-            """
-            SELECT 1 FROM fact f
-            JOIN entity e ON e.id = f.subject_id
-            WHERE e.path = $path AND f.predicate = $predicate AND f.valid_to IS NULL
-            LIMIT 1;
-            """;
+        // Mirrors the two v13 partial indexes (ux_fact_live, ux_fact_edge_live): an objectless
+        // fact only collides with another objectless live fact on (subject, predicate), and an
+        // edge only collides with a live edge sharing the same object.
+        command.CommandText = fact.Object is null
+            ? """
+              SELECT 1 FROM fact f
+              JOIN entity e ON e.id = f.subject_id
+              WHERE e.path = $path AND f.predicate = $predicate AND f.object_id IS NULL
+                AND f.valid_to IS NULL
+              LIMIT 1;
+              """
+            : """
+              SELECT 1 FROM fact f
+              JOIN entity e ON e.id = f.subject_id
+              JOIN entity o ON o.id = f.object_id
+              WHERE e.path = $path AND f.predicate = $predicate AND o.path = $object
+                AND f.valid_to IS NULL
+              LIMIT 1;
+              """;
         command.Parameters.AddWithValue("$path", fact.Subject);
         command.Parameters.AddWithValue("$predicate", fact.Predicate);
+        if (fact.Object is not null)
+        {
+            command.Parameters.AddWithValue("$object", fact.Object);
+        }
 
         return command.ExecuteScalar() is not null;
     }
@@ -487,20 +506,34 @@ public static class FactJournal
         command.Transaction = transaction;
         // Two rows, not one: the second says only "there is more than one", which is what decides
         // whether an address exists. Live first, so row 0 is the live one when any match is live —
-        // ux_fact_live guarantees at most one is.
-        command.CommandText =
-            """
-            SELECT f.id, f.valid_to IS NULL AS is_live FROM fact f
-            JOIN entity e ON e.id = f.subject_id
-            WHERE e.path = $path AND f.predicate = $predicate AND f.body = $body
-              AND f.valid_from = $validFrom
-            ORDER BY is_live DESC, f.id ASC
-            LIMIT 2;
-            """;
+        // the two v13 partial indexes together still guarantee at most one live row per
+        // (subject, predicate, object).
+        command.CommandText = fact.Object is null
+            ? """
+              SELECT f.id, f.valid_to IS NULL AS is_live FROM fact f
+              JOIN entity e ON e.id = f.subject_id
+              WHERE e.path = $path AND f.predicate = $predicate AND f.body = $body
+                AND f.valid_from = $validFrom AND f.object_id IS NULL
+              ORDER BY is_live DESC, f.id ASC
+              LIMIT 2;
+              """
+            : """
+              SELECT f.id, f.valid_to IS NULL AS is_live FROM fact f
+              JOIN entity e ON e.id = f.subject_id
+              JOIN entity o ON o.id = f.object_id
+              WHERE e.path = $path AND f.predicate = $predicate AND f.body = $body
+                AND f.valid_from = $validFrom AND o.path = $object
+              ORDER BY is_live DESC, f.id ASC
+              LIMIT 2;
+              """;
         command.Parameters.AddWithValue("$path", fact.Subject);
         command.Parameters.AddWithValue("$predicate", fact.Predicate);
         command.Parameters.AddWithValue("$body", fact.Body);
         command.Parameters.AddWithValue("$validFrom", fact.ValidFrom);
+        if (fact.Object is not null)
+        {
+            command.Parameters.AddWithValue("$object", fact.Object);
+        }
 
         using var reader = command.ExecuteReader();
         if (!reader.Read())
@@ -531,7 +564,8 @@ public static class FactJournal
     {
         var subjectId = EnsureEntity(connection, transaction, fact.Subject, fact.SubjectKind, fact.CreatedAt);
         long? objectId = fact.Object is { Length: > 0 }
-            ? EnsureEntity(connection, transaction, fact.Object, fact.ObjectKind ?? "concept", fact.CreatedAt)
+            ? EnsureEntity(connection, transaction, fact.Object, fact.ObjectKind ?? "concept", fact.CreatedAt,
+                           displayName: CodePaths.SymbolNameOf(fact.Object))
             : null;
 
         using var command = connection.CreateCommand();
@@ -620,7 +654,8 @@ public static class FactJournal
         SqliteTransaction transaction,
         string path,
         string kind,
-        long createdAt)
+        long createdAt,
+        string? displayName = null)
     {
         using var command = connection.CreateCommand();
         command.Transaction = transaction;
@@ -632,7 +667,7 @@ public static class FactJournal
             """;
         command.Parameters.AddWithValue("$path", path);
         command.Parameters.AddWithValue("$kind", kind);
-        command.Parameters.AddWithValue("$name", LastSegment(path));
+        command.Parameters.AddWithValue("$name", displayName ?? LastSegment(path));
         command.Parameters.AddWithValue("$createdAt", createdAt);
 
         return (long)command.ExecuteScalar()!;

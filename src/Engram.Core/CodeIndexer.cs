@@ -497,12 +497,16 @@ public static class CodeIndexer
             ? $"document changed ({sha[..Math.Min(8, sha.Length)]})"
             : $"source changed ({sha[..Math.Min(8, sha.Length)]})";
 
-        var matched = new HashSet<(string, string)>();
+        var matched = new HashSet<(string, string, string?)>();
         var writes = new List<CodeCandidate>();
 
         foreach (var candidate in candidates)
         {
-            var key = (candidate.EntityPath, candidate.Predicate);
+            // Keyed on the object's address, not its raw name: live's third component comes
+            // back as entity path, and candidate.Object is the name as written — they must
+            // agree on which form they compare in.
+            var objectPath = candidate.Object is null ? null : CodePaths.ForSymbolName(candidate.Object);
+            var key = (candidate.EntityPath, candidate.Predicate, objectPath);
             matched.Add(key);
 
             if (live.TryGetValue(key, out var existing))
@@ -526,7 +530,7 @@ public static class CodeIndexer
         }
 
         var closes = live.Values
-            .Where(fact => fact.Regenerable && !matched.Contains((fact.Path, fact.Predicate)))
+            .Where(fact => fact.Regenerable && !matched.Contains((fact.Path, fact.Predicate, fact.Object)))
             .ToList();
 
         counters.Written += writes.Count;
@@ -545,6 +549,14 @@ public static class CodeIndexer
             // EnsureEntity first, because Remember cannot carry a display name and a
             // section's heading is not recoverable from its slug.
             FactStore.EnsureEntity(connection, transaction, write.EntityPath, write.Kind, timestamp, write.DisplayName);
+
+            string? objectPath = null;
+            if (write.Object is not null)
+            {
+                objectPath = CodePaths.ForSymbolName(write.Object);
+                FactStore.EnsureEntity(connection, transaction, objectPath, "symbol-name", timestamp, write.Object);
+            }
+
             FactStore.Remember(
                 connection,
                 transaction,
@@ -556,7 +568,9 @@ public static class CodeIndexer
                     Scope: "code",
                     LearnedVia: "observed",
                     Evidence: evidence,
-                    Regenerable: true),
+                    Regenerable: true,
+                    ObjectPath: objectPath,
+                    ObjectKind: objectPath is null ? null : "symbol-name"),
                 now,
                 closeReason);
         }
@@ -704,18 +718,20 @@ public static class CodeIndexer
     private const string SubtreePredicate =
         "substr(path, 1, $len) = $old AND (length(path) = $len OR substr(path, $len + 1, 1) IN ('/', '#'))";
 
-    private sealed record LiveFact(long Id, string Path, string Predicate, string Body, bool Regenerable);
+    private sealed record LiveFact(long Id, string Path, string Predicate, string? Object, string Body, bool Regenerable);
 
-    private static Dictionary<(string, string), LiveFact> ReadLiveUnder(SqliteConnection connection, string filePath)
+    private static Dictionary<(string, string, string?), LiveFact> ReadLiveUnder(SqliteConnection connection, string filePath)
     {
-        var facts = new Dictionary<(string, string), LiveFact>();
+        var facts = new Dictionary<(string, string, string?), LiveFact>();
 
         using var command = connection.CreateCommand();
         command.CommandText =
             """
-            SELECT id, path, predicate, body, regenerable FROM fact
-            WHERE valid_to IS NULL
-              AND (path = $p OR (substr(path, 1, $len) = $p AND substr(path, $len + 1, 1) = '#'));
+            SELECT fact.id, fact.path, fact.predicate, o.path, fact.body, fact.regenerable
+            FROM fact
+            LEFT JOIN entity o ON o.id = fact.object_id
+            WHERE fact.valid_to IS NULL
+              AND (fact.path = $p OR (substr(fact.path, 1, $len) = $p AND substr(fact.path, $len + 1, 1) = '#'));
             """;
         command.Parameters.AddWithValue("$p", filePath);
         command.Parameters.AddWithValue("$len", filePath.Length);
@@ -727,9 +743,10 @@ public static class CodeIndexer
                 reader.GetInt64(0),
                 reader.GetString(1),
                 reader.GetString(2),
-                reader.GetString(3),
-                reader.GetInt64(4) != 0);
-            facts[(fact.Path, fact.Predicate)] = fact;
+                reader.IsDBNull(3) ? null : reader.GetString(3),
+                reader.GetString(4),
+                reader.GetInt64(5) != 0);
+            facts[(fact.Path, fact.Predicate, fact.Object)] = fact;
         }
 
         return facts;

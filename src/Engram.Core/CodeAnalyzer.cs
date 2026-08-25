@@ -14,7 +14,8 @@ public sealed record CodeCandidate(
     string Kind,
     string DisplayName,
     string Predicate,
-    string Body);
+    string Body,
+    string? Object = null);
 
 /// <summary>
 /// Tier-0 analysis (D24): managed, in-core, no dependencies, works on any file. Produces
@@ -23,9 +24,9 @@ public sealed record CodeCandidate(
 /// </summary>
 public static class CodeAnalyzer
 {
-    // 2: tier 1 exists (D47) — TS/JS extraction changes wherever grammars are installed,
-    // and the bump is what makes existing stores re-read under the better extractor.
-    public const int AnalyzerVersion = 2;
+    // 3: imports became one object-bearing fact per module (code-navigation Phase 2) —
+    // the bump is what makes existing stores re-read under the better extractor.
+    public const int AnalyzerVersion = 3;
 
     public static IReadOnlyList<CodeCandidate> Analyze(
         string fileEntityPath,
@@ -106,16 +107,15 @@ public static class CodeAnalyzer
             }
         }
 
-        if (modules.Count > 0)
+        foreach (var m in modules)
         {
-            // One sorted fact rather than a row per module: reordering imports is not a
-            // change of belief, and a single body diffs in one comparison.
             candidates.Add(new CodeCandidate(
                 fileEntityPath,
                 "file",
                 fileName,
                 "imports",
-                Cap("imports " + string.Join(", ", modules))));
+                Cap("imports " + m),
+                Object: m));
         }
     }
 

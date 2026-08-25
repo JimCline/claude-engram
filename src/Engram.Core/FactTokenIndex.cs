@@ -61,7 +61,12 @@ public static class FactTokenIndex
     /// </summary>
     public static void Add(SqliteConnection connection, SqliteTransaction transaction, long factId)
     {
-        var (path, name, body) = ReadForIndexing(connection, transaction, factId);
+        var (path, name, body, predicate) = ReadForIndexing(connection, transaction, factId);
+        if (CodePredicates.EdgeBearing.Contains(predicate))
+        {
+            return;
+        }
+
         IndexText(connection, transaction, factId, TextFor(path, name, body));
     }
 
@@ -98,6 +103,7 @@ public static class FactTokenIndex
         var candidates = ReadIds(
             connection,
             "SELECT id FROM fact WHERE valid_to IS NULL "
+            + "AND predicate NOT IN (" + CodePredicates.EdgeBearingSqlList + ") "
             + "AND id NOT IN (SELECT DISTINCT fact_id FROM fact_token);");
 
         if (candidates.Count == 0)
@@ -283,13 +289,14 @@ public static class FactTokenIndex
         command.ExecuteNonQuery();
     }
 
-    private static (string Path, string Name, string Body) ReadForIndexing(
+    private static (string Path, string Name, string Body, string Predicate) ReadForIndexing(
         SqliteConnection connection, SqliteTransaction transaction, long factId)
     {
         using var command = connection.CreateCommand();
         command.Transaction = transaction;
         command.CommandText =
-            "SELECT f.path, e.name, f.body FROM fact f JOIN entity e ON e.id = f.subject_id WHERE f.id = $id;";
+            "SELECT f.path, e.name, f.body, f.predicate FROM fact f JOIN entity e ON e.id = f.subject_id "
+            + "WHERE f.id = $id;";
         command.Parameters.AddWithValue("$id", factId);
 
         using var reader = command.ExecuteReader();
@@ -298,7 +305,7 @@ public static class FactTokenIndex
             throw new InvalidOperationException($"fact_token: no fact with id {factId} to index.");
         }
 
-        return (reader.GetString(0), reader.GetString(1), reader.GetString(2));
+        return (reader.GetString(0), reader.GetString(1), reader.GetString(2), reader.GetString(3));
     }
 
     private static List<(long Id, string Path, string Name, string Body)> ReadLiveForIndexing(
@@ -307,11 +314,11 @@ public static class FactTokenIndex
         using var command = connection.CreateCommand();
         command.Transaction = transaction;
         command.CommandText =
-            """
+            $"""
             SELECT f.id, f.path, e.name, f.body
               FROM fact f
               JOIN entity e ON e.id = f.subject_id
-             WHERE f.valid_to IS NULL;
+             WHERE f.valid_to IS NULL AND f.predicate NOT IN ({CodePredicates.EdgeBearingSqlList});
             """;
 
         var facts = new List<(long, string, string, string)>();

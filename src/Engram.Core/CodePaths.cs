@@ -37,6 +37,30 @@ public static class CodePaths
     public static string ForSymbol(string filePath, string symbolName) =>
         $"{filePath}#{symbolName}";
 
+    public const string SymbolNameRoot = "/symbol-names";
+
+    /// <summary>Address for a callee/module name as written. Not a location.</summary>
+    /// <remarks>
+    /// Not slugged — <see cref="Slug"/> lowercases, and case is part of the identity of every
+    /// symbol name this indexes. <c>/</c> and <c>%</c> are percent-encoded because module names
+    /// legitimately contain slashes (<c>./utils/foo</c>, <c>@scope/pkg</c>), which would
+    /// otherwise manufacture path segments that do not exist.
+    /// </remarks>
+    public static string ForSymbolName(string name) =>
+        $"{SymbolNameRoot}/{name.Replace("%", "%25").Replace("/", "%2F")}";
+
+    /// <summary>Inverse of <see cref="ForSymbolName"/>; null if <paramref name="path"/> is not under the root.</summary>
+    public static string? SymbolNameOf(string path)
+    {
+        var prefix = SymbolNameRoot + "/";
+        if (!path.StartsWith(prefix, StringComparison.Ordinal))
+        {
+            return null;
+        }
+
+        return path[prefix.Length..].Replace("%2F", "/").Replace("%25", "%");
+    }
+
     /// <summary>
     /// Lowercased, every run outside <c>[a-z0-9]</c> collapsed to one <c>-</c>, ends
     /// trimmed. Shared by project names, repo names, and doc-section headings so one rule

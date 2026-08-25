@@ -13,7 +13,9 @@ public sealed record FactWrite(
     string? Evidence = null,
     bool Regenerable = false,
     long? SessionId = null,
-    string? Details = null);
+    string? Details = null,
+    string? ObjectPath = null,
+    string? ObjectKind = null);
 
 /// <summary>A fact as stored, with its subject joined back in.</summary>
 public sealed record StoredFact(
@@ -78,7 +80,10 @@ public static class FactStore
     {
         var timestamp = now.ToUnixTimeSeconds();
         var subjectId = EnsureEntity(connection, transaction, write.SubjectPath, write.SubjectKind, timestamp);
-        var superseded = FindLiveFactId(connection, transaction, subjectId, write.Predicate);
+        long? objectId = write.ObjectPath is null
+            ? null
+            : EnsureEntity(connection, transaction, write.ObjectPath, write.ObjectKind ?? "symbol-name", timestamp);
+        var superseded = FindLiveFactId(connection, transaction, subjectId, write.Predicate, objectId);
 
         // Close first, insert second. ux_fact_live is a UNIQUE partial index over live facts,
         // and SQLite checks it per statement rather than at commit, so inserting the
@@ -97,7 +102,7 @@ public static class FactStore
             FactTokenIndex.Remove(connection, transaction, oldId);
         }
 
-        var factId = InsertFact(connection, transaction, write, subjectId, timestamp);
+        var factId = InsertFact(connection, transaction, write, subjectId, objectId, timestamp);
 
         if (superseded is { } closedId)
         {
@@ -260,16 +265,32 @@ public static class FactStore
         SqliteConnection connection,
         SqliteTransaction? transaction,
         string subjectPath,
-        string predicate) =>
-        ScalarLong(
-            connection,
-            transaction,
-            """
-            SELECT f.id FROM fact f JOIN entity e ON e.id = f.subject_id
-             WHERE e.path = $path AND f.predicate = $predicate AND f.valid_to IS NULL;
-            """,
-            ("$path", subjectPath),
-            ("$predicate", predicate));
+        string predicate,
+        string? objectPath = null) =>
+        objectPath is null
+            ? ScalarLong(
+                connection,
+                transaction,
+                """
+                SELECT f.id FROM fact f JOIN entity e ON e.id = f.subject_id
+                 WHERE e.path = $path AND f.predicate = $predicate
+                   AND f.object_id IS NULL AND f.valid_to IS NULL;
+                """,
+                ("$path", subjectPath),
+                ("$predicate", predicate))
+            : ScalarLong(
+                connection,
+                transaction,
+                """
+                SELECT f.id FROM fact f
+                  JOIN entity e ON e.id = f.subject_id
+                  JOIN entity o ON o.id = f.object_id
+                 WHERE e.path = $path AND f.predicate = $predicate
+                   AND o.path = $object AND f.valid_to IS NULL;
+                """,
+                ("$path", subjectPath),
+                ("$predicate", predicate),
+                ("$object", objectPath));
 
     public static StoredFact? ReadById(SqliteConnection connection, long factId)
     {
@@ -280,11 +301,20 @@ public static class FactStore
         return ReadFacts(command).FirstOrDefault();
     }
 
-    public static IReadOnlyList<StoredFact> ReadLive(SqliteConnection connection, string? scope = null)
+    /// <summary>
+    /// Every live fact, unfiltered by default. <paramref name="excludeEdges"/> is an opt-in for
+    /// the retrieval path (D58, §5.5) — the default stays "every live fact" because 34 test call
+    /// sites and this method's own general-purpose meaning rest on it.
+    /// </summary>
+    public static IReadOnlyList<StoredFact> ReadLive(
+        SqliteConnection connection,
+        string? scope = null,
+        bool excludeEdges = false)
     {
         var sql = SelectFactColumns
             + " WHERE f.valid_to IS NULL"
             + (scope is null ? string.Empty : " AND f.scope = $scope")
+            + (excludeEdges ? " AND f.predicate NOT IN (" + CodePredicates.EdgeBearingSqlList + ")" : string.Empty)
             + " ORDER BY f.id;";
 
         using var command = connection.CreateCommand();
@@ -473,10 +503,11 @@ public static class FactStore
     {
         using var command = connection.CreateCommand();
         command.CommandText =
-            """
+            $"""
             SELECT e.path, f.predicate, COUNT(*)
               FROM fact f
               JOIN entity e ON e.id = f.subject_id
+             WHERE f.predicate NOT IN ({CodePredicates.EdgeBearingSqlList})
              GROUP BY e.path, f.predicate
             HAVING COUNT(*) > 1;
             """;
@@ -713,6 +744,7 @@ public static class FactStore
         SqliteTransaction transaction,
         FactWrite write,
         long subjectId,
+        long? objectId,
         long timestamp)
     {
         var factId = ScalarLong(
@@ -720,14 +752,15 @@ public static class FactStore
             transaction,
             """
             INSERT INTO fact
-              (subject_id, predicate, body, path, scope, learned_via, regenerable,
+              (subject_id, object_id, predicate, body, path, scope, learned_via, regenerable,
                evidence, session_id, valid_from, created_at, details)
             VALUES
-              ($subject, $predicate, $body, $path, $scope, $learnedVia, $regenerable,
+              ($subject, $object, $predicate, $body, $path, $scope, $learnedVia, $regenerable,
                $evidence, $session, $now, $now, $details);
             SELECT last_insert_rowid();
             """,
             ("$subject", subjectId),
+            ("$object", (object?)objectId ?? DBNull.Value),
             ("$predicate", write.Predicate),
             ("$body", write.Body),
             ("$path", write.SubjectPath),
@@ -748,13 +781,24 @@ public static class FactStore
         SqliteConnection connection,
         SqliteTransaction transaction,
         long subjectId,
-        string predicate) =>
-        ScalarLong(
-            connection,
-            transaction,
-            "SELECT id FROM fact WHERE subject_id = $subject AND predicate = $predicate AND valid_to IS NULL;",
-            ("$subject", subjectId),
-            ("$predicate", predicate));
+        string predicate,
+        long? objectId) =>
+        objectId is null
+            ? ScalarLong(
+                connection,
+                transaction,
+                "SELECT id FROM fact WHERE subject_id = $subject AND predicate = $predicate "
+                + "AND object_id IS NULL AND valid_to IS NULL;",
+                ("$subject", subjectId),
+                ("$predicate", predicate))
+            : ScalarLong(
+                connection,
+                transaction,
+                "SELECT id FROM fact WHERE subject_id = $subject AND predicate = $predicate "
+                + "AND object_id = $object AND valid_to IS NULL;",
+                ("$subject", subjectId),
+                ("$predicate", predicate),
+                ("$object", objectId));
 
     private static List<StoredFact> ReadFacts(SqliteCommand command)
     {
