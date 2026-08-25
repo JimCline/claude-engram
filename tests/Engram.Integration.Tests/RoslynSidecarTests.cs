@@ -97,10 +97,13 @@ public class RoslynSidecarTests
 
         var widget = results["Widget.cs"];
         Assert.Null(widget.Error);
-        Assert.Equal(["Widget", "Buffer", "Inner", "IWidget"], widget.Symbols.Select(s => s.Name));
+        // Types emit in document order first, then members, deduped globally across every
+        // partial declaration of a scope before emission (§5.2 of the all-members spec).
+        Assert.Equal(["Widget", "Inner", "IWidget", "Buffer", "count"], widget.Symbols.Select(s => s.Name));
 
-        // Surface only (D48): a bare private member is implementation, never emitted.
-        Assert.DoesNotContain(widget.Symbols, s => s.Name == "count");
+        // Every visibility is emitted (D48, revised) — a bare private member is no longer
+        // excluded.
+        Assert.Contains(widget.Symbols, s => s.Name == "count");
 
         var declared = widget.Symbols.Single(s => s.Name == "Widget");
         Assert.Equal("class", declared.Kind);
@@ -430,6 +433,83 @@ public class RoslynSidecarTests
     // D-code-nav B1/item 24: a ProjectReference back to Engram.Core drags LLamaSharp's
     // per-RID native payload into this publish target (D45), the exact trap the framework-
     // dependent, no-RID setup above exists to avoid. Falsify by restoring the reference.
+    // §5.3 of the all-members spec: a static constructor was skipped by the old visibility
+    // guard (it carries no accessibility modifier) and is now a `constructor` symbol like any
+    // other. Falsify by restoring the guard: `Cctor` drops out of the symbol list.
+    [Fact]
+    public void Analyze_EmitsAStaticConstructor()
+    {
+        const string source =
+            """
+            namespace Demo;
+
+            public sealed class Cctor
+            {
+                static Cctor() { }
+            }
+            """;
+
+        var cctor = Analyze("Cctor.cs", source);
+        var ctor = Assert.Single(cctor.Symbols, s => s.Name == "Cctor" && s.Kind == "constructor");
+        Assert.Equal("Cctor", ctor.Scope);
+    }
+
+    // §4.3: a private constructor's leaf name equals its type's name, so `defined_at` now
+    // legitimately returns two rows for one name — a leaf-name ambiguity, not an addressing
+    // bug, since the constructor's scope ("Guard/Guard") keeps its full address distinct from
+    // the type's ("Guard"). Falsify by restoring the visibility guard: only "Guard" remains.
+    [Fact]
+    public void Analyze_APrivateConstructor_SharesALeafNameWithItsType_ButNotAnAddress()
+    {
+        const string source =
+            """
+            namespace Demo;
+
+            public sealed class Guard
+            {
+                private Guard() { }
+            }
+            """;
+
+        var guard = Analyze("Guard.cs", source);
+        var named = guard.Symbols.Where(s => s.Name == "Guard").ToList();
+        Assert.Equal(2, named.Count);
+        Assert.Contains(named, s => s.Kind == "class" && s.Scope is null);
+        Assert.Contains(named, s => s.Kind == "constructor" && s.Scope == "Guard");
+    }
+
+    // §5.2: a `partial void` declaration and its implementation are two MethodDeclarationSyntax
+    // nodes with identical name, scope, kind, and parameter list — D48's collision-only overload
+    // suffix cannot tell them apart, so DedupePartialMethods must keep only the one with a body.
+    // Falsify by disabling the dedupe (emit every member unconditionally): two "OnChanged"
+    // symbols land in one scope.
+    [Fact]
+    public void Analyze_DedupesAPartialMethod_KeepingTheImplementationWithABody()
+    {
+        const string source =
+            """
+            namespace Demo;
+
+            public sealed partial class Notifier
+            {
+                partial void OnChanged();
+            }
+
+            public sealed partial class Notifier
+            {
+                partial void OnChanged() { }
+            }
+            """;
+
+        var notifier = Analyze("Notifier.cs", source);
+        var changed = Assert.Single(notifier.Symbols, s => s.Name == "OnChanged");
+
+        // The declaration-only form keeps its trailing ";"; the implementation's is cut at its
+        // body instead. Asserting this distinguishes "kept the implementation" from "kept
+        // whichever came first" — both winners would pass a bare name-uniqueness check.
+        Assert.Equal("partial void OnChanged()", changed.Declaration);
+    }
+
     [Fact]
     public void SidecarProject_HasNoProjectReferenceToEngramCore()
     {

@@ -329,10 +329,14 @@ public sealed class CodeNavigationPhase3Tests
         Assert.True(importRank < repoRank, "ImportFilenameMatch must sort before SameRepo:\n" + result);
     }
 
-    // §10 item 25 / S3: a call inside a private C# method attributes to the enclosing type,
-    // and the rendered output says so — never silently, per the Architect's ruling.
+    // §10 item 25 / S3, retargeted by the all-members spec (§3.1): after widening emission to
+    // every visibility, a private method's calls attribute to the method itself, not the
+    // type — so this guard no longer tests that case. What still folds to the enclosing type
+    // is a call inside a kind neither tier emits as a symbol (indexer, operator, enum-member
+    // initializer); an indexer body is the clearest of those. The rendered output still says
+    // so — never silently, per the Architect's ruling.
     [Fact]
-    public void CallerAttributedToTheEnclosingType_CarriesTheAttributionLabel()
+    public void CallerInAnIndexerBody_AttributesToTheEnclosingType_CarriesTheAttributionLabel()
     {
         using var sandbox = new SandboxHome();
         using var connection = EngramDatabase.OpenInitialized(sandbox.Home);

@@ -28,7 +28,9 @@ public static class CodeAnalyzer
     // 3: imports became one object-bearing fact per module (code-navigation Phase 2).
     // 4: calls extraction + cross-file resolution (code-navigation Phase 3) — the bump is
     // what makes existing stores re-read under the better extractor.
-    public const int AnalyzerVersion = 4;
+    // 5: member emission widened to every visibility, both tiers (all-members spec) —
+    // addressing is unchanged (GrammarVersion stays 2), only which members are observed.
+    public const int AnalyzerVersion = 5;
 
     public static IReadOnlyList<CodeCandidate> Analyze(
         string fileEntityPath,

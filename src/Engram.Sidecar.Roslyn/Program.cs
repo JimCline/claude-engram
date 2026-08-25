@@ -19,10 +19,11 @@ using Microsoft.CodeAnalysis.CSharp.Syntax;
 // Syntax only, deliberately: a semantic model needs references, and grammar v2's addresses
 // are syntactic on purpose (D48) — scope and params ship as written, raw; the core's
 // DeepTier composes every fragment, so this process never spells an address. Types are
-// emitted at any depth. Members are emitted when they are surface: an explicit public,
-// internal, or protected modifier, or membership in an interface — a bare private member
-// is implementation, the same line the registry draws for unexported bindings. Enum
-// members, indexers, and operators are deliberately not emitted (D48).
+// emitted at any depth. Members are emitted at every visibility — public, internal,
+// protected, and bare private — because the consumer is a model reading the
+// implementation, not a caller programming against a public API (D48, revised). Enum
+// members, indexers, and operators are deliberately not emitted (D48) — that exclusion is
+// about the low recall value of those kinds, not about visibility.
 
 string? line;
 while ((line = Console.In.ReadLine()) is not null)
@@ -69,6 +70,13 @@ static JsonObject Analyze(string path, string content)
 
     var symbols = new JsonArray();
     var attribution = new List<SyntaxNode>();
+
+    // `partial class Foo { }` can appear as more than one BaseTypeDeclarationSyntax node for
+    // the same scope in one file, so members are collected across every declaration before
+    // deduping — a partial method's declaration and its implementation are frequently split
+    // across exactly two such blocks (§5.2 of the all-members spec).
+    var pendingMembers = new List<(MemberDeclarationSyntax Member, string Scope)>();
+
     foreach (var declaration in root.DescendantNodes().OfType<BaseTypeDeclarationSyntax>())
     {
         var scope = ScopeOf(declaration);
@@ -80,12 +88,16 @@ static JsonObject Analyze(string path, string content)
             var memberScope = scope is null
                 ? declaration.Identifier.Text
                 : scope + "/" + declaration.Identifier.Text;
-            var inInterface = declaration is InterfaceDeclarationSyntax;
             foreach (var member in type.Members)
             {
-                EmitMember(symbols, attribution, member, memberScope, inInterface);
+                pendingMembers.Add((member, memberScope));
             }
         }
+    }
+
+    foreach (var (member, memberScope) in DedupePartialMethods(pendingMembers))
+    {
+        EmitMember(symbols, attribution, member, memberScope);
     }
 
     foreach (var declaration in root.DescendantNodes().OfType<DelegateDeclarationSyntax>())
@@ -119,17 +131,48 @@ static JsonObject Analyze(string path, string content)
     };
 }
 
-static void EmitMember(
-    JsonArray symbols, List<SyntaxNode> attribution, MemberDeclarationSyntax member, string scope, bool inInterface)
+// Partial method declaration and implementation are two MethodDeclarationSyntax nodes with
+// identical name, scope, and parameter list, so D48's collision-only overload suffix cannot
+// tell them apart — both would claim the same address (§5.2 of the all-members spec). Keep
+// the one with a body; if neither or both have one, keep the first in source order.
+static IEnumerable<(MemberDeclarationSyntax Member, string Scope)> DedupePartialMethods(
+    IEnumerable<(MemberDeclarationSyntax Member, string Scope)> members)
 {
-    if (!inInterface && !member.Modifiers.Any(m =>
-        m.IsKind(SyntaxKind.PublicKeyword)
-            || m.IsKind(SyntaxKind.InternalKeyword)
-            || m.IsKind(SyntaxKind.ProtectedKeyword)))
+    var winners = new List<(MemberDeclarationSyntax Member, string Scope)>();
+    var indexByKey = new Dictionary<(string Scope, string Name, string Params), int>();
+
+    foreach (var entry in members)
     {
-        return;
+        if (entry.Member is not MethodDeclarationSyntax method)
+        {
+            winners.Add(entry);
+            continue;
+        }
+
+        var key = (entry.Scope, method.Identifier.Text, method.ParameterList.ToString());
+        if (indexByKey.TryGetValue(key, out var index))
+        {
+            var existing = (MethodDeclarationSyntax)winners[index].Member;
+            var existingHasBody = existing.Body is not null || existing.ExpressionBody is not null;
+            var candidateHasBody = method.Body is not null || method.ExpressionBody is not null;
+            if (!existingHasBody && candidateHasBody)
+            {
+                winners[index] = entry;
+            }
+
+            continue;
+        }
+
+        indexByKey[key] = winners.Count;
+        winners.Add(entry);
     }
 
+    return winners;
+}
+
+static void EmitMember(
+    JsonArray symbols, List<SyntaxNode> attribution, MemberDeclarationSyntax member, string scope)
+{
     switch (member)
     {
         case MethodDeclarationSyntax method:
@@ -202,12 +245,14 @@ static void Emit(
 
 /// <summary>
 /// One JSON call entry per <see cref="InvocationExpressionSyntax"/>: the callee as written,
-/// its 1-based line, and the `id` of the nearest emitted symbol enclosing it. Emission is
-/// the public surface (`EmitMember` skips non-public members), so a call inside a private
-/// method or a local function attributes to the nearest emitted ancestor — usually the
-/// enclosing type — never to nothing. A walk that reaches the root leaves `enclosing_id`
-/// absent, which core attributes to the file (§5.2.1 of the Phase 3 spec). This emits an
-/// id, not a fragment: assembling the address is core's job (§5.3.1).
+/// its 1-based line, and the `id` of the nearest emitted symbol enclosing it. Emission now
+/// covers every visibility (the all-members spec), so a call inside a private or no-modifier
+/// method attributes to that method itself. What still folds to an ancestor: calls inside a
+/// local function attribute to the enclosing method, and calls inside an indexer, operator,
+/// or enum-member initializer still attribute to the enclosing type, because those kinds
+/// remain unemitted (D48). A walk that reaches the root leaves `enclosing_id` absent, which
+/// core attributes to the file (§5.2.1 of the Phase 3 spec). This emits an id, not a
+/// fragment: assembling the address is core's job (§5.3.1).
 /// </summary>
 static JsonArray CallsOf(SyntaxNode root, List<SyntaxNode> attribution)
 {
