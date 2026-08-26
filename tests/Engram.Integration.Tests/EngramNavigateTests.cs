@@ -327,6 +327,47 @@ public class EngramNavigateTests
         Assert.Contains("[Exact]", result);
     }
 
+    // The index is eventually consistent with the working tree, never synchronous with it, so a
+    // result can describe a file as it was several edits ago. Unmarked, that is indistinguishable
+    // from a current answer — and lookup-nudge now steers symbol lookups here first, so the
+    // reliance is manufactured by us and the age has to come back with the answer.
+    [Fact]
+    public void DefinedAt_FileWrittenAfterIndexing_IsMarkedStale()
+    {
+        using var sandbox = new SandboxHome();
+        var repo = CreateFixture(sandbox, "fixture-repo");
+        using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
+        Index(connection, sandbox, repo);
+
+        // Two seconds past indexed_at, which has second resolution — a write inside the same
+        // second is deliberately not treated as evidence.
+        var file = Path.Combine(repo, "Program.cs");
+        File.SetLastWriteTimeUtc(file, DateTime.UtcNow.AddSeconds(2));
+
+        var result = EngramMcpTools.Navigate(sandbox.Home, Session, "Widget", "defined_at");
+
+        Assert.Contains("[stale]", result);
+        Assert.Contains("changed on disk after", result);
+    }
+
+    // The other half, and the one that makes the marker mean anything: an untouched file must NOT
+    // be marked. A test that only asserts [stale] appears would pass just as well if every result
+    // were marked, which is exactly as useless as marking none.
+    [Fact]
+    public void DefinedAt_UntouchedFile_IsNotMarkedStale()
+    {
+        using var sandbox = new SandboxHome();
+        var repo = CreateFixture(sandbox, "fixture-repo");
+        using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
+        Index(connection, sandbox, repo);
+
+        var result = EngramMcpTools.Navigate(sandbox.Home, Session, "Widget", "defined_at");
+
+        Assert.Contains("#Widget", result);
+        Assert.DoesNotContain("[stale]", result);
+        Assert.DoesNotContain("changed on disk after", result);
+    }
+
     // A miss states a fact about the index, and without this it reads as a fact about the
     // repository. Gitignored files are never indexed and recent edits wait for the queue to drain,
     // so "not found here" and "does not exist" are different answers — and the lookup-nudge hook

@@ -704,6 +704,17 @@ public sealed class EngramMcpTools
                 Tiers: [],
                 ExtractionTiers: []);
 
+        /// <summary>
+        /// Says what a <c>[stale]</c> or <c>[missing]</c> marker means and what to do about it. A
+        /// marker nobody can interpret is decoration — the reader has to know that the index is
+        /// behind the file rather than wrong about it, or the sensible response (re-read the file)
+        /// does not follow from seeing it.
+        /// </summary>
+        internal static string StaleFootnote(int count) =>
+            $"note: {count} result(s) marked [stale] or [missing] — the file changed on disk after "
+            + "it was indexed, so the declaration above may describe older content. Read the file "
+            + "directly for those, or run 'engram index --apply' to refresh.";
+
         private const string CoverageCaveat =
             "This is what Engram has indexed, not what exists: gitignored files are never indexed, "
             + "and recent edits land only after the index queue drains. Fall back to Grep/Glob "
@@ -794,6 +805,7 @@ public sealed class EngramMcpTools
         builder.Append(uniformNote);
         builder.Append(CountText(matches.Count, "match")).Append(" for '").Append(query).Append("':\n");
 
+        var staleCount = 0;
         foreach (var (match, declared) in rows)
         {
             builder.Append("  [").Append(match.Tier).Append(']');
@@ -802,9 +814,21 @@ public sealed class EngramMcpTools
                 builder.Append('[').Append(ExtractionTierLabel(declared?.AnalyzerTier)).Append(']');
             }
 
+            var freshness = FileFreshness.Check(connection, match.Path);
+            if (freshness.IsWorthReporting)
+            {
+                builder.Append('[').Append(freshness.Label).Append(']');
+                staleCount++;
+            }
+
             builder.Append(' ').Append(match.Path).Append(": ")
                 .Append(declared?.Body ?? "(no declaration recorded)")
                 .Append('\n');
+        }
+
+        if (staleCount > 0)
+        {
+            builder.Append(NavigateOutcome.StaleFootnote(staleCount)).Append('\n');
         }
 
         var tiers = matches.Select(m => m.Tier.ToString()).Distinct().ToList();
