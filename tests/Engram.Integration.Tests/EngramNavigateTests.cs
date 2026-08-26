@@ -12,7 +12,10 @@ public class EngramNavigateTests
         using System.Text;
 
         public sealed class Widget { }
+
+        public sealed class Helper { }
         """;
+
 
     [Fact]
     public void DefinedAt_ExactMatch_ReturnsPathAndDeclaration()
@@ -368,6 +371,49 @@ public class EngramNavigateTests
         Assert.DoesNotContain("changed on disk after", result);
     }
 
+    // Every relation marks staleness, not just defined_at. The absence of a marker is what carries
+    // the claim "this is current", so a relation that never checks makes that claim falsely on
+    // every line — partial coverage of a freshness signal is worse than none.
+    [Theory]
+    [InlineData("imports")]
+    [InlineData("callers")]
+    [InlineData("callees")]
+    public void EveryRelation_MarksStaleness_WhenTheFileChangedAfterIndexing(string relation)
+    {
+        using var sandbox = new SandboxHome();
+        var repo = CreateFixture(sandbox, "fixture-repo");
+        using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
+        Index(connection, sandbox, repo);
+        SeedCall(connection, SymbolPath(connection, "Widget"), "Helper");
+
+        File.SetLastWriteTimeUtc(Path.Combine(repo, "Program.cs"), DateTime.UtcNow.AddSeconds(2));
+
+        var query = Query(relation);
+        var result = EngramMcpTools.Navigate(sandbox.Home, Session, query, relation);
+
+        Assert.Contains("[stale]", result);
+        Assert.Contains("changed on disk after", result);
+    }
+
+    [Theory]
+    [InlineData("imports")]
+    [InlineData("callers")]
+    [InlineData("callees")]
+    public void EveryRelation_LeavesUntouchedFilesUnmarked(string relation)
+    {
+        using var sandbox = new SandboxHome();
+        var repo = CreateFixture(sandbox, "fixture-repo");
+        using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
+        Index(connection, sandbox, repo);
+        SeedCall(connection, SymbolPath(connection, "Widget"), "Helper");
+
+        var query = Query(relation);
+        var result = EngramMcpTools.Navigate(sandbox.Home, Session, query, relation);
+
+        Assert.DoesNotContain("[stale]", result);
+        Assert.DoesNotContain("changed on disk after", result);
+    }
+
     // A miss states a fact about the index, and without this it reads as a fact about the
     // repository. Gitignored files are never indexed and recent edits wait for the queue to drain,
     // so "not found here" and "does not exist" are different answers — and the lookup-nudge hook
@@ -399,6 +445,33 @@ public class EngramNavigateTests
 
         Assert.Contains("Unknown relation", result);
         Assert.DoesNotContain("gitignored", result);
+    }
+
+    private static string Query(string relation) => relation switch
+    {
+        "imports" => "Program.cs",
+        "callers" => "Helper",
+        _ => "Widget",
+    };
+
+    // The call graph is seeded rather than extracted. C# `calls` facts need the Roslyn sidecar and
+    // the TypeScript ones need compiled tree-sitter grammars, so an extracted fixture would skip
+    // wherever those are absent — and a freshness test that skips is a freshness claim nobody
+    // checked. What is under test is the marking, which only needs a call edge whose caller sits in
+    // a file the indexer really recorded.
+    private static void SeedCall(SqliteConnection connection, string callerPath, string callee) =>
+        FactStore.Remember(
+            connection,
+            new FactWrite(callerPath, "symbol", "calls", "calls " + callee, "code", "observed",
+                Regenerable: true, ObjectPath: CodePaths.ForSymbolName(callee), ObjectKind: "symbol-name"),
+            DateTimeOffset.UtcNow);
+
+    private static string SymbolPath(SqliteConnection connection, string name)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT path FROM entity WHERE path LIKE $suffix;";
+        command.Parameters.AddWithValue("$suffix", "%#" + name);
+        return (string)command.ExecuteScalar()!;
     }
 
     private static string CreateFixture(SandboxHome sandbox, string repoDirName) =>

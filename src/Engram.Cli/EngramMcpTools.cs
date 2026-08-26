@@ -775,6 +775,36 @@ public sealed class EngramMcpTools
         return outcome.Text;
     }
 
+    /// <summary>
+    /// Appends a <c>[stale]</c>/<c>[missing]</c> marker for one result's file, reporting whether it
+    /// did so the caller can count. Returns false for a null path — a callee with no resolved
+    /// declaration has no file to be stale about.
+    /// </summary>
+    /// <remarks>
+    /// Shared by every relation rather than written per loop, and that is the point rather than
+    /// tidiness: a marker that appears on some result shapes and not others teaches the reader that
+    /// an unmarked line is fresh, which is false wherever the check simply never ran. Partial
+    /// coverage of a freshness signal is worse than none, because it is the absence that carries
+    /// the false claim.
+    /// </remarks>
+    private static bool AppendFreshness(
+        System.Text.StringBuilder builder, SqliteConnection connection, string? path)
+    {
+        if (path is null)
+        {
+            return false;
+        }
+
+        var freshness = FileFreshness.Check(connection, path);
+        if (!freshness.IsWorthReporting)
+        {
+            return false;
+        }
+
+        builder.Append('[').Append(freshness.Label).Append(']');
+        return true;
+    }
+
     private static NavigateOutcome NavigateDefinedAt(SqliteConnection connection, string query, string? repo, int limit)
     {
         var repoNeedle = RepoNeedle(repo);
@@ -814,10 +844,8 @@ public sealed class EngramMcpTools
                 builder.Append('[').Append(ExtractionTierLabel(declared?.AnalyzerTier)).Append(']');
             }
 
-            var freshness = FileFreshness.Check(connection, match.Path);
-            if (freshness.IsWorthReporting)
+            if (AppendFreshness(builder, connection, match.Path))
             {
-                builder.Append('[').Append(freshness.Label).Append(']');
                 staleCount++;
             }
 
@@ -890,6 +918,7 @@ public sealed class EngramMcpTools
         builder.Append(uniformNote);
         builder.Append(CountText(matches.Count, "file")).Append(" matching '").Append(query).Append("':\n");
 
+        var staleCount = 0;
         foreach (var (match, body, tier) in rows)
         {
             builder.Append("  [").Append(match.Tier).Append(']');
@@ -898,7 +927,17 @@ public sealed class EngramMcpTools
                 builder.Append('[').Append(ExtractionTierLabel(tier)).Append(']');
             }
 
+            if (AppendFreshness(builder, connection, match.Path))
+            {
+                staleCount++;
+            }
+
             builder.Append(' ').Append(match.Path).Append(": ").Append(body).Append('\n');
+        }
+
+        if (staleCount > 0)
+        {
+            builder.Append(NavigateOutcome.StaleFootnote(staleCount)).Append('\n');
         }
 
         var tiers = matches.Select(m => m.Tier).Distinct().ToList();
@@ -953,12 +992,18 @@ public sealed class EngramMcpTools
         }
 
         builder.Append(":\n");
+        var staleCount = 0;
         foreach (var caller in result.Callers)
         {
             builder.Append("  [").Append(RankLabel(caller.Signal)).Append(']');
             if (uniformNote is null)
             {
                 builder.Append('[').Append(ExtractionTierLabel(caller.AnalyzerTier)).Append(']');
+            }
+
+            if (AppendFreshness(builder, connection, caller.CallerPath))
+            {
+                staleCount++;
             }
 
             builder.Append(' ').Append(caller.CallerPath);
@@ -968,6 +1013,11 @@ public sealed class EngramMcpTools
             }
 
             builder.Append('\n');
+        }
+
+        if (staleCount > 0)
+        {
+            builder.Append(NavigateOutcome.StaleFootnote(staleCount)).Append('\n');
         }
 
         var extractionTierLabels = extractionTiers.Select(ExtractionTierLabel).Distinct().ToList();
@@ -1014,12 +1064,20 @@ public sealed class EngramMcpTools
         }
 
         builder.Append(":\n");
+        var staleCount = 0;
         foreach (var callee in result.Callees)
         {
             builder.Append("  [").Append(RankLabel(callee.Signal)).Append(']');
             if (uniformNote is null)
             {
                 builder.Append('[').Append(ExtractionTierLabel(callee.AnalyzerTier)).Append(']');
+            }
+
+            // Keyed on the resolved declaration, not the calling file: what a callee line asserts
+            // is where the call lands, so that is the file whose age the reader is relying on.
+            if (AppendFreshness(builder, connection, callee.DeclarationPath))
+            {
+                staleCount++;
             }
 
             builder.Append(' ').Append(callee.Callee);
@@ -1033,6 +1091,11 @@ public sealed class EngramMcpTools
             }
 
             builder.Append('\n');
+        }
+
+        if (staleCount > 0)
+        {
+            builder.Append(NavigateOutcome.StaleFootnote(staleCount)).Append('\n');
         }
 
         var extractionTierLabels = extractionTiers.Select(ExtractionTierLabel).Distinct().ToList();
