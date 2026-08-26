@@ -681,8 +681,33 @@ public sealed class EngramMcpTools
     private sealed record NavigateOutcome(
         string Text, bool Found, IReadOnlyList<string> Tiers, IReadOnlyList<string> ExtractionTiers)
     {
-        public static NavigateOutcome NotFound(string text) =>
-            new(text, Found: false, Tiers: [], ExtractionTiers: []);
+        /// <summary>
+        /// A miss, carrying the reason the index could not answer. <paramref name="coverageCaveat"/>
+        /// appends what the index does not cover — pass false only where the caveat is untrue or
+        /// already stated.
+        /// </summary>
+        /// <remarks>
+        /// The caveat is the whole point of routing every miss through here. A bare "No symbol
+        /// named 'X' found" states a fact about the index and reads as a fact about the repository,
+        /// and the reader cannot tell the two apart — gitignored files are deliberately not indexed
+        /// (D53's scan bound), and the queue that picks up edits drains on session start rather than
+        /// on write, so a file can exist, and be findable by grep, while this returns nothing. That
+        /// gap became load-bearing when the lookup-nudge hook started steering symbol lookups here
+        /// first: a miss the model reads as "does not exist" is then a wrong conclusion the nudge
+        /// itself caused. `neighbors` already carries its own version of this sentence, and an
+        /// unknown relation is a usage error rather than a coverage question — both pass false.
+        /// </remarks>
+        public static NavigateOutcome NotFound(string text, bool coverageCaveat = true) =>
+            new(
+                coverageCaveat ? text + " " + CoverageCaveat : text,
+                Found: false,
+                Tiers: [],
+                ExtractionTiers: []);
+
+        private const string CoverageCaveat =
+            "This is what Engram has indexed, not what exists: gitignored files are never indexed, "
+            + "and recent edits land only after the index queue drains. Fall back to Grep/Glob "
+            + "before concluding the symbol is absent.";
     }
 
     [McpServerTool(Name = "engram_navigate")]
@@ -708,7 +733,8 @@ public sealed class EngramMcpTools
         {
             outcome = NavigateOutcome.NotFound(
                 "'neighbors' is not yet indexed. This is not a negative result; it means the "
-                    + "question cannot be answered yet, not that the answer is empty.");
+                    + "question cannot be answered yet, not that the answer is empty.",
+                coverageCaveat: false);
         }
         else
         {
@@ -721,7 +747,8 @@ public sealed class EngramMcpTools
                 "callees" => NavigateCallees(connection, query, repo, limit),
                 _ => NavigateOutcome.NotFound(
                     $"Unknown relation '{relation}'. Use defined_at, imports, callers, or callees "
-                        + "(neighbors is recognized but not yet indexed)."),
+                        + "(neighbors is recognized but not yet indexed).",
+                    coverageCaveat: false),
             };
         }
 

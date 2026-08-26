@@ -327,6 +327,39 @@ public class EngramNavigateTests
         Assert.Contains("[Exact]", result);
     }
 
+    // A miss states a fact about the index, and without this it reads as a fact about the
+    // repository. Gitignored files are never indexed and recent edits wait for the queue to drain,
+    // so "not found here" and "does not exist" are different answers — and the lookup-nudge hook
+    // now steers symbol lookups here first, which makes conflating them a wrong conclusion the
+    // nudge itself caused.
+    [Fact]
+    public void DefinedAt_Miss_SaysWhatTheIndexDoesNotCover()
+    {
+        using var sandbox = new SandboxHome();
+        var repo = CreateFixture(sandbox, "fixture-repo");
+        using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
+        Index(connection, sandbox, repo);
+
+        var result = EngramMcpTools.Navigate(sandbox.Home, Session, "NoSuchSymbol", "defined_at");
+
+        Assert.Contains("No symbol named", result);
+        Assert.Contains("gitignored", result);
+        Assert.Contains("Grep", result);
+    }
+
+    // The caveat is about coverage. An unknown relation is a usage error — the index was never
+    // consulted — so telling the caller to fall back to Grep would answer a question nobody asked.
+    [Fact]
+    public void UnknownRelation_DoesNotCarryTheCoverageCaveat()
+    {
+        using var sandbox = new SandboxHome();
+
+        var result = EngramMcpTools.Navigate(sandbox.Home, Session, "Widget", "sideways");
+
+        Assert.Contains("Unknown relation", result);
+        Assert.DoesNotContain("gitignored", result);
+    }
+
     private static string CreateFixture(SandboxHome sandbox, string repoDirName) =>
         CreateFixture(sandbox, repoDirName, "Program.cs", ProgramCs);
 
