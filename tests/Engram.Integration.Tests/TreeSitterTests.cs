@@ -92,6 +92,39 @@ public class TreeSitterTests
             $"expected three distinct `#clear` addresses, got: {string.Join(", ", fragments.Where(f => f.StartsWith("Scanner/#clear")))}");
     }
 
+    [Fact]
+    public void AbstractClassFixture_HashPrivateOverloads_DisambiguateByParameterList()
+    {
+        var dir = GrammarDir();
+        Assert.SkipWhen(dir is null, "ENGRAM_TEST_TREE_SITTER_DIR does not point at the compiled grammars.");
+
+        const string source = """
+            export abstract class Repo {
+                abstract fetch(): void;
+                plain(): void {}
+                #save(): void;
+                #save(x: number): void;
+                #save(x?: number): void {}
+            }
+            """;
+
+        using var runtime = TreeSitter.TryCreate(dir!, []);
+        var analysis = runtime!.Analyze(TypeScript(), "fixture.ts", source);
+        Assert.NotNull(analysis);
+        var fragments = DeepTier.Fragments(analysis!.Symbols).Select(f => f.Fragment).ToHashSet();
+
+        // abstract-class-member-parity §5.1: method_signature + private_property_identifier
+        // added to abstract_class_declaration — three distinct `#save` overload addresses.
+        Assert.True(
+            fragments.IsSupersetOf(["Repo/#save()", "Repo/#save(x: number)", "Repo/#save(x?: number)"]),
+            $"expected three distinct `#save` addresses, got: {string.Join(", ", fragments.Where(f => f.StartsWith("Repo/#save")))}");
+
+        // Item 3: ordinary (property_identifier) abstract-class members still resolve —
+        // §5.1 added coverage, it didn't shadow anything.
+        Assert.Contains("Repo/fetch", fragments);
+        Assert.Contains("Repo/plain", fragments);
+    }
+
     /// <summary>
     /// Registry shape, no native code involved: a tier-1 row missing any of its tier-1
     /// columns would silently index at tier 0 forever, and grammars on a row of another

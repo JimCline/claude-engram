@@ -156,6 +156,12 @@ public static class LanguageRegistry
         (abstract_class_declaration name: (type_identifier) @scope body: (class_body (method_definition name: (property_identifier) @name parameters: (formal_parameters) @params)))
         (abstract_class_declaration name: (type_identifier) @scope body: (class_body (method_definition name: (private_property_identifier) @name parameters: (formal_parameters) @params)))
         (abstract_class_declaration name: (type_identifier) @scope body: (class_body (method_signature name: (property_identifier) @name parameters: (formal_parameters) @params)))
+        (abstract_class_declaration name: (type_identifier) @scope body: (class_body (method_signature name: (private_property_identifier) @name parameters: (formal_parameters) @params)))
+        ; no abstract_method_signature + private_property_identifier pairing: an abstract member
+        ; must be reachable from a subclass, so TypeScript rejects both `abstract #foo()` and
+        ; `private abstract foo()`. The construct does not exist, rather than being skipped.
+        ; Confirmed against tsc: TS18019 ('abstract' modifier cannot be used with a private
+        ; identifier) and TS1243 ('private' modifier cannot be used with 'abstract' modifier).
         (abstract_class_declaration name: (type_identifier) @scope body: (class_body (abstract_method_signature name: (property_identifier) @name parameters: (formal_parameters) @params)))
         (abstract_class_declaration name: (type_identifier) @scope body: (class_body (public_field_definition name: (property_identifier) @name)))
         (abstract_class_declaration name: (type_identifier) @scope body: (class_body (public_field_definition name: (private_property_identifier) @name)))

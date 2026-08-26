@@ -1,11 +1,17 @@
 # Indexing all members in the code graph
 
-**Status:** design, **revision 2**. Written by the Architect. Not yet implemented.
+**Status:** design, **revision 3**. Written by the Architect.
 
-**Revision history.** Rev 1 scoped this to C# / tier 2 and deferred TypeScript and JavaScript,
-flagging the language scope as Jim's call. **Jim ruled: widen both together, not sequentially.**
-Rev 2 folds tier 1 in with the same rigor, and corrects two things rev 1 got wrong about tier 1
-(§6.1). All rev 1 findings about C# stand unchanged.
+**Revision history.**
+- **Rev 1** — scoped to C# / tier 2, deferred TypeScript and JavaScript, flagged language scope as
+  Jim's call.
+- **Rev 2** — Jim ruled *widen both together*. Tier 1 folded in with the same rigor; two rev-1
+  claims about tier 1 corrected (§6.1).
+- **Rev 3** — amendment during implementation. The Implementor reported a measured asymmetry in
+  tier-1 private-member addressing and inferred an overload-collision defect from it. **The
+  inferred defect is not real and §6.6 proves why** — but the instinct behind it was sound and
+  located a genuine under-emission gap one pattern away (§6.7), plus a test hole (§6.6.2). Adds
+  E7 and acceptance items 22–24. Nothing in rev 2 is retracted.
 
 **Requested by:** Jim — *"I think private, public, protected, all members should be indexed in
 the graph"*, *"the whole point is for the LLM to know your code."*
@@ -67,17 +73,15 @@ Two independent exclusion mechanisms, and **only one of them is that `if`**:
 1. **The `private ` line-prefix check.** Applies only when `scope is not null` — i.e. to members,
    never to top-level declarations.
 2. **`#name` private fields, excluded structurally.** The declaration query patterns in
-   `LanguageRegistry.cs:118–146` (TypeScript) and `:148–159` (JavaScript) capture
-   `(property_identifier)`. A `#name` member is a `private_property_identifier`, a different node
-   type, so it never produces a match at all. Deleting the `if` does nothing for these.
+   `LanguageRegistry.cs` capture `(property_identifier)`. A `#name` member is a
+   `private_property_identifier`, a different node type, so it never produces a match at all.
+   Deleting the `if` does nothing for these.
 
 ### 1.3 The asymmetry that makes tier 1's gap much smaller than tier 2's
 
 **TypeScript and JavaScript class members default to public.** A member written with no modifier —
 `foo() {}`, `x = 1` — has no `private ` prefix, so it is **already emitted today**. In C#, the
 same no-modifier member is implicitly *private* and is excluded.
-
-So the populations differ sharply:
 
 | | tier 2 (C#) | tier 1 (TS/JS) |
 |---|---|---|
@@ -89,6 +93,10 @@ So the populations differ sharply:
 **Consequence.** Tier 2's change admits a large population. Tier 1's `if` deletion admits only
 members someone explicitly typed `private` in front of — a genuinely smaller set. This asymmetry
 is the main reason E3 must attribute per tier (§8.3) rather than measuring one combined number.
+
+**Confirmed during implementation:** the `private` keyword does not change the node type. `private
+reset(): void {}` is a `method_definition` with a `property_identifier` name, exactly like a public
+one — which is why Gap A really is only the `if`, and why the same pattern serves both.
 
 ---
 
@@ -118,7 +126,7 @@ code"* — the consumer is a model reading the implementation, not a caller prog
 public API. For that consumer, a private helper is not noise; it is most of the code.
 
 **This is the user's call to make and he has made it.** D48's policy paragraph is therefore
-**revised, not silently overridden** — see §7.1. The Implementor does not get to skip that edit,
+**revised, not silently overridden** — see §7.2. The Implementor does not get to skip that edit,
 and the comment at `TreeSitter.cs:191–194` is part of it.
 
 ### 2.2 The S3 rationale — a phase-scope refusal, and it discharges on its own terms
@@ -138,11 +146,11 @@ wider definition does not get to grant it.
 
 This request is not that. It comes from outside the call-graph work, from the user, and its
 justification is about `defined_at` and readability rather than about edge precision — the finer
-call attribution in §5.3 is a **consequence** of this change, not its motive. The constraint S3
+call attribution in §3 is a **consequence** of this change, not its motive. The constraint S3
 imposed is satisfied by the request being made at the right level, not by being argued away.
 
 **So S3 does not block this and needs no re-litigation.** It should be annotated as discharged
-(§7.2), with the reason, so nobody reads the phase-3 spec later and thinks the rule was ignored.
+(§7.3), with the reason, so nobody reads the phase-3 spec later and thinks the rule was ignored.
 
 ### 2.3 The rationale that does *not* discharge, and is the real risk
 
@@ -160,7 +168,7 @@ adds a large population of facts to a store whose recall quality D44 showed is s
 exactly that.
 
 **This is the one thing in this change that must be measured rather than argued.** See E3 in §8.
-If E3 shows displacement, the fix is ranking or salience, **not** a config switch — see §6.4.
+If E3 shows displacement, the fix is ranking or salience, **not** a config switch — see §6.5.
 
 ---
 
@@ -177,10 +185,9 @@ makes both stop *sooner*, never later. So:
 - **Calls inside local functions** now land on the enclosing method — including a private one —
   rather than on the type. Strictly finer, still coarse.
 - **Calls inside indexers, operators, and enum-member initializers** still fold to the enclosing
-  type, because those kinds remain unemitted (§4.3). The population is small but non-empty.
+  type, because those kinds remain unemitted (§5.1).
 - **Calls with no emitted ancestor at all** still attribute to the file (Phase 3 §5.2.1). Top-level
   statements and file-scoped code keep that path.
-- **Tier 1: calls inside `#name` members** still fold, because §6.2 leaves `#name` excluded.
 
 **Therefore the coarse-attribution behaviour and its query-surface label both stay.** Do not
 delete either. Phase 3's rule — *"coarse but labelled beats precise but wrong, and both beat
@@ -205,24 +212,16 @@ Implementor must locate it before touching `EmitMember`** and report which. Then
 
 ### 3.2 Two contract comments become wrong
 
-**`Program.cs:203–211`:**
-
-```
-/// its 1-based line, and the `id` of the nearest emitted symbol enclosing it. Emission is
-/// the public surface (`EmitMember` skips non-public members), so a call inside a private
-/// method or a local function attributes to the nearest emitted ancestor — usually the
-/// enclosing type — never to nothing.
-```
-
-Two of its sentences become false. Rewrite it to describe the new emission set and the *remaining*
-coarse cases (local functions, indexers, operators, file-level). This is a behaviour contract on a
-cross-process wire format, not decoration — it is the only place the sidecar states what
-`enclosing_id` means.
+**`Program.cs:203–211`** claims *"Emission is the public surface (`EmitMember` skips non-public
+members)"* and that a call inside a private method attributes to the enclosing type. Both become
+false. Rewrite it to describe the new emission set and the *remaining* coarse cases. This is a
+behaviour contract on a cross-process wire format, not decoration — it is the only place the
+sidecar states what `enclosing_id` means.
 
 **`TreeSitter.cs:191–194`** is the comment attached to the `if` being deleted. Its first sentence
 states the overridden policy; its last two sentences describe `#name`'s structural exclusion, which
-**remains true and must survive** (§6.2). Do not delete the comment wholesale with the `if` — keep
-the `#name` explanation, relocated to the query constants it actually describes.
+**remains true as a description of the old queries** and must be replaced by an accurate account of
+the new ones (§6.3). Do not delete it wholesale with the `if`.
 
 ---
 
@@ -345,36 +344,30 @@ time**: it constrains the type checker and nothing else. Nothing at runtime is h
 
 **Gap B — `#name` private fields and methods.** These are excluded *structurally*: the query
 patterns capture `(property_identifier)` and a `#name` member is a `private_property_identifier`.
-Closing this gap means **adding capture patterns** to `TypeScriptDeclarations`
-(`LanguageRegistry.cs:118–146`) and `JavaScriptDeclarations` (`:148–159`) — authoring query text,
-not deleting a check.
+Closing this gap means **adding capture patterns**, not deleting a check.
 
 **The ordering is the point, and it is counterintuitive.** `#name` is the *only* true, runtime-
 enforced privacy in the language. `private` is a comment the compiler checks. So closing Gap A
 alone widens the **fake** private and leaves the **real** one excluded — a half-measure that
 would read as done and satisfy nobody who asked for "all members."
 
-**Ruled: close both.** Jim's instruction is about what the model can see, and `#name` members are
-exactly the implementation detail he is asking to expose. Closing A without B would be the same
-category of silent half-answer this repo's specs keep recording.
+**Ruled: close both.**
 
-### 6.3 What closing Gap B requires, and its one real risk
+### 6.3 What closing Gap B requires
 
-Add `(private_property_identifier)` alongside `(property_identifier)` in the member patterns of
-both declaration query constants. Constraints the Implementor must respect:
+Add a `private_property_identifier` variant beside each `property_identifier` member pattern in
+`TypeScriptDeclarations` and `JavaScriptDeclarations`. Constraints:
 
 - **Tree-sitter queries are compiled at runtime by `ts_query_new`** and a malformed pattern fails
   with a structural error rather than matching nothing. A pattern that does not compile takes the
   whole language's extraction down, not just the new members. Verify against the real pinned
-  grammars, not by inspection.
-- **The grammar must actually have that node type.** `private_property_identifier` is the expected
-  name for both the TypeScript and JavaScript grammars, but **this was not verified** during
-  design and I have no way to verify it. See E6.
-- **`#name` includes the `#`.** Whether the captured text carries the leading `#` determines the
-  symbol's name and therefore its address and its `defined_at` key. **Ruled: keep the `#`.** It is
-  part of the member's name in the language — `this.#count` is how it is written and how someone
-  will search for it — and stripping it would collide a `#count` field with a public `count`
-  field in the same class, which is a legal and common pairing.
+  grammars, not by inspection (E6).
+- **`#name` includes the `#`.** **Ruled: keep it.** It is part of the member's name in the
+  language — `this.#count` is how it is written and how someone will search for it — and stripping
+  it would collide a `#count` field with a public `count` field in the same class, which is a legal
+  and common pairing.
+- **Every method-shaped variant must carry `parameters: (formal_parameters) @params`**, exactly as
+  its public counterpart does. §6.6 explains why this is load-bearing rather than cosmetic.
 - **Do not touch the `_`-prefix convention.** `Matches()` skips captures whose *capture name*
   starts with `_` (`TreeSitter.cs:446`); that is about predicate-only captures and has nothing to
   do with member visibility. It is easy to misread as a second visibility filter. It is not one.
@@ -383,17 +376,16 @@ both declaration query constants. Constraints the Implementor must respect:
 
 `line.StartsWith("private ", StringComparison.Ordinal)` is a **line-prefix** test. It therefore
 misses `private` members whose declaration line does not begin with the keyword — a decorated
-member (`@inject() private readonly svc: Svc`) is the common case, and any formatting that puts
-something before the modifier has the same effect.
+member (`@deprecated` on the line above, or `@inject() private readonly svc: Svc` inline) is the
+common case.
 
 So **some `private` TS members are already indexed today**. The "before" state is not a clean
-public-surface store; it is a store with an approximate filter. Two consequences:
+public-surface store. Two consequences:
 
 1. This argues *for* deleting the check rather than against: an approximate filter enforcing a
    policy we are abandoning is strictly worse than no filter.
-2. E3's tier-1 arm will show a **smaller** delta than the true `private` population implies,
-   because part of that population is already present. Do not read a small tier-1 delta as evidence
-   the change did nothing.
+2. E3's tier-1 arm will show a **smaller** delta than the true `private` population implies. Do not
+   read a small tier-1 delta as evidence the change did nothing.
 
 ### 6.5 No configuration knob — and what to do instead if E3 is bad
 
@@ -408,6 +400,104 @@ keeping them as facts (so `defined_at` and call attribution still work while ran
 them). Both are real designs and neither is in scope here. **Escalate rather than reaching for a
 switch.**
 
+### 6.6 The reported private-overload collision is NOT a defect — ruled, with the proof
+
+**Rev 3 amendment.** During implementation the following was measured and reported: the `Scanner`
+fixture yields `Scanner/#clear`, `Scanner/legacy`, `Scanner/reset` — **no** parameter-list
+suffix — while the public `probe` keeps `Scanner/probe(deep: boolean)`. The inference drawn was
+that *"two private overloads with the same name but different parameter lists would collide on one
+fragment address in a way two public overloads don't."*
+
+**That inference is false, and the measurement is correct.** Both halves matter.
+
+**Why the measurement is right.** D48's parameter suffix is **collision-only**: *"when several
+symbols in one file share that base, each appends its parameter list."* In the fixture, `probe`
+appears three times — `probe(): void;`, `probe(deep: boolean): void;`, `probe(deep?: boolean) {}` —
+so it collides and every one of them takes a suffix. `#clear`, `reset`, and `legacy` each appear
+exactly once, so they take none. **A private method with no suffix is D48 working, not D48
+failing.** Fixing the expectation to the measured value was the right call.
+
+**Why the inferred defect is not real.** The suffix is composed from `DeepSymbol.Params`
+(`TreeSitter.cs:197–199`), which is populated from the `@params` capture. Every private and
+`#name` **method** pattern carries that capture, identically to its public counterpart:
+
+- `LanguageRegistry.cs:143` — `method_definition` + `private_property_identifier` + `@params`
+- `:148` — `abstract_class_declaration` variant, same
+- `:167` — the JavaScript equivalent, same
+- `:142` — plain `method_definition` + `property_identifier` + `@params`, which is what a
+  `private`-**keyword** method matches, because the keyword does not change the node type
+
+So `Params` is non-null for private and `#name` methods, and two private overloads with different
+parameter lists **do** collide-and-disambiguate exactly as two public ones do. **Ruled:
+accept-as-is on the code. No fix, no knob, no new spec.**
+
+#### 6.6.1 Why this was worth ruling on rather than waving off
+
+The two worlds are indistinguishable from the reported symptom alone. If `@params` had been absent
+from the new variants, every observation in the report would have been **identical** — a lone
+`#clear` with no suffix, a colliding `probe` with one — and the inferred defect would have been
+real. The report could not settle it; only the query text could. Flagging rather than fixing was
+correct.
+
+#### 6.6.2 The test hole this exposes — fix now
+
+The fixture overloads **only `probe`, a public method**. So the property just ruled correct —
+*private and `#name` overloads disambiguate by parameter list* — is currently **unguarded**, and
+was established by reading rather than by running.
+
+**Add to the `Scanner` fixture** a `private` overload set and a `#name` overload set with differing
+parameter lists, and assert distinct addresses for each. This converts an argument into a guard, and
+it is the cheap half of this amendment. Acceptance items 22 and 23.
+
+### 6.7 The gap the instinct actually found — an overload **signature** on a `#name` method
+
+**Rev 3 amendment, and this is the substantive one.** The member patterns pair
+`private_property_identifier` with `method_definition` (`:143`, `:148`, `:167`) and with the field
+forms (`:146`, `:152`, `:169`). They do **not** pair it with `method_signature`:
+
+- `:144` — `method_signature` + `property_identifier` + `@params` ✓
+- **absent** — `method_signature` + `private_property_identifier`
+
+A `method_signature` is the bodiless *overload declaration* form. So for
+
+```ts
+class Scanner {
+    #clear(): void;
+    #clear(n: number): void;
+    #clear(n?: number): void {}
+}
+```
+
+the two signatures match no pattern and are silently dropped; only the implementation is emitted.
+**That is under-emission of exactly the kind the report feared** — private overloads losing
+information public ones keep — reached by a different route than the one proposed.
+
+**Ruled: fix now if the case is real, and E7 decides that.** Two things must be confirmed together,
+because either alone is insufficient:
+
+1. **Is `#clear(): void;` legal TypeScript?** Overload signatures on `#`-private methods are
+   plausible but I have **not** verified they are permitted.
+2. **Does the grammar produce `method_signature` with a `private_property_identifier` child** for
+   it?
+
+- **Both yes** → add the pattern, mirroring `:144` with the private node type. Acceptance item 24.
+- **Either no** → add **one comment line** at that point in the query list saying the pairing is
+  absent because the language does not admit it. This matters: in a flat list of patterns an
+  omission and a deliberate exclusion look identical, and the next person to read it will either
+  "fix" a non-case or trust a gap.
+
+#### 6.7.1 Two absences that are correct and should be recorded as such
+
+Same reasoning, already resolvable without evidence:
+
+- **`interface_declaration` + `private_property_identifier`** — interfaces cannot have `#` members.
+  Correctly absent.
+- **`abstract_method_signature` + `private_property_identifier`** — `abstract` and `#`-private are
+  mutually exclusive. Correctly absent.
+
+Record both in the same comment. The pattern list is a place where silence is ambiguous, and this
+amendment exists because that ambiguity cost a round trip.
+
 ---
 
 ## 7. Versioning, and documents that must be edited
@@ -420,17 +510,21 @@ switch.**
 public const int AnalyzerVersion = 4;   // → 5
 ```
 
-**`CodePaths.GrammarVersion` stays at 2.** This is the load-bearing versioning call and the reason
-matters: grammar version governs *how a code subject is addressed*, and a private member receives
-exactly the address the same member would receive if it were public — in both tiers. Nothing about
-fragment composition changes. What changes is *which members the extractors observe*, which is
-precisely what `AnalyzerVersion` exists to track — the same split Phase 3 applied when call edges
-reused declaration addressing unchanged.
+**`CodePaths.GrammarVersion` stays at 2.** Grammar version governs *how a code subject is
+addressed*, and a private member receives exactly the address the same member would receive if it
+were public — in both tiers. Nothing about fragment composition changes. What changes is *which
+members the extractors observe*, which is precisely what `AnalyzerVersion` exists to track — the
+same split Phase 3 applied when call edges reused declaration addressing unchanged.
 
 `CodeIndexer.CurrentVersion` is `$"{CodePaths.GrammarVersion}.{CodeAnalyzer.AnalyzerVersion}"`
 (`CodeIndexer.cs:79`), so the stored `code_index_version` moves `2.4` → `2.5`, setting
 `versionForcedFull` and re-reading every indexed file **regardless of tier**. One bump serves both
-halves of this change; do not add a second version constant.
+halves; do not add a second version constant.
+
+**Note for rev 3's additions.** §6.7's pattern, if E7 says add it, changes *which members are
+observed* — the same class of change as the rest of this work — so it rides the same `4 → 5` bump
+provided it lands before that bump ships. **If it lands after, it needs its own bump**, or stores
+indexed in between silently keep the gap.
 
 **No schema change, no migration, no snapshot.** New members arrive as new facts; no existing fact
 body is modified, so D8 is untouched and the unchanged-body skip in `ProcessFile` is irrelevant.
@@ -478,9 +572,9 @@ and compares SHAs. Named here only to record that it was checked and is not in s
 
 ## 8. NEEDS-EVIDENCE
 
-I cannot run anything. Each item names what to run and **what each outcome decides** — none is a
-curiosity. Every command must set `ENGRAM_HOME` or pass `--home`, per CLAUDE.md; do not run these
-against the real `~/.engram`.
+I cannot run anything. Each item names what to run and **what each outcome decides**. Every command
+must set `ENGRAM_HOME` or pass `--home`, per CLAUDE.md; do not run these against the real
+`~/.engram`.
 
 ### 8.1 The corpus problem, which must be solved before E1–E4 mean anything
 
@@ -497,40 +591,42 @@ near-zero delta from a three-file corpus presented as evidence is not.
 ### 8.2 The measurements
 
 **E1 — fact and entity growth.** Index the chosen corpora into disposable homes; record code-fact
-count and entity count. Report per tier. *Decides:* whether "measured, not estimated" is satisfied
-for the size claim. Baseline for scale: the live instance holds ~6,400 code facts of ~15,000 total,
-in a 217 MB store.
+count and entity count, per tier. *Decides:* whether "measured, not estimated" is satisfied for the
+size claim. Baseline: the live instance holds ~6,400 code facts of ~15,000 total, in a 217 MB store.
 
 **E2 — ambiguity distribution, a re-run of E8.** Distinct symbol leaf names, count with exactly one
-declaration, count with more, and the top ten by declaration count. *Decides:* how much wider
-`callers`/`defined_at` supersets get. Baseline in §4.1. If the ambiguous fraction roughly doubles,
-that is expected and acceptable; if the worst offenders reach three figures, `callers` on a common
-name stops being a usable answer and §6.5's salience work becomes required rather than contingent.
+declaration, count with more, top ten by declaration count. *Decides:* how much wider
+`callers`/`defined_at` supersets get. Baseline in §4.1. Roughly doubling the ambiguous fraction is
+expected and acceptable; worst offenders reaching three figures means `callers` on a common name
+stops being a usable answer and §6.5's salience work becomes required rather than contingent.
 
-**E3 — recall quality. The one that can veto this change.** See §8.3 for how it must be run.
+**E3 — recall quality. The one that can veto this change.** See §8.3.
 
 **E4 — index cost.** Wall-clock for a full index, and store size, before and after, per tier.
-*Decides:* nothing on its own, but a large regression is worth knowing before a user discovers it
-waiting on `engram index`.
+*Decides:* nothing alone, but a large regression is worth knowing before a user discovers it.
 
 **E5 — does Phase 3 acceptance item 25's test exist?** Locate it or establish it was never written.
 *Decides:* §3.1's branch. Must be answered **before** `EmitMember` is edited, because after the
 edit a missing guard and a silently-inverted one look identical. **Blocking.**
 
-**E6 — does the grammar expose `private_property_identifier`?** Compile the amended TypeScript and
-JavaScript declaration queries against the **real pinned grammars** and confirm they compile and
-match a `#name` member. *Decides:* whether §6.2's Gap B is closable as specified. A query that
-fails to compile takes the whole language's extraction down, so this cannot be assumed from the
-node name looking right. **Blocking for the tier-1 half only** — the tier-2 half can proceed
-without it.
+**E6 — do the amended queries compile?** Compile the amended TypeScript and JavaScript declaration
+queries against the **real pinned grammars** and confirm they match a `#name` member. *Decides:*
+whether Gap B is closable as specified. A query that fails to compile takes the whole language's
+extraction down, so this cannot be assumed from a node name looking right. **Blocking for the
+tier-1 half only.**
+
+**E7 — is `method_signature` + `private_property_identifier` a real case? (rev 3)** Two parts,
+both required: (a) does TypeScript permit an overload *signature* on a `#`-private method —
+`#clear(): void;` beside `#clear(n?: number): void {}`; and (b) does the pinned grammar produce a
+`method_signature` node whose name child is a `private_property_identifier`? Answer (a) from the TS
+compiler's own behaviour, not from documentation alone. *Decides:* §6.7 — both yes, add the pattern
+and acceptance item 24; either no, add the comment recording why the pairing is absent. **Blocking
+for §6.7 only; the rest of the tier-1 work proceeds either way.**
 
 ### 8.3 E3's design — how a regression stays attributable
 
-The Orchestrator's constraint is that shipping both tiers together must not make a recall
-regression unattributable. It does not, provided the measurement is structured by **commit**
-rather than by configuration:
-
-**Two commits, one delivery, three measurement points.**
+Shipping both tiers together must not make a recall regression unattributable. It does not, provided
+the measurement is structured by **commit** rather than by configuration:
 
 | Arm | Tree | Attributes |
 |---|---|---|
@@ -538,19 +634,16 @@ rather than by configuration:
 | 1 | after the tier-2 commit only | arm 1 − arm 0 = **C#** |
 | 2 | after the tier-1 commit | arm 2 − arm 1 = **TS/JS** |
 
-This needs no configuration knob (§6.5 forbids one), uses git rather than a runtime switch, and
-matches this repo's existing discipline of falsifying against a committed tree. Order the commits
-tier 2 first, since it is the larger change and the one with the reported defect behind it.
+Two commits, one delivery, three measurement points. No configuration knob (§6.5 forbids one), git
+rather than a runtime switch, and it matches this repo's discipline of falsifying against a
+committed tree. Order tier 2 first — larger change, and the reported defect is behind it.
 
-**What E3 actually measures.** Before and after each arm, run a fixed set of **non-code** recall
-queries drawn from real recorded history — personal facts, past decisions, session notes — and
-compare what comes back, `coverage` value included. *Decides:* whether §2.3's D44 risk is real for
-private members.
+**What E3 measures.** Before and after each arm, run a fixed set of **non-code** recall queries
+drawn from real recorded history — personal facts, past decisions, session notes — and compare what
+comes back, `coverage` included. *Decides:* whether §2.3's D44 risk is real for private members.
 
-Two rules that decide whether the result means anything:
-
-- **Use real recorded queries.** A hand-written query set will flatter the change, because whoever
-  writes it knows what was added.
+- **Use real recorded queries.** A hand-written set will flatter the change, because whoever writes
+  it knows what was added.
 - **If ordinary facts get displaced, stop and escalate to §6.5's options.** Do not ship and do not
   reach for a switch.
 
@@ -563,21 +656,20 @@ Two rules that decide whether the result means anything:
 1. `EmitMember`'s visibility guard is gone; no replacement accessibility condition anywhere in
    `Program.cs`. **Falsify:** restore the guard — items 2, 3, and 5 must redden.
 2. `defined_at "WriteEntry"` resolves to `MemoryReport.WriteEntry` at Exact tier after a re-index.
-   This is the reported defect; it is the headline test.
+   The reported defect; the headline test.
 3. A method with **no accessibility modifier** on a class is emitted. **Falsify:** re-add only the
    no-modifier half of the old condition — this must redden while item 2 stays green. Load-bearing:
    a guard that only tests explicit `private` passes with half the defect restored.
 4. Interface members are still emitted, and `internal`/`protected`/`private protected` members are
    still emitted. Guards against a "simplification" that swaps one filter for another.
-5. A call written inside a private method attributes to **that method**, not to the enclosing type.
+5. A call written inside a private method attributes to **that method**, not the enclosing type.
 6. A call inside a **local function** inside a private method attributes to the private method.
 7. A call inside an **indexer body** still attributes to the enclosing type, with the label intact.
-   This is the retargeted item-25 guard (§3.1) and the proof coarse attribution is still live.
+   The retargeted item-25 guard (§3.1) and the proof coarse attribution is still live.
 8. Indexers, operators, enum members, and local functions are still **not** emitted as symbols.
-   **Falsify:** emit one — this must redden. Guards the kind boundary against scope creep.
+   **Falsify:** emit one — this must redden.
 9. A file containing a partial-method declaration and its implementation yields **one** symbol for
-   that name, the one with the body (§5.2). **Falsify:** emit both — a duplicate address must be
-   detectable, not silently deduped downstream.
+   that name, the one with the body (§5.2). **Falsify:** emit both.
 10. A `static` constructor is emitted as a `constructor` symbol.
 11. A private constructor is emitted, and its address is distinct from its type's (§4.3).
 
@@ -585,43 +677,57 @@ Two rules that decide whether the result means anything:
 
 12. A TS member declared `private foo()` is emitted. **Falsify:** restore the `if` at
     `TreeSitter.cs:195` — this must redden.
-13. A **decorated** private member (`@dec() private x`) is emitted both before and after the
-    change. Guards §6.4's observation: it passes today, and it must keep passing, so nobody
-    "fixes" the approximate filter into a stricter one on the way past.
-14. A `#name` private field and a `#name` private method are both emitted, with the `#` retained in
-    the symbol name (§6.3). **Falsify:** revert the query-pattern addition — this must redden while
-    item 12 stays green. Load-bearing: it is what separates Gap B from Gap A, and closing only A
-    would otherwise look complete.
+13. A **decorated** private member is emitted both before and after the change. Guards §6.4: it
+    passes today and must keep passing, so nobody tightens the approximate filter on the way past.
+14. A `#name` private field and a `#name` private method are both emitted, with the `#` retained
+    (§6.3). **Falsify:** revert the query-pattern addition — this must redden while item 12 stays
+    green. Load-bearing: it separates Gap B from Gap A, and closing only A would otherwise look
+    complete.
 15. A class containing both `#count` and `count` yields **two distinct symbols** with distinct
     addresses (§6.3).
-16. Both amended declaration queries **compile** against the real pinned grammars. This is E6
-    promoted to a guard, because a non-compiling query fails the whole language rather than one
-    pattern.
+16. Both amended declaration queries **compile** against the real pinned grammars. E6 promoted to a
+    guard, because a non-compiling query fails the whole language rather than one pattern.
 17. TS/JS members with no modifier are still emitted (they always were — §1.3). Guards against a
     tier-1 edit that accidentally narrows while widening.
 
+**Rev 3 additions**
+
+22. Two `private`-keyword overloads of one name with **different** parameter lists yield **two**
+    symbols at **distinct** addresses, each carrying its parameter-list suffix (§6.6.2).
+    **Falsify:** drop `@params` from `LanguageRegistry.cs:142` — this must redden. Load-bearing:
+    it is the guard that the §6.6 ruling rests on, and without it that ruling is an argument rather
+    than a fact.
+23. The same for two `#name` overloads. **Falsify:** drop `@params` from `:143` — must redden while
+    22 stays green. The pair must be separable, or one pattern losing its capture hides behind the
+    other.
+24. **Conditional on E7(a) and E7(b) both being yes.** An overload *signature* on a `#name` method
+    is emitted (§6.7). **Falsify:** remove the added `method_signature` +
+    `private_property_identifier` pattern. **If E7 says no**, this item is replaced by a
+    reviewer-checked assertion that the comment recording the absent-by-design pairings is present
+    (§6.7.1) — an omission and a deliberate exclusion must not look identical in that list.
+
 **Shared**
 
-18. `CodePaths.GrammarVersion` is still `2`. **Falsify:** bump it — this must redden, because a
-    bump would assert an addressing change that did not happen.
-19. Rolling `code_index_version` back to `2.4` and indexing with **`full: false`** re-reads both
-    C# and TS/JS files and produces the new members. **Falsify:** run it with `full: true` — per
-    §7.1 that bypasses the gate and proves nothing, so the test must be written the first way.
-20. The `CallsOf` doc comment (`Program.cs:203–211`) no longer claims emission is the public
-    surface, and `TreeSitter.cs`'s `#name` explanation survives the `if`'s deletion (§3.2).
+18. `CodePaths.GrammarVersion` is still `2`. **Falsify:** bump it — must redden, because a bump
+    would assert an addressing change that did not happen.
+19. Rolling `code_index_version` back to `2.4` and indexing with **`full: false`** re-reads both C#
+    and TS/JS files and produces the new members. **Falsify:** run it with `full: true` — per §7.1
+    that bypasses the gate and proves nothing, so the test must be written the first way.
+20. The `CallsOf` doc comment no longer claims emission is the public surface, and
+    `TreeSitter.cs`'s `#name` account is replaced by an accurate one rather than deleted (§3.2).
     Reviewer-checked.
 21. D48's policy paragraph, Phase 3 §5.3.2's discharge note, and `engram-progress.md:478–485` are
-    all edited (§7). Reviewer-checked. A code change that leaves three documents asserting the old
+    all edited (§7). Reviewer-checked. A code change leaving three documents asserting the old
     policy is not done.
 
-**A skipped tier-1 run is not a pass.** Tier-1 tests require `ENGRAM_TEST_TREE_SITTER_DIR` and
-skip silently without it, while tier-2 sidecar tests are unconditional because the test project's
-own ProjectReference builds the binary. Items 12–17 therefore evaporate into the skip column on any
-machine without that variable set, with the summary still reading `Passed!` — the exact failure
-this repo has already recorded for tier 3. **The Implementor must report the skip count for items
-12–17 explicitly**, not just the pass count.
+**A skipped tier-1 run is not a pass.** Tier-1 tests require `ENGRAM_TEST_TREE_SITTER_DIR` and skip
+silently without it, while tier-2 sidecar tests are unconditional because the test project's own
+ProjectReference builds the binary. Items 12–17 and 22–24 therefore evaporate into the skip column
+on any machine without that variable set, **with the summary still reading `Passed!`** — the exact
+failure this repo has already recorded for tier 3. **The Implementor must report the skip count for
+those items explicitly**, not just the pass count.
 
-E1–E6 are reported alongside these, not folded into them.
+E1–E7 are reported alongside these, not folded into them.
 
 ---
 
@@ -629,30 +735,35 @@ E1–E6 are reported alongside these, not folded into them.
 
 | # | Decision | Confidence | Note |
 |---|---|---|---|
-| 1 | Widen emission to all visibilities, both tiers | High | User's explicit instruction, twice; D48's counter-position is a design preference, his to override |
-| 2 | Keep D48's **kind** exclusions unchanged | High | Their D44 rationale is measured and untouched by this request |
+| 1 | Widen emission to all visibilities, both tiers | High | User's explicit instruction, twice |
+| 2 | Keep D48's **kind** exclusions unchanged | High | Their D44 rationale is measured and untouched |
 | 3 | `AnalyzerVersion` 4→5, `GrammarVersion` stays 2, one bump for both tiers | High | Addressing genuinely unchanged; `code_index_version` is tier-agnostic |
 | 4 | Coarse attribution stays; item 25 retargets to an indexer | High | Population shrinks but is non-empty |
-| 5 | Dedupe partial-method duplicate addresses in the sidecar | Moderate | New defect found at spec time, unmeasured; the rule is stated, its frequency is not |
-| 6 | Close **both** tier-1 gaps — `private ` and `#name` | Moderate-high | Closing only Gap A widens the fake-private and leaves the real one out; but Gap B depends on E6 |
-| 7 | Keep the `#` in `#name` symbol names | Moderate | Argued from the language and from the `#count`/`count` collision; not measured |
-| 8 | Revise this spec in place rather than adding a companion | High | §7's doc edits and E1–E6 are shared; two docs would state the emission policy twice |
-| 9 | No configuration knob, either tier | High | One behaviour, measured; a knob is the wrong answer to §2.3's risk |
-| 10 | E3 attributes by commit, not by config | High | Satisfies the Orchestrator's constraint without a runtime switch |
+| 5 | Dedupe partial-method duplicate addresses in the sidecar | Moderate | Found by reading; rule stated, frequency unmeasured |
+| 6 | Close **both** tier-1 gaps — `private ` and `#name` | Moderate-high | Gap B depends on E6 |
+| 7 | Keep the `#` in `#name` symbol names | Moderate | Argued from the language and the `#count`/`count` collision |
+| 8 | Revise this spec in place rather than adding a companion | High | §7's doc edits and E1–E7 are shared |
+| 9 | No configuration knob, either tier | High | One behaviour, measured |
+| 10 | E3 attributes by commit, not by config | High | Meets the separability constraint without a runtime switch |
 | 11 | E3 can veto the change | High | The only unmeasured risk with a real precedent behind it |
+| 12 | **Private-overload collision: accept as-is, no fix (rev 3)** | High | Proven from the query text: `@params` is captured identically on private, `#name`, and public method patterns. The observed suffix asymmetry is D48's collision-only rule working |
+| 13 | **Add private/`#name` overload guards to the fixture (rev 3)** | High | Decision 12 currently rests on reading, not running; items 22–23 convert it |
+| 14 | **`method_signature` + `private_property_identifier`: fix if E7 confirms (rev 3)** | Moderate | Real under-emission if the case exists; I could not verify that it does |
 
 ## 11. Open, and what I am not confident about
 
 - **§2.3's D44 risk is the whole exposure of this change** and I cannot measure it. Everything else
-  here is mechanical. If E3 comes back ambiguous rather than clean, that is an Ultra-Advisor
-  question, not an Implementor one: *does a large population of private-member code facts degrade
-  recall for non-code queries, and if so is salience or lexical-index exclusion the right lever?*
-- **E6 is a genuine unknown.** I asserted `private_property_identifier` as the node name from the
-  grammar's naming convention and the existing comment's wording. If it is wrong, Gap B needs
-  redesign, not a rename — and I would want to see the failing compile before specifying the
-  alternative.
-- **§8.1's corpus problem may have no good answer.** If nothing available carries enough TS/JS,
-  the tier-1 half ships on acceptance tests without a recall measurement behind it. That is
-  acceptable *if labelled*, and unacceptable if a small delta gets reported as reassurance.
-- **Decisions 5 and 7 are unmeasured.** Both were found by reading rather than observing. The
-  handling is cheap and safe either way, but neither has a number behind it.
+  is mechanical. If E3 comes back ambiguous rather than clean, that is an Ultra-Advisor question,
+  not an Implementor one: *does a large population of private-member code facts degrade recall for
+  non-code queries, and if so is salience or lexical-index exclusion the right lever?*
+- **E7 is a genuine unknown and rev 3's weakest point.** I do not know whether TypeScript permits
+  an overload signature on a `#`-private method. If it does not, §6.7 collapses to a comment; if it
+  does, it is a real under-emission bug. I could not settle it by reading.
+- **§8.1's corpus problem may have no good answer.** If nothing available carries enough TS/JS, the
+  tier-1 half ships on acceptance tests without a recall measurement behind it. Acceptable *if
+  labelled*, unacceptable if a small delta gets reported as reassurance.
+- **Decisions 5 and 7 are unmeasured.** Both found by reading rather than observing.
+- **Decision 12 was close to going the other way.** The reported symptom is identical under the
+  defect and under correct behaviour; only the query text separates them (§6.6.1). If the patterns
+  are ever edited to drop a `@params` capture, that ruling silently becomes wrong — which is
+  precisely what items 22 and 23 exist to catch.
