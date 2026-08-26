@@ -14,7 +14,7 @@ public sealed class EngramMcpTools
 {
     [McpServerTool(Name = "engram_recall")]
     [Description(
-        "Check memory BEFORE reading files or exploring the repo. Searches Engram's stored facts " +
+        "Check Engram's memory BEFORE reading files or exploring the repo. Searches Engram's stored facts " +
         "(decisions, conventions, gotchas, contracts) and returns a token-budgeted, ranked digest with " +
         "fact handles and a coverage estimate. Call this first for any question about how this project " +
         "works, what was decided, or why something is the way it is — it is far cheaper than rediscovering " +
@@ -286,7 +286,7 @@ public sealed class EngramMcpTools
 
     [McpServerTool(Name = "engram_browse")]
     [Description(
-        "List what memory holds under a path — children, fact counts, and the top facts at that node. " +
+        "List what Engram's memory holds under a path — children, fact counts, and the top facts at that node. " +
         "A table of contents, not a search: engram_recall finds facts by content, this shows how an " +
         "area is organised. Paths look like /people/jim or /projects/acme.")]
     public static string Browse(

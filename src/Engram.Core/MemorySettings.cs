@@ -125,12 +125,16 @@ public sealed record MemorySettings(MemoryPrecedence Precedence, IReadOnlyList<s
             "Engram is this session's durable memory store, for you and for any subagent you spawn. "
                 + "Call engram_remember when the user asks you to remember or save something, and "
                 + "whenever you reach a decision or finding worth keeping; search Engram before any "
-                + "file-based memory directory rather than after it.",
+                + "file-based memory directory rather than after it. For code lookups, code facts, "
+                + "repo facts, session notes, and user facts, call engram_recall or engram_navigate "
+                + "first, falling back to grep/glob/read or assumption only when Engram has nothing.",
         MemoryPrecedence.EngramOnly =>
             "Engram is this session's only durable memory store, for you and for any subagent you spawn. "
                 + "Call engram_remember when the user asks you to remember or save something, and whenever "
                 + "you reach a decision or finding worth keeping, rather than writing to a file-based "
-                + "memory directory; read from Engram rather than one.",
+                + "memory directory; read from Engram rather than one. For code lookups, code facts, "
+                + "repo facts, session notes, and user facts, call engram_recall or engram_navigate "
+                + "first, falling back to grep/glob/read or assumption only when Engram has nothing.",
         _ => null,
     };
 }
