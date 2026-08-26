@@ -339,6 +339,57 @@ public class RoslynSidecarTests
         Assert.Contains(facts, f => f.SubjectPath == nestedPath && f.Predicate == "declared-as");
     }
 
+    /// <summary>
+    /// Tier-degradation close guard (§5 Guard 1 / acceptance item 1 of
+    /// docs/tier-degradation-close-guard-spec.md): a run that cannot perform a file's
+    /// declared tier must make no deletions from it. Data, not messages — a note with the
+    /// facts closed anyway is still the defect.
+    /// </summary>
+    [Fact]
+    public void DegradedReindex_DoesNotCloseMemberFacts_WhenSidecarBecomesUnavailable()
+    {
+        using var sandbox = new SandboxHome();
+        var repo = Path.Combine(sandbox.Home.Root, "widget-repo");
+        Directory.CreateDirectory(repo);
+        File.WriteAllText(Path.Combine(repo, "Widget.cs"), WidgetCs);
+        using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
+
+        var healthy = Index(connection, sandbox, repo, sidecarPath: SidecarBinary(), full: false);
+        Assert.Contains(healthy.Notes, note => note.StartsWith("tier 2:", StringComparison.Ordinal));
+
+        var nestedPath = CodePaths.ForSymbol(CodePaths.ForFile(healthy.RepoPath, "Widget.cs"), "Widget/Inner");
+        Assert.Contains(FactStore.ReadLive(connection), f => f.SubjectPath == nestedPath && f.Predicate == "declared-as");
+
+        // Same unchanged tree, but this run cannot reach the sidecar — a broken explicit
+        // override, not absence, so it goes through RoslynSidecar.Locate the way a real
+        // degraded environment would (Locate returns null for it by design; that contract
+        // is unchanged by this guard).
+        var brokenOverride = Path.Combine(sandbox.Home.Root, "no-such-sidecar");
+        var previous = Environment.GetEnvironmentVariable(RoslynSidecar.EnvironmentOverride);
+        Environment.SetEnvironmentVariable(RoslynSidecar.EnvironmentOverride, brokenOverride);
+        IndexReport degraded;
+        try
+        {
+            degraded = Index(connection, sandbox, repo, sidecarPath: null, full: true);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(RoslynSidecar.EnvironmentOverride, previous);
+        }
+
+        Assert.Contains(degraded.Notes, note =>
+            note.StartsWith("tier 2: no deep analyzer available", StringComparison.Ordinal));
+        Assert.True(degraded.ClosesSkipped > 0);
+
+        var facts = FactStore.ReadLive(connection);
+        Assert.Contains(facts, f => f.SubjectPath == nestedPath && f.Predicate == "declared-as");
+
+        // Writes are unaffected by the guard — the degraded run still re-observes what a
+        // shallower tier can see.
+        var widgetPath = CodePaths.ForSymbol(CodePaths.ForFile(degraded.RepoPath, "Widget.cs"), "Widget");
+        Assert.Contains(facts, f => f.SubjectPath == widgetPath && f.Predicate == "declared-as");
+    }
+
     // code-navigation Phase 4 spec §9 item 7 (C# half): a Roslyn-sidecar-indexed C# file's
     // facts read analyzer_tier = 2 in the database.
     [Fact]

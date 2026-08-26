@@ -353,6 +353,9 @@ internal static class IndexCommand
             + $"{report.FactsUnchanged} unchanged"
             + (report.ProtectedSkipped > 0
                 ? $", {report.ProtectedSkipped} left alone (not the indexer's to supersede)"
+                : string.Empty)
+            + (report.ClosesSkipped > 0
+                ? $", {report.ClosesSkipped} closes skipped (degraded tier could not confirm deletion)"
                 : string.Empty));
 
         if (reportQueueLine && (report.QueueConsumed > 0 || report.QueueLeft > 0))

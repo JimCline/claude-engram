@@ -49,6 +49,7 @@ public sealed record IndexReport(
     int FactsClosed,
     int FactsUnchanged,
     int ProtectedSkipped,
+    int ClosesSkipped,
     int QueueConsumed,
     int QueueLeft,
     IReadOnlyList<string> Notes);
@@ -344,6 +345,7 @@ public static class CodeIndexer
             FactsClosed: counters.Closed,
             FactsUnchanged: counters.Unchanged,
             ProtectedSkipped: counters.Protected,
+            ClosesSkipped: counters.ClosesSkipped,
             QueueConsumed: consumed,
             QueueLeft: queue.LeftBehind(root),
             Notes: notes);
@@ -370,6 +372,7 @@ public static class CodeIndexer
             FactsClosed: 0,
             FactsUnchanged: 0,
             ProtectedSkipped: 0,
+            ClosesSkipped: 0,
             QueueConsumed: 0,
             QueueLeft: 0,
             Notes: [blockedBy is not null
@@ -397,6 +400,8 @@ public static class CodeIndexer
         var sidecar = sidecarPath ?? RoslynSidecar.Locate(Environment.GetEnvironmentVariable);
         if (sidecar is null)
         {
+            notes.Add($"tier 2: no deep analyzer available; {deep.Count} file(s) took tier 0 — "
+                + "skipped deletions for them, because a shallower tier cannot show a symbol is gone");
             return [];
         }
 
@@ -420,7 +425,8 @@ public static class CodeIndexer
 
         if (results is null)
         {
-            notes.Add($"deep analyzer did not answer; {deep.Count} file(s) took tier 0");
+            notes.Add($"deep analyzer did not answer; {deep.Count} file(s) took tier 0 — "
+                + "skipped deletions for them, because a shallower tier cannot show a symbol is gone");
             return [];
         }
 
@@ -451,14 +457,11 @@ public static class CodeIndexer
         }
 
         var directory = TreeSitter.Locate(Environment.GetEnvironmentVariable, home);
-        if (directory is null)
-        {
-            return;
-        }
-
-        using var runtime = TreeSitter.TryCreate(directory, notes);
+        using var runtime = directory is null ? null : TreeSitter.TryCreate(directory, notes);
         if (runtime is null)
         {
+            notes.Add($"tier 1: no tree-sitter grammars available; {syntactic.Count} file(s) took tier 0 — "
+                + "skipped deletions for them, because a shallower tier cannot show a symbol is gone");
             return;
         }
 
@@ -496,6 +499,7 @@ public static class CodeIndexer
         public int Closed;
         public int Unchanged;
         public int Protected;
+        public int ClosesSkipped;
     }
 
     private static void ProcessFile(
@@ -578,8 +582,22 @@ public static class CodeIndexer
             .Where(fact => fact.Regenerable && !matched.Contains((fact.Path, fact.Predicate, fact.Object)))
             .ToList();
 
+        // A run that could not perform this file's declared tier made no observation of it and
+        // derives no deletions from it (tier-degradation close guard) — a shallower tier cannot
+        // show a symbol is gone, only that it wasn't re-matched. Writes are unaffected: tier-0
+        // bodies are a subset of a deeper tier's for the symbols both can see.
+        var tierAchieved = language.Tier == 0 || (deep is not null && deep.Error is null);
+
         counters.Written += writes.Count;
-        counters.Closed += closes.Count;
+        if (tierAchieved)
+        {
+            counters.Closed += closes.Count;
+        }
+        else
+        {
+            counters.ClosesSkipped += closes.Count;
+            closes = [];
+        }
 
         if (!apply)
         {

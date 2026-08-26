@@ -119,7 +119,8 @@ public sealed class CodeNavigationPhase2Tests
         File.WriteAllText(filePath, "using System.Text;\nusing System.Linq;\n\npublic sealed class Widget { }");
 
         using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
-        RunIndex(connection, sandbox, repo);
+        var sidecar = SidecarBinary();
+        RunIndex(connection, sandbox, repo, sidecarPath: sidecar);
 
         var subjectPath = FactStore.ReadLive(connection)
             .First(f => f.SubjectPath.EndsWith("/Program.cs", StringComparison.Ordinal) && f.Predicate == "imports")
@@ -141,7 +142,7 @@ public sealed class CodeNavigationPhase2Tests
         // version, leaving the real version-forced path unexercised.
         EngramDatabase.WriteMeta(connection, null, CodeIndexer.VersionKey, $"{CodePaths.GrammarVersion}.2");
 
-        RunIndex(connection, sandbox, repo, full: false);
+        RunIndex(connection, sandbox, repo, full: false, sidecarPath: sidecar);
 
         var liveImports = FactStore.ReadLive(connection)
             .Where(f => f.SubjectPath == subjectPath && f.Predicate == "imports")
@@ -338,14 +339,49 @@ public sealed class CodeNavigationPhase2Tests
         Assert.False(reader.Read());
     }
 
-    private static void RunIndex(SqliteConnection connection, SandboxHome sandbox, string repo, bool full = false) =>
+    private static void RunIndex(
+        SqliteConnection connection, SandboxHome sandbox, string repo, bool full = false, string? sidecarPath = null) =>
         CodeIndexer.Index(
             connection,
             sandbox.Home,
             ConfigFile.Empty,
             IndexingSettings.Default,
-            new IndexOptions(repo, Apply: true, Drain: false, Full: full),
+            new IndexOptions(repo, Apply: true, Drain: false, Full: full, SidecarPath: sidecarPath),
             DateTimeOffset.UtcNow);
+
+    /// <summary>
+    /// The test csproj's ProjectReference builds the sidecar, so absence here is broken
+    /// wiring, not a configuration — it fails rather than skips.
+    /// </summary>
+    private static string SidecarBinary()
+    {
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir is not null && !File.Exists(Path.Combine(dir.FullName, "docs", "engram-schema.sql")))
+        {
+            dir = dir.Parent;
+        }
+
+        Assert.NotNull(dir);
+
+        var name = OperatingSystem.IsWindows() ? "engram-roslyn.exe" : "engram-roslyn";
+        var configurations = AppContext.BaseDirectory.Contains(
+            $"{Path.DirectorySeparatorChar}Release{Path.DirectorySeparatorChar}", StringComparison.OrdinalIgnoreCase)
+            ? new[] { "Release", "Debug" }
+            : ["Debug", "Release"];
+
+        foreach (var configuration in configurations)
+        {
+            var candidate = Path.Combine(
+                dir.FullName, "src", "Engram.Sidecar.Roslyn", "bin", configuration, "net10.0", name);
+            if (File.Exists(candidate))
+            {
+                return candidate;
+            }
+        }
+
+        Assert.Fail("engram-roslyn is not built; the ProjectReference in this test project should have built it");
+        return null!;
+    }
 
     private static long? ObjectIdFor(SqliteConnection connection, long factId)
     {
