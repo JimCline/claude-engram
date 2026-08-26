@@ -119,7 +119,15 @@ public static class LanguageRegistry
     // collide `#count` with a public `count` in the same class. Verified against the
     // compiled grammars, where the vocabularies differ: TS names classes with
     // (type_identifier) and has interface, enum, type alias and abstract class node types
-    // JS does not.
+    // JS does not. method_signature (the bodiless overload-declaration form) pairs with
+    // private_property_identifier too (E7, verified against the compiled grammar: a
+    // `#name(): void;` / `#name(n: number): void;` overload set parses and each signature
+    // is captured at its own address, distinct from the implementation) — without this
+    // pairing an overload signature on a `#`-private method matches nothing and only the
+    // implementation is emitted. Two pairings stay correctly absent, by construction: an
+    // interface cannot declare a `#`-private member (interface_declaration never gets a
+    // private_property_identifier row), and `abstract` and `#`-private are mutually
+    // exclusive (abstract_method_signature never gets one either).
     private const string TypeScriptDeclarations = """
         (program (function_declaration name: (identifier) @name parameters: (formal_parameters) @params))
         (program (generator_function_declaration name: (identifier) @name parameters: (formal_parameters) @params))
@@ -142,6 +150,7 @@ public static class LanguageRegistry
         (class_declaration name: (type_identifier) @scope body: (class_body (method_definition name: (property_identifier) @name parameters: (formal_parameters) @params)))
         (class_declaration name: (type_identifier) @scope body: (class_body (method_definition name: (private_property_identifier) @name parameters: (formal_parameters) @params)))
         (class_declaration name: (type_identifier) @scope body: (class_body (method_signature name: (property_identifier) @name parameters: (formal_parameters) @params)))
+        (class_declaration name: (type_identifier) @scope body: (class_body (method_signature name: (private_property_identifier) @name parameters: (formal_parameters) @params)))
         (class_declaration name: (type_identifier) @scope body: (class_body (public_field_definition name: (property_identifier) @name)))
         (class_declaration name: (type_identifier) @scope body: (class_body (public_field_definition name: (private_property_identifier) @name)))
         (abstract_class_declaration name: (type_identifier) @scope body: (class_body (method_definition name: (property_identifier) @name parameters: (formal_parameters) @params)))
@@ -262,8 +271,12 @@ public static class LanguageRegistry
                         probe(): void;
                         probe(deep: boolean): void;
                         probe(deep?: boolean): void {}
-                        private reset(): void {}
-                        #clear(): void {}
+                        private reset(): void;
+                        private reset(n: number): void;
+                        private reset(n?: number): void {}
+                        #clear(): void;
+                        #clear(n: number): void;
+                        #clear(n?: number): void {}
                         @deprecated
                         private legacy(): void {}
                         get size(): number { return this.depth; }
@@ -283,8 +296,12 @@ public static class LanguageRegistry
                     "Scanner/probe()",
                     "Scanner/probe(deep: boolean)",
                     "Scanner/probe(deep?: boolean)",
-                    "Scanner/reset",
-                    "Scanner/#clear",
+                    "Scanner/reset()",
+                    "Scanner/reset(n: number)",
+                    "Scanner/reset(n?: number)",
+                    "Scanner/#clear()",
+                    "Scanner/#clear(n: number)",
+                    "Scanner/#clear(n?: number)",
                     "Scanner/legacy",
                     "Scanner/size",
                     "scan",
