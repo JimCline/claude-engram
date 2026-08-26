@@ -149,13 +149,27 @@ CREATE TABLE fact (
   valid_from    INTEGER NOT NULL,
   valid_to      INTEGER,            -- NULL = currently believed
   superseded_by INTEGER REFERENCES fact(id),
-  created_at    INTEGER NOT NULL
+  created_at    INTEGER NOT NULL,
+
+  -- How deeply this fact was extracted (code-navigation Phase 4 spec §3): 0 = tier-0 regex,
+  -- 1 = tree-sitter, 2 = Roslyn, NULL = not a code fact or written before this column existed.
+  -- Stamped at write time, never derived or backfilled — a producer states its own tier or the
+  -- column stays NULL; nothing may infer it from LanguageRegistry after the fact (§7.1).
+  analyzer_tier INTEGER
 );
 
 -- The collision check on the write path (spec 4.3 step 2) is a lookup against
 -- this index, and UNIQUE makes "at most one live fact per subject+predicate" a
 -- constraint the database enforces rather than a rule the code remembers.
-CREATE UNIQUE INDEX ux_fact_live ON fact(subject_id, predicate) WHERE valid_to IS NULL;
+-- Two disjoint partial indexes, not one combined index: SQL treats NULLs as
+-- distinct, so adding object_id to a single index would constrain nothing for
+-- ordinary facts. Together: one live belief per subject+predicate for
+-- objectless facts, one live edge per subject+predicate+object for edges.
+CREATE UNIQUE INDEX ux_fact_live ON fact(subject_id, predicate)
+  WHERE valid_to IS NULL AND object_id IS NULL;
+
+CREATE UNIQUE INDEX ux_fact_edge_live ON fact(subject_id, predicate, object_id)
+  WHERE valid_to IS NULL AND object_id IS NOT NULL;
 
 -- Same columns as ux_fact_live, deliberately, and NOT redundant with it: that one is
 -- partial on `valid_to IS NULL`, and the query this serves counts a thread's whole
@@ -202,6 +216,9 @@ CREATE INDEX ix_supersession_new ON supersession(new_fact_id);
 
 -- ---------------------------------------------------------------------------
 -- Edges: associative structure. Hierarchy organizes; the graph associates.
+-- Superseded by D70: object-bearing facts (fact.object_id, ux_fact_edge_live)
+-- carry code-navigation edges now. Left in place, unused; BackupStore.cs:53
+-- still counts it.
 -- ---------------------------------------------------------------------------
 CREATE TABLE edge (
   from_id    INTEGER NOT NULL REFERENCES entity(id),
@@ -279,13 +296,20 @@ CREATE VIRTUAL TABLE fact_fts USING fts5(
   tokenize='porter unicode61'
 );
 
-CREATE TRIGGER fact_fts_insert AFTER INSERT ON fact BEGIN
+-- Code-navigation edges (CodePredicates.EdgeBearing) never enter the lexical
+-- lanes: tens of thousands of near-identical edge bodies would inflate D44's
+-- coverage as corroboration-shaped noise, and nobody recalls an edge body in
+-- words. The predicate list must stay identical across all four triggers and
+-- EngramDatabase.RebuildFactFts's interpolated copy.
+CREATE TRIGGER fact_fts_insert AFTER INSERT ON fact
+  WHEN new.predicate NOT IN ('calls', 'imports') BEGIN
   INSERT INTO fact_fts(rowid, body, predicate, path)
     VALUES (new.id, new.body, new.predicate, new.path);
 END;
 
 CREATE TRIGGER fact_fts_close AFTER UPDATE OF valid_to ON fact
-  WHEN old.valid_to IS NULL AND new.valid_to IS NOT NULL BEGIN
+  WHEN old.valid_to IS NULL AND new.valid_to IS NOT NULL
+    AND old.predicate NOT IN ('calls', 'imports') BEGIN
   INSERT INTO fact_fts(fact_fts, rowid, body, predicate, path)
     VALUES ('delete', old.id, old.body, old.predicate, old.path);
 END;
@@ -296,7 +320,7 @@ END;
 -- "database disk image is malformed (11)" — which made every closed fact
 -- undeletable and would have broken `compact` on its first prune.
 CREATE TRIGGER fact_fts_delete AFTER DELETE ON fact
-  WHEN old.valid_to IS NULL BEGIN
+  WHEN old.valid_to IS NULL AND old.predicate NOT IN ('calls', 'imports') BEGIN
   INSERT INTO fact_fts(fact_fts, rowid, body, predicate, path)
     VALUES ('delete', old.id, old.body, old.predicate, old.path);
 END;
@@ -306,7 +330,8 @@ END;
 -- this is the only trigger of its kind, and without it a rename would leave the
 -- fact indexed under its old address with nothing to say so.
 CREATE TRIGGER fact_fts_repath AFTER UPDATE OF path ON fact
-  WHEN new.valid_to IS NULL AND old.path <> new.path BEGIN
+  WHEN new.valid_to IS NULL AND old.path <> new.path
+    AND new.predicate NOT IN ('calls', 'imports') BEGIN
   INSERT INTO fact_fts(fact_fts, rowid, body, predicate, path)
     VALUES ('delete', old.id, old.body, old.predicate, old.path);
   INSERT INTO fact_fts(rowid, body, predicate, path)
@@ -455,7 +480,7 @@ CREATE TABLE fact_review (
 
 
 CREATE TABLE schema_meta (key TEXT PRIMARY KEY, value TEXT);
-INSERT INTO schema_meta(key, value) VALUES ('schema_version', '12');
+INSERT INTO schema_meta(key, value) VALUES ('schema_version', '14');
 
 -- Built by a fresh CREATE, and pre-stamped ready: an empty table matches whatever
 -- FactTokenIndex.Rebuild would produce over zero facts, so a new store needs no rebuild pass.

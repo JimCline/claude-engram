@@ -28,7 +28,16 @@ first, every time, including in ad-hoc checks.
 **Facts are append-only.** Belief content — predicate, body, object, validity — is
 immutable once written. Only `valid_to` and `superseded_by` are ever updated, and only
 to close a fact. `path` is the sole exception: it is addressing metadata that follows
-its entity on rename (D2), not belief content.
+its entity on rename (D2), not belief content. `analyzer_tier` (D-code-nav-p4-item15) is
+a second, narrower exception: it is derivation metadata — the deepest extraction tier
+ever *observed* to produce a fact's exact body — not belief content, so a monotone
+upgrade (`analyzer_tier IS NULL OR analyzer_tier < $tier`) is permitted, in SQL, never a
+C# read-compare-write. The write is observation-licensed: only an extraction run that
+just reproduced the body identically may write it, which is what structurally excludes
+`repair`/`compact` (they recompute, never observe) even though `compact`/`repair`
+otherwise touch regenerable derived state below. A downgrade is never permitted — that
+predicate direction is the one that actually distinguishes this from an unrestricted
+`UPDATE`.
 
 **Derived state is repairable; authored truth is not.** `compact` and `repair` may only
 touch what can be regenerated — the FTS index, salience, denormalized paths, indexed

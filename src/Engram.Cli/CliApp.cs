@@ -66,6 +66,7 @@ public static class CliApp
             "sync" => SyncCommand.Run(homePath, rest, stdout, stderr),
             "directive" => DirectiveCommand.Run(homePath, rest, stdout, stderr),
             "profile" => ProfileCommand.Run(homePath, rest, stdout, stderr),
+            "report" => ReportCommand.Run(homePath, rest, stdout, stderr),
             _ => Usage(stderr),
         };
     }
@@ -122,6 +123,7 @@ public static class CliApp
         writer.WriteLine("  import <file> [--apply]            add a bundle's facts; never rewrites or closes what the store already has");
         writer.WriteLine("  sync <export|import|status> [--apply]  exchange facts with other machines through a shared directory");
         writer.WriteLine("  profile <show|set <default|full>>  which MCP tools this server connection advertises");
+        writer.WriteLine("  report [--out <path>|-] [--authored-only] [--force]  a readable, untruncated Markdown report of every fact");
         writer.WriteLine();
         writer.WriteLine("queue options:");
         writer.WriteLine("  compact [--apply]                  keep the newest entry per file and delete the rest");

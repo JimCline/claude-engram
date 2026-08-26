@@ -6,67 +6,55 @@ namespace Engram.EndToEnd.Tests;
 /// </summary>
 public class ToolProfileEndToEndTests
 {
+    // Falsify: hardcode `.WithTools<EngramServerTools>()` unconditionally in ServeCommand and
+    // confirm this test starts failing (full's tool set would equal default's). A hardcoded
+    // count/array here reddened on every unrelated tool addition (engram_navigate did exactly
+    // that), so this asserts the relationship instead: full is default plus exactly the three
+    // lifecycle tools, no more, no less.
     [Fact]
-    public async Task McpServer_UnderDefaultProfile_AdvertisesExactlyTenTools()
+    public async Task McpServer_FullProfile_AdvertisesExactlyDefaultPlusTheLifecycleTools()
     {
         Assert.SkipUnless(EndToEndBinary.Path is not null, EndToEndBinary.SkipReason);
 
         using var home = new TestHome();
-        var port = FreeTcpPort.Next();
         var cancellationToken = TestContext.Current.CancellationToken;
 
-        var (startExit, _, startErr) = EngramProcess.Run(home.Root, "start", "--port", port.ToString());
-        Assert.True(startExit == 0, $"engram start failed: {startErr}");
+        var defaultPort = FreeTcpPort.Next();
+        var (defaultStartExit, _, defaultStartErr) = EngramProcess.Run(home.Root, "start", "--port", defaultPort.ToString());
+        Assert.True(defaultStartExit == 0, $"engram start failed: {defaultStartErr}");
 
+        string[] defaultTools;
         try
         {
-            using var client = new HttpMcpClient(port);
+            using var client = new HttpMcpClient(defaultPort);
             await client.InitializeAsync(cancellationToken);
-
-            var toolNames = await ToolNamesAsync(client, cancellationToken);
-
-            Assert.Equal(
-                ["engram_browse", "engram_expand", "engram_forget", "engram_index_repo", "engram_judge", "engram_pin", "engram_recall", "engram_remember", "engram_revise", "engram_unpin"],
-                toolNames);
+            defaultTools = await ToolNamesAsync(client, cancellationToken);
         }
         finally
         {
             EngramProcess.Run(home.Root, "stop");
         }
-    }
-
-    // Falsify: hardcode `.WithTools<EngramServerTools>()` unconditionally in ServeCommand and
-    // confirm this test starts failing (the count would read 13 rather than 10).
-    [Fact]
-    public async Task McpServer_UnderFullProfile_AdvertisesAllThirteenTools()
-    {
-        Assert.SkipUnless(EndToEndBinary.Path is not null, EndToEndBinary.SkipReason);
-
-        using var home = new TestHome();
-        var port = FreeTcpPort.Next();
-        var cancellationToken = TestContext.Current.CancellationToken;
 
         var (setExit, _, setErr) = EngramProcess.Run(home.Root, "profile", "set", "full");
         Assert.True(setExit == 0, $"engram profile set full failed: {setErr}");
 
-        var (startExit, _, startErr) = EngramProcess.Run(home.Root, "start", "--port", port.ToString());
-        Assert.True(startExit == 0, $"engram start failed: {startErr}");
+        var fullPort = FreeTcpPort.Next();
+        var (fullStartExit, _, fullStartErr) = EngramProcess.Run(home.Root, "start", "--port", fullPort.ToString());
+        Assert.True(fullStartExit == 0, $"engram start failed: {fullStartErr}");
 
+        string[] fullTools;
         try
         {
-            using var client = new HttpMcpClient(port);
+            using var client = new HttpMcpClient(fullPort);
             await client.InitializeAsync(cancellationToken);
-
-            var toolNames = await ToolNamesAsync(client, cancellationToken);
-
-            Assert.Equal(
-                ["engram_browse", "engram_expand", "engram_forget", "engram_index_repo", "engram_judge", "engram_pin", "engram_recall", "engram_remember", "engram_revise", "engram_start", "engram_status", "engram_stop", "engram_unpin"],
-                toolNames);
+            fullTools = await ToolNamesAsync(client, cancellationToken);
         }
         finally
         {
             EngramProcess.Run(home.Root, "stop");
         }
+
+        ToolProfileAssertions.AssertFullEqualsDefaultPlusLifecycle(defaultTools, fullTools);
     }
 
     [Fact]

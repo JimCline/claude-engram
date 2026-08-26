@@ -13,7 +13,10 @@ public sealed record FactWrite(
     string? Evidence = null,
     bool Regenerable = false,
     long? SessionId = null,
-    string? Details = null);
+    string? Details = null,
+    string? ObjectPath = null,
+    string? ObjectKind = null,
+    int? AnalyzerTier = null);
 
 /// <summary>A fact as stored, with its subject joined back in.</summary>
 public sealed record StoredFact(
@@ -31,7 +34,8 @@ public sealed record StoredFact(
     long? ValidTo,
     long? SupersededBy,
     long CreatedAt,
-    string? Details);
+    string? Details,
+    int? AnalyzerTier);
 
 public sealed record RememberResult(long FactId, long? SupersededFactId);
 
@@ -78,7 +82,10 @@ public static class FactStore
     {
         var timestamp = now.ToUnixTimeSeconds();
         var subjectId = EnsureEntity(connection, transaction, write.SubjectPath, write.SubjectKind, timestamp);
-        var superseded = FindLiveFactId(connection, transaction, subjectId, write.Predicate);
+        long? objectId = write.ObjectPath is null
+            ? null
+            : EnsureEntity(connection, transaction, write.ObjectPath, write.ObjectKind ?? "symbol-name", timestamp);
+        var superseded = FindLiveFactId(connection, transaction, subjectId, write.Predicate, objectId);
 
         // Close first, insert second. ux_fact_live is a UNIQUE partial index over live facts,
         // and SQLite checks it per statement rather than at commit, so inserting the
@@ -97,7 +104,7 @@ public static class FactStore
             FactTokenIndex.Remove(connection, transaction, oldId);
         }
 
-        var factId = InsertFact(connection, transaction, write, subjectId, timestamp);
+        var factId = InsertFact(connection, transaction, write, subjectId, objectId, timestamp);
 
         if (superseded is { } closedId)
         {
@@ -189,6 +196,25 @@ public static class FactStore
     }
 
     /// <summary>
+    /// Records the deepest extraction tier a fact's body has ever been observed at (code-navigation
+    /// Phase 4 spec §9 item 15). The caller re-observed the same body via a tier-<paramref name="tier"/>
+    /// run, so it may fill a NULL <c>analyzer_tier</c> or raise a shallower one — never lower a
+    /// deeper one already on record. The monotone guard is the WHERE clause itself, not a
+    /// read-compare-write in C#, because the latter races a concurrent indexer touching the same row.
+    /// This is not a belief-content edit (D8/D-append-only): <c>analyzer_tier</c> is addressing
+    /// metadata about how the fact was extracted, not the fact's predicate/body/validity.
+    /// </summary>
+    public static void UpgradeAnalyzerTier(
+        SqliteConnection connection, SqliteTransaction transaction, long factId, int tier) =>
+        Execute(
+            connection,
+            transaction,
+            "UPDATE fact SET analyzer_tier = $tier "
+                + "WHERE id = $id AND (analyzer_tier IS NULL OR analyzer_tier < $tier);",
+            ("$tier", tier),
+            ("$id", factId));
+
+    /// <summary>
     /// Renames a subtree: every entity and fact whose path is <paramref name="oldPrefix"/>
     /// or hangs under it (via <c>/</c> or <c>#</c>) moves to <paramref name="newPrefix"/>,
     /// and each old path is filed in <c>entity_alias</c>. Exactly one operation, per D2,
@@ -260,16 +286,32 @@ public static class FactStore
         SqliteConnection connection,
         SqliteTransaction? transaction,
         string subjectPath,
-        string predicate) =>
-        ScalarLong(
-            connection,
-            transaction,
-            """
-            SELECT f.id FROM fact f JOIN entity e ON e.id = f.subject_id
-             WHERE e.path = $path AND f.predicate = $predicate AND f.valid_to IS NULL;
-            """,
-            ("$path", subjectPath),
-            ("$predicate", predicate));
+        string predicate,
+        string? objectPath = null) =>
+        objectPath is null
+            ? ScalarLong(
+                connection,
+                transaction,
+                """
+                SELECT f.id FROM fact f JOIN entity e ON e.id = f.subject_id
+                 WHERE e.path = $path AND f.predicate = $predicate
+                   AND f.object_id IS NULL AND f.valid_to IS NULL;
+                """,
+                ("$path", subjectPath),
+                ("$predicate", predicate))
+            : ScalarLong(
+                connection,
+                transaction,
+                """
+                SELECT f.id FROM fact f
+                  JOIN entity e ON e.id = f.subject_id
+                  JOIN entity o ON o.id = f.object_id
+                 WHERE e.path = $path AND f.predicate = $predicate
+                   AND o.path = $object AND f.valid_to IS NULL;
+                """,
+                ("$path", subjectPath),
+                ("$predicate", predicate),
+                ("$object", objectPath));
 
     public static StoredFact? ReadById(SqliteConnection connection, long factId)
     {
@@ -280,11 +322,20 @@ public static class FactStore
         return ReadFacts(command).FirstOrDefault();
     }
 
-    public static IReadOnlyList<StoredFact> ReadLive(SqliteConnection connection, string? scope = null)
+    /// <summary>
+    /// Every live fact, unfiltered by default. <paramref name="excludeEdges"/> is an opt-in for
+    /// the retrieval path (D58, §5.5) — the default stays "every live fact" because 34 test call
+    /// sites and this method's own general-purpose meaning rest on it.
+    /// </summary>
+    public static IReadOnlyList<StoredFact> ReadLive(
+        SqliteConnection connection,
+        string? scope = null,
+        bool excludeEdges = false)
     {
         var sql = SelectFactColumns
             + " WHERE f.valid_to IS NULL"
             + (scope is null ? string.Empty : " AND f.scope = $scope")
+            + (excludeEdges ? " AND f.predicate NOT IN (" + CodePredicates.EdgeBearingSqlList + ")" : string.Empty)
             + " ORDER BY f.id;";
 
         using var command = connection.CreateCommand();
@@ -473,10 +524,11 @@ public static class FactStore
     {
         using var command = connection.CreateCommand();
         command.CommandText =
-            """
+            $"""
             SELECT e.path, f.predicate, COUNT(*)
               FROM fact f
               JOIN entity e ON e.id = f.subject_id
+             WHERE f.predicate NOT IN ({CodePredicates.EdgeBearingSqlList})
              GROUP BY e.path, f.predicate
             HAVING COUNT(*) > 1;
             """;
@@ -699,7 +751,7 @@ public static class FactStore
     internal const string FactColumns =
         "f.id, f.subject_id, e.path, e.name, f.predicate, f.body, f.scope, "
         + "f.learned_via, f.regenerable, f.evidence, f.valid_from, f.valid_to, "
-        + "f.superseded_by, f.created_at, f.details";
+        + "f.superseded_by, f.created_at, f.details, f.analyzer_tier";
 
     private const string SelectFactColumns =
         $"""
@@ -713,6 +765,7 @@ public static class FactStore
         SqliteTransaction transaction,
         FactWrite write,
         long subjectId,
+        long? objectId,
         long timestamp)
     {
         var factId = ScalarLong(
@@ -720,14 +773,15 @@ public static class FactStore
             transaction,
             """
             INSERT INTO fact
-              (subject_id, predicate, body, path, scope, learned_via, regenerable,
-               evidence, session_id, valid_from, created_at, details)
+              (subject_id, object_id, predicate, body, path, scope, learned_via, regenerable,
+               evidence, session_id, valid_from, created_at, details, analyzer_tier)
             VALUES
-              ($subject, $predicate, $body, $path, $scope, $learnedVia, $regenerable,
-               $evidence, $session, $now, $now, $details);
+              ($subject, $object, $predicate, $body, $path, $scope, $learnedVia, $regenerable,
+               $evidence, $session, $now, $now, $details, $analyzerTier);
             SELECT last_insert_rowid();
             """,
             ("$subject", subjectId),
+            ("$object", (object?)objectId ?? DBNull.Value),
             ("$predicate", write.Predicate),
             ("$body", write.Body),
             ("$path", write.SubjectPath),
@@ -737,7 +791,8 @@ public static class FactStore
             ("$evidence", (object?)write.Evidence ?? DBNull.Value),
             ("$session", (object?)write.SessionId ?? DBNull.Value),
             ("$now", timestamp),
-            ("$details", (object?)write.Details ?? DBNull.Value))!.Value;
+            ("$details", (object?)write.Details ?? DBNull.Value),
+            ("$analyzerTier", (object?)write.AnalyzerTier ?? DBNull.Value))!.Value;
 
         FactTokenIndex.Add(connection, transaction, factId);
 
@@ -748,13 +803,24 @@ public static class FactStore
         SqliteConnection connection,
         SqliteTransaction transaction,
         long subjectId,
-        string predicate) =>
-        ScalarLong(
-            connection,
-            transaction,
-            "SELECT id FROM fact WHERE subject_id = $subject AND predicate = $predicate AND valid_to IS NULL;",
-            ("$subject", subjectId),
-            ("$predicate", predicate));
+        string predicate,
+        long? objectId) =>
+        objectId is null
+            ? ScalarLong(
+                connection,
+                transaction,
+                "SELECT id FROM fact WHERE subject_id = $subject AND predicate = $predicate "
+                + "AND object_id IS NULL AND valid_to IS NULL;",
+                ("$subject", subjectId),
+                ("$predicate", predicate))
+            : ScalarLong(
+                connection,
+                transaction,
+                "SELECT id FROM fact WHERE subject_id = $subject AND predicate = $predicate "
+                + "AND object_id = $object AND valid_to IS NULL;",
+                ("$subject", subjectId),
+                ("$predicate", predicate),
+                ("$object", objectId));
 
     private static List<StoredFact> ReadFacts(SqliteCommand command)
     {
@@ -791,7 +857,8 @@ public static class FactStore
         ValidTo: reader.IsDBNull(11) ? null : reader.GetInt64(11),
         SupersededBy: reader.IsDBNull(12) ? null : reader.GetInt64(12),
         CreatedAt: reader.GetInt64(13),
-        Details: reader.IsDBNull(14) ? null : reader.GetString(14));
+        Details: reader.IsDBNull(14) ? null : reader.GetString(14),
+        AnalyzerTier: reader.IsDBNull(15) ? null : reader.GetInt32(15));
 
     private static int Execute(
         SqliteConnection connection,

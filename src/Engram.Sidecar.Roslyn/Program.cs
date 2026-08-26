@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using System.Text.Json.Nodes;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
@@ -18,10 +19,11 @@ using Microsoft.CodeAnalysis.CSharp.Syntax;
 // Syntax only, deliberately: a semantic model needs references, and grammar v2's addresses
 // are syntactic on purpose (D48) — scope and params ship as written, raw; the core's
 // DeepTier composes every fragment, so this process never spells an address. Types are
-// emitted at any depth. Members are emitted when they are surface: an explicit public,
-// internal, or protected modifier, or membership in an interface — a bare private member
-// is implementation, the same line the registry draws for unexported bindings. Enum
-// members, indexers, and operators are deliberately not emitted (D48).
+// emitted at any depth. Members are emitted at every visibility — public, internal,
+// protected, and bare private — because the consumer is a model reading the
+// implementation, not a caller programming against a public API (D48, revised). Enum
+// members, indexers, and operators are deliberately not emitted (D48) — that exclusion is
+// about the low recall value of those kinds, not about visibility.
 
 string? line;
 while ((line = Console.In.ReadLine()) is not null)
@@ -67,10 +69,18 @@ static JsonObject Analyze(string path, string content)
     var root = CSharpSyntaxTree.ParseText(content).GetRoot();
 
     var symbols = new JsonArray();
+    var attribution = new List<SyntaxNode>();
+
+    // `partial class Foo { }` can appear as more than one BaseTypeDeclarationSyntax node for
+    // the same scope in one file, so members are collected across every declaration before
+    // deduping — a partial method's declaration and its implementation are frequently split
+    // across exactly two such blocks (§5.2 of the all-members spec).
+    var pendingMembers = new List<(MemberDeclarationSyntax Member, string Scope)>();
+
     foreach (var declaration in root.DescendantNodes().OfType<BaseTypeDeclarationSyntax>())
     {
         var scope = ScopeOf(declaration);
-        Emit(symbols, declaration.Identifier.Text, KindOf(declaration), declaration, scope, parameters: null);
+        Emit(symbols, attribution, declaration.Identifier.Text, KindOf(declaration), declaration, scope, parameters: null);
 
         // Enums are BaseType but not Type: their members are values, not surface (D48).
         if (declaration is TypeDeclarationSyntax type)
@@ -78,18 +88,23 @@ static JsonObject Analyze(string path, string content)
             var memberScope = scope is null
                 ? declaration.Identifier.Text
                 : scope + "/" + declaration.Identifier.Text;
-            var inInterface = declaration is InterfaceDeclarationSyntax;
             foreach (var member in type.Members)
             {
-                EmitMember(symbols, member, memberScope, inInterface);
+                pendingMembers.Add((member, memberScope));
             }
         }
+    }
+
+    foreach (var (member, memberScope) in DedupePartialMethods(pendingMembers))
+    {
+        EmitMember(symbols, attribution, member, memberScope);
     }
 
     foreach (var declaration in root.DescendantNodes().OfType<DelegateDeclarationSyntax>())
     {
         Emit(
             symbols,
+            attribution,
             declaration.Identifier.Text,
             "delegate",
             declaration,
@@ -112,64 +127,106 @@ static JsonObject Analyze(string path, string content)
         ["path"] = path,
         ["symbols"] = symbols,
         ["imports"] = imports,
+        ["calls"] = CallsOf(root, attribution),
     };
 }
 
-static void EmitMember(JsonArray symbols, MemberDeclarationSyntax member, string scope, bool inInterface)
+// Partial method declaration and implementation are two MethodDeclarationSyntax nodes with
+// identical name, scope, and parameter list, so D48's collision-only overload suffix cannot
+// tell them apart — both would claim the same address (§5.2 of the all-members spec). Keep
+// the one with a body; if neither or both have one, keep the first in source order.
+static IEnumerable<(MemberDeclarationSyntax Member, string Scope)> DedupePartialMethods(
+    IEnumerable<(MemberDeclarationSyntax Member, string Scope)> members)
 {
-    if (!inInterface && !member.Modifiers.Any(m =>
-        m.IsKind(SyntaxKind.PublicKeyword)
-            || m.IsKind(SyntaxKind.InternalKeyword)
-            || m.IsKind(SyntaxKind.ProtectedKeyword)))
+    var winners = new List<(MemberDeclarationSyntax Member, string Scope)>();
+    var indexByKey = new Dictionary<(string Scope, string Name, string Params), int>();
+
+    foreach (var entry in members)
     {
-        return;
+        if (entry.Member is not MethodDeclarationSyntax method)
+        {
+            winners.Add(entry);
+            continue;
+        }
+
+        var key = (entry.Scope, method.Identifier.Text, method.ParameterList.ToString());
+        if (indexByKey.TryGetValue(key, out var index))
+        {
+            var existing = (MethodDeclarationSyntax)winners[index].Member;
+            var existingHasBody = existing.Body is not null || existing.ExpressionBody is not null;
+            var candidateHasBody = method.Body is not null || method.ExpressionBody is not null;
+            if (!existingHasBody && candidateHasBody)
+            {
+                winners[index] = entry;
+            }
+
+            continue;
+        }
+
+        indexByKey[key] = winners.Count;
+        winners.Add(entry);
     }
 
+    return winners;
+}
+
+static void EmitMember(
+    JsonArray symbols, List<SyntaxNode> attribution, MemberDeclarationSyntax member, string scope)
+{
     switch (member)
     {
         case MethodDeclarationSyntax method:
-            Emit(symbols, method.Identifier.Text, "method", method, scope, method.ParameterList.ToString());
+            Emit(symbols, attribution, method.Identifier.Text, "method", method, scope, method.ParameterList.ToString());
             break;
         case ConstructorDeclarationSyntax constructor:
-            Emit(symbols, constructor.Identifier.Text, "constructor", constructor, scope, constructor.ParameterList.ToString());
+            Emit(symbols, attribution, constructor.Identifier.Text, "constructor", constructor, scope, constructor.ParameterList.ToString());
             break;
         case PropertyDeclarationSyntax property:
-            Emit(symbols, property.Identifier.Text, "property", property, scope, parameters: null);
+            Emit(symbols, attribution, property.Identifier.Text, "property", property, scope, parameters: null);
             break;
         case FieldDeclarationSyntax field:
             foreach (var declarator in field.Declaration.Variables)
             {
-                Emit(symbols, declarator.Identifier.Text, "field", field, scope, parameters: null);
+                // Each co-declared field gets its own attribution point (the declarator, not
+                // the shared field node) — two fields on one line must not share one address.
+                Emit(symbols, attribution, declarator.Identifier.Text, "field", field, scope, parameters: null, declarator);
             }
 
             break;
         case EventFieldDeclarationSyntax eventField:
             foreach (var declarator in eventField.Declaration.Variables)
             {
-                Emit(symbols, declarator.Identifier.Text, "event", eventField, scope, parameters: null);
+                Emit(symbols, attribution, declarator.Identifier.Text, "event", eventField, scope, parameters: null, declarator);
             }
 
             break;
         case EventDeclarationSyntax eventDeclaration:
-            Emit(symbols, eventDeclaration.Identifier.Text, "event", eventDeclaration, scope, parameters: null);
+            Emit(symbols, attribution, eventDeclaration.Identifier.Text, "event", eventDeclaration, scope, parameters: null);
             break;
     }
 }
 
 static void Emit(
     JsonArray symbols,
+    List<SyntaxNode> attribution,
     string name,
     string kind,
     MemberDeclarationSyntax declaration,
     string? scope,
-    string? parameters)
+    string? parameters,
+    SyntaxNode? attributionNode = null)
 {
+    var declarationLine = DeclarationLine(declaration);
+    var doc = DocSummary(declaration);
+    var id = attribution.Count;
+
     var symbol = new JsonObject
     {
+        ["id"] = id,
         ["name"] = name,
         ["kind"] = kind,
-        ["declaration"] = DeclarationLine(declaration),
-        ["doc"] = DocSummary(declaration),
+        ["declaration"] = declarationLine,
+        ["doc"] = doc,
     };
 
     if (scope is not null)
@@ -183,6 +240,56 @@ static void Emit(
     }
 
     ((IList<JsonNode?>)symbols).Add(symbol);
+    attribution.Add(attributionNode ?? declaration);
+}
+
+/// <summary>
+/// One JSON call entry per <see cref="InvocationExpressionSyntax"/>: the callee as written,
+/// its 1-based line, and the `id` of the nearest emitted symbol enclosing it. Emission now
+/// covers every visibility (the all-members spec), so a call inside a private or no-modifier
+/// method attributes to that method itself. What still folds to an ancestor: calls inside a
+/// local function attribute to the enclosing method, and calls inside an indexer, operator,
+/// or enum-member initializer still attribute to the enclosing type, because those kinds
+/// remain unemitted (D48). A walk that reaches the root leaves `enclosing_id` absent, which
+/// core attributes to the file (§5.2.1 of the Phase 3 spec). This emits an id, not a
+/// fragment: assembling the address is core's job (§5.3.1).
+/// </summary>
+static JsonArray CallsOf(SyntaxNode root, List<SyntaxNode> attribution)
+{
+    var idOf = new Dictionary<SyntaxNode, int>(ReferenceEqualityComparer.Instance);
+    for (var i = 0; i < attribution.Count; i++)
+    {
+        idOf[attribution[i]] = i;
+    }
+
+    var calls = new JsonArray();
+    foreach (var invocation in root.DescendantNodes().OfType<InvocationExpressionSyntax>())
+    {
+        int? enclosingId = null;
+        for (var ancestor = invocation.Parent; ancestor is not null; ancestor = ancestor.Parent)
+        {
+            if (idOf.TryGetValue(ancestor, out var id))
+            {
+                enclosingId = id;
+                break;
+            }
+        }
+
+        var call = new JsonObject
+        {
+            ["callee"] = invocation.Expression.ToString(),
+            ["line"] = invocation.Expression.GetLocation().GetLineSpan().StartLinePosition.Line + 1,
+        };
+
+        if (enclosingId is not null)
+        {
+            call["enclosing_id"] = enclosingId;
+        }
+
+        ((IList<JsonNode?>)calls).Add(call);
+    }
+
+    return calls;
 }
 
 static string? ScopeOf(SyntaxNode declaration)

@@ -49,6 +49,7 @@ public sealed record IndexReport(
     int FactsClosed,
     int FactsUnchanged,
     int ProtectedSkipped,
+    int ClosesSkipped,
     int QueueConsumed,
     int QueueLeft,
     IReadOnlyList<string> Notes);
@@ -77,6 +78,45 @@ public static class CodeIndexer
     public const string VersionKey = "code_index_version";
 
     public static string CurrentVersion => $"{CodePaths.GrammarVersion}.{CodeAnalyzer.AnalyzerVersion}";
+
+    /// <summary>The stamp a run last wrote to <c>schema_meta</c>, or null if no run has ever
+    /// written one (a fresh store). Store-wide, not per-repo (D-code-nav gap b).</summary>
+    public static string? StoredVersion(SqliteConnection connection) => ReadMeta(connection, VersionKey);
+
+    /// <summary>
+    /// Whether <paramref name="filePath"/>'s calls/imports extraction can be trusted as complete
+    /// (Architect ruling, gap b): tier-0 languages structurally have nothing to extract, so a
+    /// tier-0 extension answers <see cref="ExtractionCoverage.NotApplicable"/> before either store
+    /// check runs. Otherwise, only a <c>file_state</c> row written under the current
+    /// <see cref="CurrentVersion"/> stamp means the file was actually processed at its language's
+    /// tier; anything else — no row, or a stale stamp — cannot distinguish "genuinely no calls"
+    /// from "never extracted", so it answers <see cref="ExtractionCoverage.Unknown"/>.
+    /// </summary>
+    public static ExtractionCoverage CoverageOf(SqliteConnection connection, string filePath)
+    {
+        var split = CodePaths.SplitRepoPath(filePath);
+        if (split is null)
+        {
+            return ExtractionCoverage.Unknown;
+        }
+
+        var (repoPath, relativePath) = split.Value;
+        if (LanguageRegistry.Resolve(relativePath).Tier == 0)
+        {
+            return ExtractionCoverage.NotApplicable;
+        }
+
+        if (StoredVersion(connection) != CurrentVersion)
+        {
+            return ExtractionCoverage.Unknown;
+        }
+
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT 1 FROM file_state WHERE repo_path = $repo AND path = $path;";
+        command.Parameters.AddWithValue("$repo", repoPath);
+        command.Parameters.AddWithValue("$path", relativePath);
+        return command.ExecuteScalar() is not null ? ExtractionCoverage.KnownZero : ExtractionCoverage.Unknown;
+    }
 
     public static IndexReport Index(
         SqliteConnection connection,
@@ -305,6 +345,7 @@ public static class CodeIndexer
             FactsClosed: counters.Closed,
             FactsUnchanged: counters.Unchanged,
             ProtectedSkipped: counters.Protected,
+            ClosesSkipped: counters.ClosesSkipped,
             QueueConsumed: consumed,
             QueueLeft: queue.LeftBehind(root),
             Notes: notes);
@@ -331,6 +372,7 @@ public static class CodeIndexer
             FactsClosed: 0,
             FactsUnchanged: 0,
             ProtectedSkipped: 0,
+            ClosesSkipped: 0,
             QueueConsumed: 0,
             QueueLeft: 0,
             Notes: [blockedBy is not null
@@ -358,6 +400,8 @@ public static class CodeIndexer
         var sidecar = sidecarPath ?? RoslynSidecar.Locate(Environment.GetEnvironmentVariable);
         if (sidecar is null)
         {
+            notes.Add($"tier 2: no deep analyzer available; {deep.Count} file(s) took tier 0 — "
+                + "skipped deletions for them, because a shallower tier cannot show a symbol is gone");
             return [];
         }
 
@@ -381,7 +425,8 @@ public static class CodeIndexer
 
         if (results is null)
         {
-            notes.Add($"deep analyzer did not answer; {deep.Count} file(s) took tier 0");
+            notes.Add($"deep analyzer did not answer; {deep.Count} file(s) took tier 0 — "
+                + "skipped deletions for them, because a shallower tier cannot show a symbol is gone");
             return [];
         }
 
@@ -412,14 +457,11 @@ public static class CodeIndexer
         }
 
         var directory = TreeSitter.Locate(Environment.GetEnvironmentVariable, home);
-        if (directory is null)
-        {
-            return;
-        }
-
-        using var runtime = TreeSitter.TryCreate(directory, notes);
+        using var runtime = directory is null ? null : TreeSitter.TryCreate(directory, notes);
         if (runtime is null)
         {
+            notes.Add($"tier 1: no tree-sitter grammars available; {syntactic.Count} file(s) took tier 0 — "
+                + "skipped deletions for them, because a shallower tier cannot show a symbol is gone");
             return;
         }
 
@@ -457,6 +499,7 @@ public static class CodeIndexer
         public int Closed;
         public int Unchanged;
         public int Protected;
+        public int ClosesSkipped;
     }
 
     private static void ProcessFile(
@@ -497,12 +540,17 @@ public static class CodeIndexer
             ? $"document changed ({sha[..Math.Min(8, sha.Length)]})"
             : $"source changed ({sha[..Math.Min(8, sha.Length)]})";
 
-        var matched = new HashSet<(string, string)>();
+        var matched = new HashSet<(string, string, string?)>();
         var writes = new List<CodeCandidate>();
+        var tierUpgrades = new List<(long FactId, int Tier)>();
 
         foreach (var candidate in candidates)
         {
-            var key = (candidate.EntityPath, candidate.Predicate);
+            // Keyed on the object's address, not its raw name: live's third component comes
+            // back as entity path, and candidate.Object is the name as written — they must
+            // agree on which form they compare in.
+            var objectPath = candidate.Object is null ? null : CodePaths.ForSymbolName(candidate.Object);
+            var key = (candidate.EntityPath, candidate.Predicate, objectPath);
             matched.Add(key);
 
             if (live.TryGetValue(key, out var existing))
@@ -518,6 +566,11 @@ public static class CodeIndexer
                 if (existing.Body == candidate.Body)
                 {
                     counters.Unchanged++;
+
+                    // "Deepest tier ever observed" (§9 item 15): this run re-observed the same
+                    // body, so it may fill a NULL or upgrade a shallower recorded tier — never
+                    // downgrade. The monotone guard lives in FactStore's WHERE clause, not here.
+                    tierUpgrades.Add((existing.Id, candidate.AnalyzerTier));
                     continue;
                 }
             }
@@ -526,11 +579,25 @@ public static class CodeIndexer
         }
 
         var closes = live.Values
-            .Where(fact => fact.Regenerable && !matched.Contains((fact.Path, fact.Predicate)))
+            .Where(fact => fact.Regenerable && !matched.Contains((fact.Path, fact.Predicate, fact.Object)))
             .ToList();
 
+        // A run that could not perform this file's declared tier made no observation of it and
+        // derives no deletions from it (tier-degradation close guard) — a shallower tier cannot
+        // show a symbol is gone, only that it wasn't re-matched. Writes are unaffected: tier-0
+        // bodies are a subset of a deeper tier's for the symbols both can see.
+        var tierAchieved = language.Tier == 0 || (deep is not null && deep.Error is null);
+
         counters.Written += writes.Count;
-        counters.Closed += closes.Count;
+        if (tierAchieved)
+        {
+            counters.Closed += closes.Count;
+        }
+        else
+        {
+            counters.ClosesSkipped += closes.Count;
+            closes = [];
+        }
 
         if (!apply)
         {
@@ -545,6 +612,14 @@ public static class CodeIndexer
             // EnsureEntity first, because Remember cannot carry a display name and a
             // section's heading is not recoverable from its slug.
             FactStore.EnsureEntity(connection, transaction, write.EntityPath, write.Kind, timestamp, write.DisplayName);
+
+            string? objectPath = null;
+            if (write.Object is not null)
+            {
+                objectPath = CodePaths.ForSymbolName(write.Object);
+                FactStore.EnsureEntity(connection, transaction, objectPath, "symbol-name", timestamp, write.Object);
+            }
+
             FactStore.Remember(
                 connection,
                 transaction,
@@ -556,7 +631,10 @@ public static class CodeIndexer
                     Scope: "code",
                     LearnedVia: "observed",
                     Evidence: evidence,
-                    Regenerable: true),
+                    Regenerable: true,
+                    ObjectPath: objectPath,
+                    ObjectKind: objectPath is null ? null : "symbol-name",
+                    AnalyzerTier: write.AnalyzerTier),
                 now,
                 closeReason);
         }
@@ -564,6 +642,11 @@ public static class CodeIndexer
         foreach (var stale in closes)
         {
             FactStore.Forget(connection, transaction, stale.Id, closeReason, now);
+        }
+
+        foreach (var (factId, tier) in tierUpgrades)
+        {
+            FactStore.UpgradeAnalyzerTier(connection, transaction, factId, tier);
         }
 
         Execute(
@@ -704,18 +787,21 @@ public static class CodeIndexer
     private const string SubtreePredicate =
         "substr(path, 1, $len) = $old AND (length(path) = $len OR substr(path, $len + 1, 1) IN ('/', '#'))";
 
-    private sealed record LiveFact(long Id, string Path, string Predicate, string Body, bool Regenerable);
+    private sealed record LiveFact(
+        long Id, string Path, string Predicate, string? Object, string Body, bool Regenerable, int? AnalyzerTier);
 
-    private static Dictionary<(string, string), LiveFact> ReadLiveUnder(SqliteConnection connection, string filePath)
+    private static Dictionary<(string, string, string?), LiveFact> ReadLiveUnder(SqliteConnection connection, string filePath)
     {
-        var facts = new Dictionary<(string, string), LiveFact>();
+        var facts = new Dictionary<(string, string, string?), LiveFact>();
 
         using var command = connection.CreateCommand();
         command.CommandText =
             """
-            SELECT id, path, predicate, body, regenerable FROM fact
-            WHERE valid_to IS NULL
-              AND (path = $p OR (substr(path, 1, $len) = $p AND substr(path, $len + 1, 1) = '#'));
+            SELECT fact.id, fact.path, fact.predicate, o.path, fact.body, fact.regenerable, fact.analyzer_tier
+            FROM fact
+            LEFT JOIN entity o ON o.id = fact.object_id
+            WHERE fact.valid_to IS NULL
+              AND (fact.path = $p OR (substr(fact.path, 1, $len) = $p AND substr(fact.path, $len + 1, 1) = '#'));
             """;
         command.Parameters.AddWithValue("$p", filePath);
         command.Parameters.AddWithValue("$len", filePath.Length);
@@ -727,9 +813,11 @@ public static class CodeIndexer
                 reader.GetInt64(0),
                 reader.GetString(1),
                 reader.GetString(2),
-                reader.GetString(3),
-                reader.GetInt64(4) != 0);
-            facts[(fact.Path, fact.Predicate)] = fact;
+                reader.IsDBNull(3) ? null : reader.GetString(3),
+                reader.GetString(4),
+                reader.GetInt64(5) != 0,
+                reader.IsDBNull(6) ? null : reader.GetInt32(6));
+            facts[(fact.Path, fact.Predicate, fact.Object)] = fact;
         }
 
         return facts;

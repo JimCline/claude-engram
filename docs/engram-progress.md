@@ -474,11 +474,16 @@ pattern's shape (`@scope` beside `@name`, `@params` for overloads), which keeps 
 what `ts_query_new` validates. All the new node names (`interface_body`,
 `function_signature`, `public_field_definition`, `abstract_method_signature`,
 `method_signature`, JS `field_definition`) compiled against the real pinned grammars on
-the first run. The sidecar walks nested types at any depth and emits surface members only
-(explicit public/internal/protected, or interface membership); tier 1 filters `private`
-on the declaration line and `#name` members never match structurally. Deliberately not
-emitted: enum members, indexers, operators, local functions — D44 already measured what
-near-noise does to lexical ranking. Both falsifications went red on exactly their guard:
+the first run. The sidecar walks nested types at any depth and, at the time, emitted surface members only
+(explicit public/internal/protected, or interface membership); tier 1 filtered `private`
+on the declaration line and `#name` members never matched structurally. **Superseded
+2026-08-25** by `docs/code-graph-all-members-spec.md`: Jim asked for every visibility to
+be indexed after `defined_at` missed a real private method, so both tiers now emit
+members at every visibility — the `private`/`#name` filters above are gone, and the
+sidecar's `AnalyzerVersion` moved 4→5 to force the re-read. Deliberately not
+emitted, in either tier, before or after: enum members, indexers, operators, local
+functions — D44 already measured what near-noise does to lexical ranking. Both
+falsifications went red on exactly their guard:
 unconditional suffix → the two collision-rule unit tests; `PrivateKeyword` added to the
 surface list → the sidecar batch test on the planted private field. (A `if (false)` plant
 does not survive warnings-as-errors — CS0162 fails the build before the test can go red;

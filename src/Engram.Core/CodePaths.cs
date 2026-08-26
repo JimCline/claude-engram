@@ -37,6 +37,63 @@ public static class CodePaths
     public static string ForSymbol(string filePath, string symbolName) =>
         $"{filePath}#{symbolName}";
 
+    public const string SymbolNameRoot = "/symbol-names";
+
+    /// <summary>Address for a callee/module name as written. Not a location.</summary>
+    /// <remarks>
+    /// Not slugged — <see cref="Slug"/> lowercases, and case is part of the identity of every
+    /// symbol name this indexes. <c>/</c> and <c>%</c> are percent-encoded because module names
+    /// legitimately contain slashes (<c>./utils/foo</c>, <c>@scope/pkg</c>), which would
+    /// otherwise manufacture path segments that do not exist.
+    /// </remarks>
+    public static string ForSymbolName(string name) =>
+        $"{SymbolNameRoot}/{name.Replace("%", "%25").Replace("/", "%2F")}";
+
+    /// <summary>Inverse of <see cref="ForSymbolName"/>; null if <paramref name="path"/> is not under the root.</summary>
+    public static string? SymbolNameOf(string path)
+    {
+        var prefix = SymbolNameRoot + "/";
+        if (!path.StartsWith(prefix, StringComparison.Ordinal))
+        {
+            return null;
+        }
+
+        return path[prefix.Length..].Replace("%2F", "/").Replace("%25", "%");
+    }
+
+    /// <summary>
+    /// Last segment of a dotted callee (<c>os.path.join</c> → <c>join</c>) or a fragment
+    /// (<c>Outer/Inner</c> → <c>Inner</c>) — the same question either way, so one function
+    /// answers it (§6.5). Whichever of <c>.</c> or <c>/</c> occurs last wins; neither present
+    /// returns the input unchanged.
+    /// </summary>
+    public static string LeafOf(string name)
+    {
+        var parenIndex = name.IndexOf('(');
+        var head = parenIndex < 0 ? name : name[..parenIndex];
+        var separator = Math.Max(head.LastIndexOf('.'), head.LastIndexOf('/'));
+        return separator < 0 ? name : name[(separator + 1)..];
+    }
+
+    /// <summary>
+    /// Inverse of <see cref="RepoRoot"/>: splits an entity path under a repo root into the
+    /// repo root (first 5 <c>/</c>-segments) and the file-relative remainder, dropping any
+    /// <c>#fragment</c>. Null if <paramref name="path"/> has fewer than 5 segments.
+    /// </summary>
+    public static (string RepoPath, string RelativePath)? SplitRepoPath(string path)
+    {
+        var withoutFragment = path[..(path.IndexOf('#') is var hash && hash >= 0 ? hash : path.Length)];
+        var segments = withoutFragment.Split('/');
+        if (segments.Length < 6)
+        {
+            return null;
+        }
+
+        var repoPath = string.Join('/', segments[..5]);
+        var relativePath = string.Join('/', segments[5..]);
+        return (repoPath, relativePath);
+    }
+
     /// <summary>
     /// Lowercased, every run outside <c>[a-z0-9]</c> collapsed to one <c>-</c>, ends
     /// trimmed. Shared by project names, repo names, and doc-section headings so one rule

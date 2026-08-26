@@ -114,6 +114,20 @@ public static class TelemetryEventKind
     /// </remarks>
     public const string Sync = "sync";
 
+    /// <summary>An <c>engram_navigate</c> call (spec §7.2) — the deterministic-lookup surface D71
+    /// rests its D6-override justification on, so it must be instrumented from Phase 1.</summary>
+    /// <remarks>
+    /// Its own kind rather than <see cref="Recall"/>: navigation is not a relevance question,
+    /// folding it in would inflate a D18/D43 recall-adoption number with calls recall never
+    /// serviced.
+    /// </remarks>
+    public const string Navigate = "navigate";
+
+    /// <summary>An <c>engram report</c> run (D22 §3.6) — a human-typed audit verb, never folded
+    /// into <see cref="Recall"/> or <see cref="Remember"/>, whose adoption numbers it must not
+    /// move.</summary>
+    public const string Report = "report";
+
     /// <summary>
     /// Every kind Engram emits.
     /// </summary>
@@ -126,7 +140,7 @@ public static class TelemetryEventKind
     [
         Recall, Remember, Digest, Browse, Expand, Revise, Timeline, Judge,
         SessionStart, ServerStart, ServerStop, SessionOpen, SubagentStart, PreCompact, PostCompact,
-        FileTouched, UserPrompt, MemoryGuard, Index, Embedding, Enrollment, Sync,
+        FileTouched, UserPrompt, MemoryGuard, Index, Embedding, Enrollment, Sync, Navigate, Report,
     ];
 }
 
@@ -204,7 +218,64 @@ public sealed record TelemetryRecord(
     /// time — the two can disagree if config changes in between, and a stamp that disagrees with
     /// the live connection is worse than no stamp (docs/memory-expansion/03-tool-profiles-spec.md).
     /// </summary>
-    [property: JsonPropertyName("tool_profile")] string? ToolProfile = null);
+    [property: JsonPropertyName("tool_profile")] string? ToolProfile = null,
+
+    /// <summary>
+    /// The relation an <c>engram_navigate</c> call resolved: <c>defined_at</c>, <c>imports</c>,
+    /// <c>callers</c>, <c>callees</c>, <c>neighbors</c>, or an unrecognized value verbatim. Only
+    /// <see cref="TelemetryEventKind.Navigate"/> sets it.
+    /// </summary>
+    [property: JsonPropertyName("relation")] string? Relation = null,
+
+    /// <summary>
+    /// Whether an <c>engram_navigate</c> call had anything to answer with. Only
+    /// <see cref="TelemetryEventKind.Navigate"/> sets it — this, not <see cref="FactCount"/>,
+    /// is D71's adoption signal; <see cref="FactCount"/> means facts returned by a recall-shaped
+    /// call and must stay null here (D46's rule about a nearby number in the wrong field).
+    /// </summary>
+    [property: JsonPropertyName("found")] bool? Found = null,
+
+    /// <summary>
+    /// Comma-separated match tiers among the rows an <c>engram_navigate</c> call returned (e.g.
+    /// <c>"Exact"</c> or <c>"Exact,Substring"</c>), empty when nothing was found. Only
+    /// <see cref="TelemetryEventKind.Navigate"/> sets it.
+    /// </summary>
+    [property: JsonPropertyName("tiers")] string? Tiers = null,
+
+    /// <summary>
+    /// Comma-separated extraction tiers among the rows an <c>engram_navigate</c> call returned
+    /// (e.g. <c>"regex"</c> or <c>"regex,semantic"</c>), empty when nothing was found. This is a
+    /// separate axis from <see cref="Tiers"/> (match confidence) and must never be folded into
+    /// it — the D43 failure mode this guards against. Only <see cref="TelemetryEventKind.Navigate"/>
+    /// sets it.
+    /// </summary>
+    [property: JsonPropertyName("extraction_tiers")] string? ExtractionTiers = null,
+
+    /// <summary>
+    /// How many facts an <c>engram report</c> run enumerated, total. Only
+    /// <see cref="TelemetryEventKind.Report"/> sets this — never <see cref="FactCount"/>, which
+    /// means facts returned to the model on a <c>recall</c> record and nothing on a primer; a
+    /// nearby number in that field is exactly what D43 traced a wrong conclusion back to.
+    /// </summary>
+    [property: JsonPropertyName("report_total_facts")] int? ReportTotalFacts = null,
+
+    /// <summary>How many of those facts were live. Only <see cref="TelemetryEventKind.Report"/> sets this.</summary>
+    [property: JsonPropertyName("report_live_facts")] int? ReportLiveFacts = null,
+
+    /// <summary>How many of those facts were closed. Only <see cref="TelemetryEventKind.Report"/> sets this.</summary>
+    [property: JsonPropertyName("report_closed_facts")] int? ReportClosedFacts = null,
+
+    /// <summary>
+    /// How many regenerable facts <c>--authored-only</c> excluded; zero when the flag was not
+    /// passed. Only <see cref="TelemetryEventKind.Report"/> sets this.
+    /// </summary>
+    [property: JsonPropertyName("report_excluded_facts")] int? ReportExcludedFacts = null,
+
+    /// <summary>
+    /// Size of the rendered document in bytes — the cheap signal of whether it is growing past
+    /// usefulness. Only <see cref="TelemetryEventKind.Report"/> sets this.
+    /// </summary>
+    [property: JsonPropertyName("report_bytes_written")] int? ReportBytesWritten = null);
 
 [JsonSerializable(typeof(TelemetryRecord))]
 internal sealed partial class TelemetryJsonContext : JsonSerializerContext;

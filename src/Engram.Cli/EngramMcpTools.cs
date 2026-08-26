@@ -14,7 +14,7 @@ public sealed class EngramMcpTools
 {
     [McpServerTool(Name = "engram_recall")]
     [Description(
-        "Check memory BEFORE reading files or exploring the repo. Searches Engram's stored facts " +
+        "Check Engram's memory BEFORE reading files or exploring the repo. Searches Engram's stored facts " +
         "(decisions, conventions, gotchas, contracts) and returns a token-budgeted, ranked digest with " +
         "fact handles and a coverage estimate. Call this first for any question about how this project " +
         "works, what was decided, or why something is the way it is — it is far cheaper than rediscovering " +
@@ -286,7 +286,7 @@ public sealed class EngramMcpTools
 
     [McpServerTool(Name = "engram_browse")]
     [Description(
-        "List what memory holds under a path — children, fact counts, and the top facts at that node. " +
+        "List what Engram's memory holds under a path — children, fact counts, and the top facts at that node. " +
         "A table of contents, not a search: engram_recall finds facts by content, this shows how an " +
         "area is organised. Paths look like /people/jim or /projects/acme.")]
     public static string Browse(
@@ -659,6 +659,414 @@ public sealed class EngramMcpTools
         return removed
             ? $"[{fact_id}] unpinned."
             : $"[{fact_id}] was not pinned for this session. Nothing changed.";
+    }
+
+    // §5.2: NULL and 0 must render distinctly and never collapse/sort together.
+    private static string ExtractionTierLabel(int? tier) => tier switch
+    {
+        0 => "regex",
+        1 => "syntactic",
+        2 => "semantic",
+        _ => "not recorded",
+    };
+
+    // §5.3: "a qualifier that always fires is noise" — state it once in the header when every
+    // row shares one extraction tier; say nothing in the header when rows differ, and mark each
+    // row instead (the caller does that marking when this returns null).
+    private static string? UniformExtractionTierNote(IReadOnlyList<int?> tiers) =>
+        tiers.Count > 0 && tiers.Distinct().Count() == 1
+            ? $"(extraction tier: {ExtractionTierLabel(tiers[0])})\n"
+            : null;
+
+    private sealed record NavigateOutcome(
+        string Text, bool Found, IReadOnlyList<string> Tiers, IReadOnlyList<string> ExtractionTiers)
+    {
+        public static NavigateOutcome NotFound(string text) =>
+            new(text, Found: false, Tiers: [], ExtractionTiers: []);
+    }
+
+    [McpServerTool(Name = "engram_navigate")]
+    [Description(
+        "Where is a symbol defined, what does a file import, or who calls/is called by a symbol — a " +
+        "deterministic lookup over indexed code, not a search. Use it instead of Read/Grep to answer " +
+        "'where is Z defined', 'what does Y import', 'who calls Z', or 'what does Z call'. relation is " +
+        "defined_at, imports, callers, or callees; neighbors is recognized but answers 'not yet indexed' " +
+        "rather than an empty result.")]
+    public static string Navigate(
+        EngramHome home,
+        McpSessionId session,
+        [Description("A symbol name for defined_at/callers/callees, or a file path for imports.")] string query,
+        [Description("One of: defined_at, imports, callers, callees, neighbors.")] string relation,
+        [Description("Restrict matches to one repo's indexed code, by its slug.")] string? repo = null,
+        [Description("Maximum matches returned. Defaults to 20, clamped to 1-100.")] int limit = 20)
+    {
+        limit = Math.Clamp(limit, 1, 100);
+        var normalizedRelation = relation.Trim().ToLowerInvariant();
+
+        NavigateOutcome outcome;
+        if (normalizedRelation is "neighbors")
+        {
+            outcome = NavigateOutcome.NotFound(
+                "'neighbors' is not yet indexed. This is not a negative result; it means the "
+                    + "question cannot be answered yet, not that the answer is empty.");
+        }
+        else
+        {
+            using var connection = EngramDatabase.OpenInitialized(home);
+            outcome = normalizedRelation switch
+            {
+                "defined_at" => NavigateDefinedAt(connection, query, repo, limit),
+                "imports" => NavigateImports(connection, query, repo, limit),
+                "callers" => NavigateCallers(connection, query, repo, limit),
+                "callees" => NavigateCallees(connection, query, repo, limit),
+                _ => NavigateOutcome.NotFound(
+                    $"Unknown relation '{relation}'. Use defined_at, imports, callers, or callees "
+                        + "(neighbors is recognized but not yet indexed)."),
+            };
+        }
+
+        Telemetry.Append(home, new TelemetryRecord(
+            Timestamp: DateTime.UtcNow.ToString("o"),
+            SessionId: session.Value,
+            Kind: TelemetryEventKind.Navigate,
+            Relation: normalizedRelation,
+            Found: outcome.Found,
+            Tiers: string.Join(",", outcome.Tiers),
+            ExtractionTiers: string.Join(",", outcome.ExtractionTiers)));
+
+        return outcome.Text;
+    }
+
+    private static NavigateOutcome NavigateDefinedAt(SqliteConnection connection, string query, string? repo, int limit)
+    {
+        var repoNeedle = RepoNeedle(repo);
+        if (repoNeedle is not null && !RepoIndexed(connection, repoNeedle))
+        {
+            return NavigateOutcome.NotFound($"Repo '{repo}' is not indexed. Nothing to search.");
+        }
+
+        var matches = SymbolResolver.Resolve(connection, query, limit, repoNeedle);
+
+        if (matches.Count == 0)
+        {
+            return NavigateOutcome.NotFound(
+                $"No symbol named '{query}' found (checked exact, case-insensitive, and substring match).");
+        }
+
+        var rows = matches
+            .Select(match => (
+                match,
+                declared: FactStore.History(connection, match.Path, "declared-as")
+                    .FirstOrDefault(f => f.ValidTo is null)))
+            .ToList();
+
+        var extractionTiers = rows.Select(r => r.declared?.AnalyzerTier).ToList();
+        var uniformNote = UniformExtractionTierNote(extractionTiers);
+
+        var builder = new System.Text.StringBuilder();
+        builder.Append(uniformNote);
+        builder.Append(CountText(matches.Count, "match")).Append(" for '").Append(query).Append("':\n");
+
+        foreach (var (match, declared) in rows)
+        {
+            builder.Append("  [").Append(match.Tier).Append(']');
+            if (uniformNote is null)
+            {
+                builder.Append('[').Append(ExtractionTierLabel(declared?.AnalyzerTier)).Append(']');
+            }
+
+            builder.Append(' ').Append(match.Path).Append(": ")
+                .Append(declared?.Body ?? "(no declaration recorded)")
+                .Append('\n');
+        }
+
+        var tiers = matches.Select(m => m.Tier.ToString()).Distinct().ToList();
+        var extractionTierLabels = extractionTiers.Select(ExtractionTierLabel).Distinct().ToList();
+        return new NavigateOutcome(
+            builder.ToString().TrimEnd('\n'), Found: true, Tiers: tiers, ExtractionTiers: extractionTierLabels);
+    }
+
+    private static NavigateOutcome NavigateImports(SqliteConnection connection, string query, string? repo, int limit)
+    {
+        var repoNeedle = RepoNeedle(repo);
+        if (repoNeedle is not null && !RepoIndexed(connection, repoNeedle))
+        {
+            return NavigateOutcome.NotFound($"Repo '{repo}' is not indexed. Nothing to search.");
+        }
+
+        var exact = QueryFileEntities(connection, "e.path = $q", query, limit, repoNeedle)
+            .Select(path => (Path: path, Tier: "exact"))
+            .ToList();
+
+        var matches = exact.Count > 0
+            ? exact
+            : QueryFileEntities(
+                    connection,
+                    "e.path LIKE '%/' || $q ESCAPE '\\'",
+                    SymbolResolver.LikeEscape(query),
+                    limit,
+                    repoNeedle)
+                .Select(path => (Path: path, Tier: "path-suffix"))
+                .ToList();
+
+        if (matches.Count == 0)
+        {
+            return NavigateOutcome.NotFound(
+                $"No file matching '{query}' found (checked exact path, then path ending in '/{query}').");
+        }
+
+        var rows = matches
+            .Select(match =>
+            {
+                var imports = FactStore.History(connection, match.Path, "imports")
+                    .Where(f => f.ValidTo is null)
+                    .ToList();
+                var modules = ImportedModuleNames(connection, imports.Select(f => f.Id))
+                    .OrderBy(name => name, StringComparer.Ordinal)
+                    .ToList();
+                var body = modules.Count > 0
+                    ? "imports " + string.Join(", ", modules)
+                    : "no imports recorded";
+
+                return (match, body, tier: imports.FirstOrDefault()?.AnalyzerTier);
+            })
+            .ToList();
+
+        var extractionTiers = rows.Select(r => r.tier).ToList();
+        var uniformNote = UniformExtractionTierNote(extractionTiers);
+
+        var builder = new System.Text.StringBuilder();
+        builder.Append(uniformNote);
+        builder.Append(CountText(matches.Count, "file")).Append(" matching '").Append(query).Append("':\n");
+
+        foreach (var (match, body, tier) in rows)
+        {
+            builder.Append("  [").Append(match.Tier).Append(']');
+            if (uniformNote is null)
+            {
+                builder.Append('[').Append(ExtractionTierLabel(tier)).Append(']');
+            }
+
+            builder.Append(' ').Append(match.Path).Append(": ").Append(body).Append('\n');
+        }
+
+        var tiers = matches.Select(m => m.Tier).Distinct().ToList();
+        var extractionTierLabels = extractionTiers.Select(ExtractionTierLabel).Distinct().ToList();
+        return new NavigateOutcome(
+            builder.ToString().TrimEnd('\n'), Found: true, Tiers: tiers, ExtractionTiers: extractionTierLabels);
+    }
+
+    private static NavigateOutcome NavigateCallers(SqliteConnection connection, string query, string? repo, int limit)
+    {
+        var repoNeedle = RepoNeedle(repo);
+        if (repoNeedle is not null && !RepoIndexed(connection, repoNeedle))
+        {
+            return NavigateOutcome.NotFound($"Repo '{repo}' is not indexed. Nothing to search.");
+        }
+
+        var result = CodeCallGraph.Callers(connection, query, repoNeedle, limit);
+        if (!result.Found)
+        {
+            return NavigateOutcome.NotFound(
+                $"No symbol named '{query}' found (checked exact, case-insensitive, and substring match).");
+        }
+
+        if (result.Callers.Count == 0)
+        {
+            return NavigateOutcome.NotFound(
+                $"No recorded call sites naming '{query}' ({CoverageCaveat(result.Coverage)}).");
+        }
+
+        var extractionTiers = result.Callers.Select(c => c.AnalyzerTier).ToList();
+        var uniformNote = UniformExtractionTierNote(extractionTiers);
+
+        var builder = new System.Text.StringBuilder();
+        builder.Append(uniformNote);
+        if (result.QueryTier != SymbolMatchTier.Exact)
+        {
+            builder.Append("No exact match for '").Append(query).Append("'; showing callers of ")
+                .Append(result.DeclarationCount).Append(' ').Append(TierLabel(result.QueryTier))
+                .Append(" match").Append(result.DeclarationCount == 1 ? "" : "es").Append(".\n");
+        }
+        else if (result.DeclarationCount > 1)
+        {
+            builder.Append(result.DeclarationCount).Append(" declarations of '").Append(query)
+                .Append("' exist in this store — these are calls to some '").Append(query)
+                .Append("', not necessarily one specific declaration.\n");
+        }
+
+        builder.Append(CountText(result.Callers.Count, "caller")).Append(" of '").Append(query).Append("'");
+        if (result.TotalMatches > result.Callers.Count)
+        {
+            builder.Append(" (showing ").Append(result.Callers.Count).Append(" of ").Append(result.TotalMatches).Append(')');
+        }
+
+        builder.Append(":\n");
+        foreach (var caller in result.Callers)
+        {
+            builder.Append("  [").Append(RankLabel(caller.Signal)).Append(']');
+            if (uniformNote is null)
+            {
+                builder.Append('[').Append(ExtractionTierLabel(caller.AnalyzerTier)).Append(']');
+            }
+
+            builder.Append(' ').Append(caller.CallerPath);
+            if (caller.AttributedToType)
+            {
+                builder.Append(" (attributed to the enclosing type — call site is a kind not indexed as a symbol)");
+            }
+
+            builder.Append('\n');
+        }
+
+        var extractionTierLabels = extractionTiers.Select(ExtractionTierLabel).Distinct().ToList();
+        return new NavigateOutcome(
+            builder.ToString().TrimEnd('\n'), Found: true, Tiers: [], ExtractionTiers: extractionTierLabels);
+    }
+
+    private static NavigateOutcome NavigateCallees(SqliteConnection connection, string query, string? repo, int limit)
+    {
+        var repoNeedle = RepoNeedle(repo);
+        if (repoNeedle is not null && !RepoIndexed(connection, repoNeedle))
+        {
+            return NavigateOutcome.NotFound($"Repo '{repo}' is not indexed. Nothing to search.");
+        }
+
+        var result = CodeCallGraph.Callees(connection, query, repoNeedle, limit);
+        if (!result.Found)
+        {
+            return NavigateOutcome.NotFound(
+                $"No symbol named '{query}' found (checked exact, case-insensitive, and substring match).");
+        }
+
+        if (result.Callees.Count == 0)
+        {
+            return NavigateOutcome.NotFound(
+                $"No recorded calls from '{query}' ({CoverageCaveat(result.Coverage)}).");
+        }
+
+        var extractionTiers = result.Callees.Select(c => c.AnalyzerTier).ToList();
+        var uniformNote = UniformExtractionTierNote(extractionTiers);
+
+        var builder = new System.Text.StringBuilder();
+        builder.Append(uniformNote);
+        if (result.QueryTier != SymbolMatchTier.Exact)
+        {
+            builder.Append("No exact match for '").Append(query).Append("'; resolved by ")
+                .Append(TierLabel(result.QueryTier)).Append(" match.\n");
+        }
+
+        builder.Append(CountText(result.Callees.Count, "call")).Append(" from '").Append(query).Append("'");
+        if (result.TotalMatches > result.Callees.Count)
+        {
+            builder.Append(" (showing ").Append(result.Callees.Count).Append(" of ").Append(result.TotalMatches).Append(')');
+        }
+
+        builder.Append(":\n");
+        foreach (var callee in result.Callees)
+        {
+            builder.Append("  [").Append(RankLabel(callee.Signal)).Append(']');
+            if (uniformNote is null)
+            {
+                builder.Append('[').Append(ExtractionTierLabel(callee.AnalyzerTier)).Append(']');
+            }
+
+            builder.Append(' ').Append(callee.Callee);
+            if (callee.DeclarationPath is not null)
+            {
+                builder.Append(" -> ").Append(callee.DeclarationPath);
+            }
+            else
+            {
+                builder.Append(" (no matching declaration found)");
+            }
+
+            builder.Append('\n');
+        }
+
+        var extractionTierLabels = extractionTiers.Select(ExtractionTierLabel).Distinct().ToList();
+        return new NavigateOutcome(
+            builder.ToString().TrimEnd('\n'), Found: true, Tiers: [], ExtractionTiers: extractionTierLabels);
+    }
+
+    private static string TierLabel(SymbolMatchTier tier) => tier switch
+    {
+        SymbolMatchTier.CaseInsensitive => "case-insensitive",
+        SymbolMatchTier.Substring => "substring",
+        _ => "exact",
+    };
+
+    private static string CoverageCaveat(ExtractionCoverage coverage) => coverage switch
+    {
+        ExtractionCoverage.NotApplicable => "not applicable to this language",
+        ExtractionCoverage.KnownZero => "extraction is current for this file; this is a real zero",
+        _ => "extraction coverage for this file is unknown — this may mean no calls, or that it has not been extracted",
+    };
+
+    private static string RankLabel(CallRankSignal signal) => signal switch
+    {
+        CallRankSignal.SameFile => "same-file",
+        CallRankSignal.QualifierAgreement => "qualifier-match",
+        CallRankSignal.ImportFilenameMatch => "import-filename-match",
+        CallRankSignal.SameRepo => "same-repo",
+        _ => "name-only",
+    };
+
+    private static IEnumerable<string> ImportedModuleNames(SqliteConnection connection, IEnumerable<long> factIds)
+    {
+        foreach (var id in factIds)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = "SELECT o.path FROM fact f JOIN entity o ON o.id = f.object_id WHERE f.id = $id;";
+            command.Parameters.AddWithValue("$id", id);
+            if (command.ExecuteScalar() is string path)
+            {
+                yield return CodePaths.SymbolNameOf(path) ?? path;
+            }
+        }
+    }
+
+    private static List<string> QueryFileEntities(
+        SqliteConnection connection, string pathPredicate, string query, int limit, string? repoContains)
+    {
+        using var command = connection.CreateCommand();
+        var repoClause = repoContains is null ? string.Empty : " AND e.path LIKE '%' || $repo || '%'";
+        command.CommandText =
+            $"SELECT e.path FROM entity e WHERE e.kind = 'file' AND {pathPredicate}{repoClause} ORDER BY e.path LIMIT $limit;";
+        command.Parameters.AddWithValue("$q", query);
+        command.Parameters.AddWithValue("$limit", limit);
+        if (repoContains is not null)
+        {
+            command.Parameters.AddWithValue("$repo", repoContains);
+        }
+
+        var paths = new List<string>();
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            paths.Add(reader.GetString(0));
+        }
+
+        return paths;
+    }
+
+    // Bracketing slashes make this segment-exact — "/code/engram/" cannot match
+    // "/code/engram-docs/" — and CodePaths.Slug is the exact normalization the indexer applies
+    // to a repo name when it composes CodePaths.RepoRoot, so a query using the real repo name
+    // filters to the same paths the indexer wrote (code-nav fixup B2/constraints 1-2). Slug's
+    // output is restricted to [a-z0-9-], so the needle never itself needs LIKE-escaping.
+    private static string? RepoNeedle(string? repo) => repo is null ? null : $"/code/{CodePaths.Slug(repo)}/";
+
+    // Distinguishes "this repo isn't indexed" from "no match in this repo" (D60's rule already
+    // applied to callers/callees/neighbors) — without it, an unknown repo silently falls into
+    // the generic not-found message and reads as "no symbol", not as "wrong repo".
+    private static bool RepoIndexed(SqliteConnection connection, string repoNeedle)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT 1 FROM entity WHERE path LIKE '%' || $repo || '%' LIMIT 1;";
+        command.Parameters.AddWithValue("$repo", repoNeedle);
+        using var reader = command.ExecuteReader();
+        return reader.Read();
     }
 
     private static void AppendChildren(System.Text.StringBuilder builder, BrowseNode node, string indent)

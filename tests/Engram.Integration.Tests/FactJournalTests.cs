@@ -900,4 +900,147 @@ public sealed class FactJournalTests
         Assert.Equal(0, second.Written);
         Assert.Equal(2, FactRowCountFor(rebuilt, "/project/dup2", "an ambiguous closed belief"));
     }
+
+    // §6.6, arm 1: a journal holding two live edges from one subject on one predicate replays with
+    // both live and zero conflicts, and a second replay counts both AlreadyPresent with nothing
+    // written.
+    [Fact]
+    public void Replay_TwoLiveEdgesFromOneSubjectOnOnePredicate_BothArriveLive_ZeroConflicts()
+    {
+        using var source = new SandboxHome(initialize: false);
+        using (var connection = EngramDatabase.OpenInitialized(source.Home))
+        {
+            FactStore.Remember(
+                connection,
+                new FactWrite("/projects/x/code/a.cs", "file", "imports", "imports react", "code", "observed",
+                    Regenerable: true, ObjectPath: CodePaths.ForSymbolName("react"), ObjectKind: "symbol-name"),
+                T0);
+            FactStore.Remember(
+                connection,
+                new FactWrite("/projects/x/code/a.cs", "file", "imports", "imports lodash", "code", "observed",
+                    Regenerable: true, ObjectPath: CodePaths.ForSymbolName("lodash"), ObjectKind: "symbol-name"),
+                T0);
+            FactJournal.Write(connection, source.Home, T0.AddMinutes(1));
+        }
+
+        var facts = Reread(source.Home);
+
+        using var target = new SandboxHome(initialize: false);
+        using var rebuilt = EngramDatabase.OpenInitialized(target.Home);
+        var result = FactJournal.Replay(rebuilt, facts, apply: true);
+
+        Assert.Equal(2, result.Written);
+        Assert.Equal(0, result.Conflicted);
+        var live = FactStore.ReadLive(rebuilt)
+            .Where(f => f.SubjectPath == "/projects/x/code/a.cs" && f.Predicate == "imports")
+            .ToList();
+        Assert.Equal(2, live.Count);
+
+        var again = FactJournal.Replay(rebuilt, facts, apply: true);
+        Assert.Equal(0, again.Written);
+        Assert.Equal(2, again.AlreadyPresent);
+        Assert.Equal(0, again.Conflicted);
+    }
+
+    // §6.6, arm 2: the dry run's counts must match what apply reports for the same journal.
+    [Fact]
+    public void Replay_DryRunCounts_MatchTheApplysCounts_ForTwoLiveEdges()
+    {
+        using var source = new SandboxHome(initialize: false);
+        using (var connection = EngramDatabase.OpenInitialized(source.Home))
+        {
+            FactStore.Remember(
+                connection,
+                new FactWrite("/projects/x/code/a.cs", "file", "imports", "imports react", "code", "observed",
+                    Regenerable: true, ObjectPath: CodePaths.ForSymbolName("react"), ObjectKind: "symbol-name"),
+                T0);
+            FactStore.Remember(
+                connection,
+                new FactWrite("/projects/x/code/a.cs", "file", "imports", "imports lodash", "code", "observed",
+                    Regenerable: true, ObjectPath: CodePaths.ForSymbolName("lodash"), ObjectKind: "symbol-name"),
+                T0);
+            FactJournal.Write(connection, source.Home, T0.AddMinutes(1));
+        }
+
+        var facts = Reread(source.Home);
+
+        using var dryTarget = new SandboxHome(initialize: false);
+        using var dryStore = EngramDatabase.OpenInitialized(dryTarget.Home);
+        var dryRun = FactJournal.Replay(dryStore, facts, apply: false);
+
+        using var applyTarget = new SandboxHome(initialize: false);
+        using var applyStore = EngramDatabase.OpenInitialized(applyTarget.Home);
+        var apply = FactJournal.Replay(applyStore, facts, apply: true);
+
+        Assert.Equal(apply.Written, dryRun.Written);
+        Assert.Equal(apply.AlreadyPresent, dryRun.AlreadyPresent);
+        Assert.Equal(apply.Conflicted, dryRun.Conflicted);
+    }
+
+    // §6.6, arm 3 (the ruling's new arm, §6.5's regression guard): a null-object journal written
+    // as if pre-v13 replays into a v13 store at the same counts it always got. Every JournalFact
+    // here carries Object: null, so the replay never leaves the objectless branch of the widened
+    // Existing/WouldDisplaceALiveBelief logic.
+    [Fact]
+    public void Replay_APreV13NullObjectJournal_MatchesTheV12Counts()
+    {
+        using var target = new SandboxHome(initialize: false);
+        using var rebuilt = EngramDatabase.OpenInitialized(target.Home);
+
+        var facts = new List<JournalFact>
+        {
+            new(1, "/project/a", "note", "states", "the first thing", null, null, "project", "stated",
+                false, null, T0.ToUnixTimeSeconds(), null, null, null, T0.ToUnixTimeSeconds()),
+            new(2, "/project/b", "note", "states", "the second thing", null, null, "project", "stated",
+                false, null, T0.AddMinutes(1).ToUnixTimeSeconds(), null, null, null,
+                T0.AddMinutes(1).ToUnixTimeSeconds()),
+        };
+
+        var result = FactJournal.Replay(rebuilt, facts, apply: true);
+
+        Assert.Equal(2, result.Written);
+        Assert.Equal(0, result.AlreadyPresent);
+        Assert.Equal(0, result.Conflicted);
+        Assert.Equal(["the first thing", "the second thing"], Bodies(rebuilt));
+
+        var again = FactJournal.Replay(rebuilt, facts, apply: true);
+        Assert.Equal(0, again.Written);
+        Assert.Equal(2, again.AlreadyPresent);
+        Assert.Equal(0, again.Conflicted);
+    }
+
+    // §6.6, arm 4 (edit 4's guard, §6.4): replaying an edge into an empty store gives the object
+    // entity a real display name derived from its path, rather than leaving it nameless forever —
+    // EnsureEntity short-circuits on an existing path, so a later index run cannot fix this after
+    // the fact.
+    [Fact]
+    public void Replay_OfAnEdgeIntoAnEmptyStore_NamesTheObjectEntity()
+    {
+        // A slash in the name is percent-encoded into the path (CodePaths.ForSymbolName), so the
+        // raw path's last segment ("@angular%2Fcore") diverges from the real name — a fallback to
+        // LastSegment(path) instead of SymbolNameOf(path) would pass with "react" but not this.
+        var objectPath = CodePaths.ForSymbolName("@angular/core");
+
+        using var source = new SandboxHome(initialize: false);
+        using (var connection = EngramDatabase.OpenInitialized(source.Home))
+        {
+            FactStore.Remember(
+                connection,
+                new FactWrite("/projects/x/code/a.cs", "file", "imports", "imports @angular/core", "code", "observed",
+                    Regenerable: true, ObjectPath: objectPath, ObjectKind: "symbol-name"),
+                T0);
+            FactJournal.Write(connection, source.Home, T0.AddMinutes(1));
+        }
+
+        var facts = Reread(source.Home);
+
+        using var target = new SandboxHome(initialize: false);
+        using var rebuilt = EngramDatabase.OpenInitialized(target.Home);
+        FactJournal.Replay(rebuilt, facts, apply: true);
+
+        using var command = rebuilt.CreateCommand();
+        command.CommandText = "SELECT name FROM entity WHERE path = $path;";
+        command.Parameters.AddWithValue("$path", objectPath);
+        Assert.Equal("@angular/core", (string)command.ExecuteScalar()!);
+    }
 }

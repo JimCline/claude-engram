@@ -14,6 +14,14 @@ public class StoreCompactorTests
             new FactWrite(path, "symbol", "declares", body, "code", "observed", Regenerable: true),
             T0).FactId;
 
+    private static long Code(SqliteConnection connection, string path, string body, int? tier) =>
+        FactStore.Remember(
+            connection,
+            new FactWrite(
+                path, "symbol", "declares", body, "code", "observed",
+                Regenerable: true, AnalyzerTier: tier),
+            T0).FactId;
+
     private static long Authored(SqliteConnection connection, string path, string body) =>
         FactStore.Remember(
             connection,
@@ -252,5 +260,28 @@ public class StoreCompactorTests
         Assert.Contains("pre-compact", snapshot.Name, StringComparison.Ordinal);
         Assert.NotNull(report.SnapshotName);
         Assert.Contains("pre-compact", report.SnapshotName, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Code-navigation Phase 4 spec §9 item 13: compact never writes <c>analyzer_tier</c> — it is
+    /// structurally excluded from what §4.3 licenses derived-state repair to touch, by D8. Falsified
+    /// by adding an <c>UPDATE fact SET analyzer_tier = 0</c> beside compact's prune statement,
+    /// confirming this test reds, then reverting.
+    /// </summary>
+    [Fact]
+    public void Compact_NeverWritesAnalyzerTier_OnASurvivingFact()
+    {
+        using var sandbox = new SandboxHome(initialize: false);
+        using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
+
+        // Superseding at a differing subject keeps this one live but still exercises compact's
+        // prune/rebuild path via the closed sibling declared below.
+        var live = Code(connection, "/projects/acme/code/api/src/A.cs#Widget", "declared as public class Widget", tier: 0);
+        Code(connection, "/projects/acme/code/api/src/A.cs#Older", "declared as internal class Older", tier: null);
+        Code(connection, "/projects/acme/code/api/src/A.cs#Older", "declared as public class Older", tier: 1);
+
+        StoreCompactor.Compact(connection, sandbox.Home, path: null, apply: true, T0);
+
+        Assert.Equal(0, FactStore.ReadById(connection, live)!.AnalyzerTier);
     }
 }

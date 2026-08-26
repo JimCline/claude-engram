@@ -1,5 +1,5 @@
 tool: engram_browse
-List what memory holds under a path — children, fact counts, and the top facts at that node. A table of contents, not a search: engram_recall finds facts by content, this shows how an area is organised. Paths look like /people/jim or /projects/acme.
+List what Engram's memory holds under a path — children, fact counts, and the top facts at that node. A table of contents, not a search: engram_recall finds facts by content, this shows how an area is organised. Paths look like /people/jim or /projects/acme.
   param: path
   The memory path to list, e.g. /projects/acme.
   param: depth
@@ -39,13 +39,24 @@ Record a verdict on how two facts relate: supersedes, conflicts_with, scoped, or
   param: reason
   Why this verdict — what distinguishes or reconciles the two facts.
 
+tool: engram_navigate
+Where is a symbol defined, what does a file import, or who calls/is called by a symbol — a deterministic lookup over indexed code, not a search. Use it instead of Read/Grep to answer 'where is Z defined', 'what does Y import', 'who calls Z', or 'what does Z call'. relation is defined_at, imports, callers, or callees; neighbors is recognized but answers 'not yet indexed' rather than an empty result.
+  param: query
+  A symbol name for defined_at/callers/callees, or a file path for imports.
+  param: relation
+  One of: defined_at, imports, callers, callees, neighbors.
+  param: repo
+  Restrict matches to one repo's indexed code, by its slug.
+  param: limit
+  Maximum matches returned. Defaults to 20, clamped to 1-100.
+
 tool: engram_pin
 Pin a fact for this session: engram_recall guarantees it top position whenever the query matches it, without pulling it into results it would not otherwise match. Use it to keep a fact from being crowded out of the digest for the rest of a task where it keeps mattering. The pin does not persist past this session — engram_unpin releases it early.
   param: fact_id
   The bracketed id of the fact to pin, e.g. "f42".
 
 tool: engram_recall
-Check memory BEFORE reading files or exploring the repo. Searches Engram's stored facts (decisions, conventions, gotchas, contracts) and returns a token-budgeted, ranked digest with fact handles and a coverage estimate. Call this first for any question about how this project works, what was decided, or why something is the way it is — it is far cheaper than rediscovering the answer by reading source.
+Check Engram's memory BEFORE reading files or exploring the repo. Searches Engram's stored facts (decisions, conventions, gotchas, contracts) and returns a token-budgeted, ranked digest with fact handles and a coverage estimate. Call this first for any question about how this project works, what was decided, or why something is the way it is — it is far cheaper than rediscovering the answer by reading source.
   param: query
   What you want to know, as a few keywords or a short question.
   param: budget_tokens

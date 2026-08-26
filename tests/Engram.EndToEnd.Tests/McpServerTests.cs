@@ -149,7 +149,8 @@ public class McpServerTests
             // A freshly-initialized home ships [mcp] tool_profile = "default" (DefaultConfig),
             // which advertises everything except the three lifecycle tools (D-5) — see
             // ToolProfileEndToEndTests for the `full` profile's tool list.
-            Assert.Equal(["engram_browse", "engram_expand", "engram_forget", "engram_index_repo", "engram_judge", "engram_pin", "engram_recall", "engram_remember", "engram_revise", "engram_unpin"], toolNames);
+            var fullProfileToolNames = await ToolProfileAssertions.FullProfileToolNamesAsync(cancellationToken);
+            ToolProfileAssertions.AssertIsExactlyTheDefaultProfileToolSet(toolNames, fullProfileToolNames);
 
             var hitText = await client.CallToolTextAsync(
                 "engram_recall", new JsonObject { ["query"] = "AOT packaging and Roslyn" }, cancellationToken);
@@ -215,7 +216,8 @@ public class McpServerTests
                 .ToArray();
 
             // No config file at all reads the same as an unconfigured [mcp] section: `default`.
-            Assert.Equal(["engram_browse", "engram_expand", "engram_forget", "engram_index_repo", "engram_judge", "engram_pin", "engram_recall", "engram_remember", "engram_revise", "engram_unpin"], toolNames);
+            var fullProfileToolNames = await ToolProfileAssertions.FullProfileToolNamesAsync(cancellationToken);
+            ToolProfileAssertions.AssertIsExactlyTheDefaultProfileToolSet(toolNames, fullProfileToolNames);
 
             var telemetryPath = Path.Combine(home.Root, "telemetry.jsonl");
             Assert.False(File.Exists(telemetryPath));

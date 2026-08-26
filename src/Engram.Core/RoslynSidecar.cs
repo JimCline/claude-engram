@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Runtime.CompilerServices;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 
@@ -130,7 +131,10 @@ public static class RoslynSidecar
         }
     }
 
-    private static DeepAnalysis? Parse(string line)
+    // internal rather than private: item 26's falsification (a positional zip instead of the
+    // id map) needs to hand-craft JSON with a gap in the id sequence, which Analyze()'s real
+    // subprocess round-trip cannot produce from valid C#.
+    internal static DeepAnalysis? Parse(string line)
     {
         JsonObject? record;
         try
@@ -149,10 +153,11 @@ public static class RoslynSidecar
 
         if (record["error"]?.GetValue<string>() is { } error)
         {
-            return new DeepAnalysis(path, [], [], error);
+            return new DeepAnalysis(path, [], [], error, [], Tier: 2);
         }
 
         var symbols = new List<DeepSymbol>();
+        var symbolsById = new Dictionary<int, DeepSymbol>();
         if (record["symbols"] is JsonArray symbolArray)
         {
             foreach (var node in symbolArray)
@@ -161,14 +166,39 @@ public static class RoslynSidecar
                     && symbol["name"]?.GetValue<string>() is { Length: > 0 } name
                     && symbol["declaration"]?.GetValue<string>() is { } declaration)
                 {
-                    symbols.Add(new DeepSymbol(
+                    var deepSymbol = new DeepSymbol(
                         name,
                         symbol["kind"]?.GetValue<string>() ?? "type",
                         declaration,
                         symbol["doc"]?.GetValue<string>(),
                         symbol["scope"]?.GetValue<string>(),
-                        symbol["params"]?.GetValue<string>()));
+                        symbol["params"]?.GetValue<string>());
+                    symbols.Add(deepSymbol);
+
+                    if (symbol["id"]?.GetValue<int>() is { } id)
+                    {
+                        symbolsById[id] = deepSymbol;
+                    }
                 }
+            }
+        }
+
+        // The sidecar reports structure, core does addressing (§5.3.1): the wire carries an
+        // explicit id per symbol and per call, never an array position — Fragments() drops
+        // empty-name symbols, so a positional zip would silently misattribute the calls that
+        // survive it to whichever symbol happened to land at the same index (item 26).
+        var fragmentBySymbol = new Dictionary<DeepSymbol, string>(ReferenceEqualityComparer.Instance);
+        foreach (var (fragment, symbol) in DeepTier.Fragments(symbols))
+        {
+            fragmentBySymbol[symbol] = fragment;
+        }
+
+        var fragmentById = new Dictionary<int, string>();
+        foreach (var (id, symbol) in symbolsById)
+        {
+            if (fragmentBySymbol.TryGetValue(symbol, out var fragment))
+            {
+                fragmentById[id] = fragment;
             }
         }
 
@@ -184,6 +214,24 @@ public static class RoslynSidecar
             }
         }
 
-        return new DeepAnalysis(path, symbols, imports, null);
+        var calls = new List<DeepCall>();
+        if (record["calls"] is JsonArray callArray)
+        {
+            foreach (var node in callArray)
+            {
+                if (node is JsonObject call
+                    && call["callee"]?.GetValue<string>() is { Length: > 0 } callee
+                    && call["line"]?.GetValue<int>() is { } callLine)
+                {
+                    var enclosingFragment = call["enclosing_id"]?.GetValue<int>() is { } enclosingId
+                        && fragmentById.TryGetValue(enclosingId, out var f)
+                            ? f
+                            : null;
+                    calls.Add(new DeepCall(enclosingFragment, callee, callLine));
+                }
+            }
+        }
+
+        return new DeepAnalysis(path, symbols, imports, null, calls, Tier: 2);
     }
 }

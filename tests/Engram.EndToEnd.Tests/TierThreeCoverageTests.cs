@@ -39,4 +39,33 @@ public class TierThreeCoverageTests
             + "ships. To run it:\n"
             + "  dotnet publish src/Engram.Cli/Engram.Cli.csproj -c Release -r <rid> -o out\n"
             + "and re-run; ./out/engram is picked up automatically.";
+
+    /// <summary>
+    /// Tier-degradation close guard (§5 Guard 2 / acceptance item 10 of
+    /// docs/tier-degradation-close-guard-spec.md). A plain publish tree is a legitimate
+    /// configuration (this repo tried failing tier 3 outright on one and reverted it), so
+    /// this asserts the disjunction rather than that tier 2 ran: either the run reports
+    /// tier-2 coverage, or it says why it didn't. Silence is the only thing that was wrong.
+    /// </summary>
+    [Fact]
+    public void IndexingACSharpFixture_EitherCoversTier2_OrSaysItDidNot()
+    {
+        Assert.SkipUnless(EndToEndBinary.Path is not null, SkipMessage());
+
+        using var home = new TestHome();
+        var repo = Path.Combine(home.Root, "checkout");
+        Directory.CreateDirectory(repo);
+        File.WriteAllText(
+            Path.Combine(repo, "Widget.cs"),
+            "namespace Demo;\n\npublic sealed class Widget\n{\n    public void Run() { }\n}\n");
+
+        var (exitCode, stdout, _) = EngramProcess.Run(home.Root, "index", "--full", "--apply", repo);
+        Assert.Equal(0, exitCode);
+
+        var coveredTierTwo = stdout.Contains("tier 2: deep analyzer covered", StringComparison.Ordinal);
+        var saidItDidNot = stdout.Contains("tier 2: no deep analyzer available", StringComparison.Ordinal);
+        Assert.True(
+            coveredTierTwo || saidItDidNot,
+            "index output neither reported tier-2 coverage nor said it didn't:\n" + stdout);
+    }
 }

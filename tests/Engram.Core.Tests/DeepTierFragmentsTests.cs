@@ -86,10 +86,73 @@ public class DeepTierFragmentsTests
         var merged = DeepTier.Merge(
             "/projects/p/code/r/Http.cs",
             [],
-            new DeepAnalysis("Http.cs", [first, second], [], null));
+            new DeepAnalysis("Http.cs", [first, second], [], null, [], Tier: 1));
 
         var declared = Assert.Single(merged, c => c.Predicate == "declared-as");
         Assert.Equal("first", declared.Body);
         Assert.EndsWith("#Http/Get(string key)", declared.EntityPath, StringComparison.Ordinal);
+    }
+
+    // code-navigation Phase 4 spec §9 item 4: Merge stamps by producer, not uniformly — the
+    // carried-over tier-0 file-level "about" keeps AnalyzerTier 0 while the deep-tier-sourced
+    // declared-as and calls candidates take analysis.Tier, in one merged result. Falsify by
+    // stamping the whole returned list with one tier (e.g. always analysis.Tier): the "about"
+    // assertion reddens because tier 0 is no longer the file-level candidate's tier.
+    [Fact]
+    public void Merge_StampsTheCarriedOverAboutAtTierZero_AndDeepCandidatesAtTheAnalysisTier()
+    {
+        var tierZero = new List<CodeCandidate>
+        {
+            new("/projects/p/code/r/Widget.cs", "file", "Widget.cs", "about", "A widget."),
+        };
+        var symbol = Symbol("Run") with { Declaration = "public void Run()" };
+        var analysis = new DeepAnalysis(
+            "Widget.cs",
+            [symbol],
+            [],
+            null,
+            [new DeepCall("Run", "Helper", 1)],
+            Tier: 2);
+
+        var merged = DeepTier.Merge("/projects/p/code/r/Widget.cs", tierZero, analysis);
+
+        var about = Assert.Single(merged, c => c.Predicate == "about" && c.Kind == "file");
+        Assert.Equal(0, about.AnalyzerTier);
+
+        var declared = Assert.Single(merged, c => c.Predicate == "declared-as");
+        Assert.Equal(2, declared.AnalyzerTier);
+
+        var call = Assert.Single(merged, c => c.Predicate == "calls");
+        Assert.Equal(2, call.AnalyzerTier);
+    }
+
+    // item 5: the per-file error path stamps tier 0 for the whole file, never the attempted
+    // tier — falsify by having the error path return tierZero with AnalyzerTier overwritten to
+    // analysis.Tier, which reddens this assertion.
+    [Fact]
+    public void Merge_OnAPerFileError_KeepsEveryCarriedCandidateAtTierZero()
+    {
+        var tierZero = new List<CodeCandidate>
+        {
+            new("/projects/p/code/r/Widget.cs", "file", "Widget.cs", "about", "A widget."),
+        };
+        var analysis = new DeepAnalysis("Widget.cs", [], [], "parse error", [], Tier: 2);
+
+        var merged = DeepTier.Merge("/projects/p/code/r/Widget.cs", tierZero, analysis);
+
+        Assert.Equal(0, Assert.Single(merged).AnalyzerTier);
+    }
+
+    // item 6 / §7.1: a missing deep tier stamps tier 0, never the registry's entitled tier —
+    // Merge takes its tier from analysis.Tier alone, so a caller that never ran a deep analyzer
+    // (tierZero only, no Merge call) must not read as anything but tier 0. Falsify by defaulting
+    // CodeCandidate.AnalyzerTier to something other than 0.
+    [Fact]
+    public void ATierZeroOnlyCandidate_DefaultsToAnalyzerTierZero_NotARegistryEntitlement()
+    {
+        var candidate = new CodeCandidate(
+            "/projects/p/code/r/Widget.cs", "file", "Widget.cs", "about", "A widget.");
+
+        Assert.Equal(0, candidate.AnalyzerTier);
     }
 }

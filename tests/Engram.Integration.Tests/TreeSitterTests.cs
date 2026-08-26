@@ -61,6 +61,71 @@ public class TreeSitterTests
     }
 
     /// <summary>
+    /// Rev-3 acceptance items 22-24 (docs/code-graph-all-members-spec.md §6.6.2/§6.7): the
+    /// Scanner fixture's private-keyword and `#name` overload sets each disambiguate by
+    /// parameter list, not just by name. Falsify: drop <c>@params</c> from the
+    /// method_signature+property_identifier pattern and the first assert reddens; drop it
+    /// (or remove the method_signature+private_property_identifier pattern entirely) and
+    /// the second reddens, while the first stays green — the two capture groups are
+    /// independently load-bearing, not one hiding behind the other.
+    /// </summary>
+    [Fact]
+    public void ScannerFixture_OverloadSets_DisambiguateByParameterList_ForPrivateAndHashPrivate()
+    {
+        var dir = GrammarDir();
+        Assert.SkipWhen(dir is null, "ENGRAM_TEST_TREE_SITTER_DIR does not point at the compiled grammars.");
+
+        using var runtime = TreeSitter.TryCreate(dir!, []);
+        var analysis = runtime!.Analyze(TypeScript(), "fixture.ts", TypeScript().Fixture!.Source);
+        Assert.NotNull(analysis);
+        var fragments = DeepTier.Fragments(analysis!.Symbols).Select(f => f.Fragment).ToHashSet();
+
+        // Item 22: two `private`-keyword overloads of `reset` yield distinct addresses.
+        Assert.True(
+            fragments.IsSupersetOf(["Scanner/reset()", "Scanner/reset(n: number)", "Scanner/reset(n?: number)"]),
+            $"expected three distinct `reset` addresses, got: {string.Join(", ", fragments.Where(f => f.StartsWith("Scanner/reset")))}");
+
+        // Item 23/24: two `#name` overloads of `#clear` yield distinct addresses — the
+        // method_signature+private_property_identifier pattern this amendment adds.
+        Assert.True(
+            fragments.IsSupersetOf(["Scanner/#clear()", "Scanner/#clear(n: number)", "Scanner/#clear(n?: number)"]),
+            $"expected three distinct `#clear` addresses, got: {string.Join(", ", fragments.Where(f => f.StartsWith("Scanner/#clear")))}");
+    }
+
+    [Fact]
+    public void AbstractClassFixture_HashPrivateOverloads_DisambiguateByParameterList()
+    {
+        var dir = GrammarDir();
+        Assert.SkipWhen(dir is null, "ENGRAM_TEST_TREE_SITTER_DIR does not point at the compiled grammars.");
+
+        const string source = """
+            export abstract class Repo {
+                abstract fetch(): void;
+                plain(): void {}
+                #save(): void;
+                #save(x: number): void;
+                #save(x?: number): void {}
+            }
+            """;
+
+        using var runtime = TreeSitter.TryCreate(dir!, []);
+        var analysis = runtime!.Analyze(TypeScript(), "fixture.ts", source);
+        Assert.NotNull(analysis);
+        var fragments = DeepTier.Fragments(analysis!.Symbols).Select(f => f.Fragment).ToHashSet();
+
+        // abstract-class-member-parity §5.1: method_signature + private_property_identifier
+        // added to abstract_class_declaration — three distinct `#save` overload addresses.
+        Assert.True(
+            fragments.IsSupersetOf(["Repo/#save()", "Repo/#save(x: number)", "Repo/#save(x?: number)"]),
+            $"expected three distinct `#save` addresses, got: {string.Join(", ", fragments.Where(f => f.StartsWith("Repo/#save")))}");
+
+        // Item 3: ordinary (property_identifier) abstract-class members still resolve —
+        // §5.1 added coverage, it didn't shadow anything.
+        Assert.Contains("Repo/fetch", fragments);
+        Assert.Contains("Repo/plain", fragments);
+    }
+
+    /// <summary>
     /// Registry shape, no native code involved: a tier-1 row missing any of its tier-1
     /// columns would silently index at tier 0 forever, and grammars on a row of another
     /// tier would be decoration nothing executes.
@@ -263,4 +328,75 @@ public class TreeSitterTests
 
     private static LanguageDefinition TypeScript() =>
         LanguageRegistry.All.Single(l => l.Id == "typescript");
+
+    private const string WidgetTs =
+        """
+        interface Widget {
+            count: number;
+        }
+        """;
+
+    private static IndexReport Index(
+        Microsoft.Data.Sqlite.SqliteConnection connection, SandboxHome sandbox, string repo, bool full) =>
+        CodeIndexer.Index(
+            connection,
+            sandbox.Home,
+            ConfigFile.Empty,
+            IndexingSettings.Default,
+            new IndexOptions(repo, Apply: true, Drain: false, Full: full),
+            DateTimeOffset.UtcNow);
+
+    /// <summary>
+    /// Tier-degradation close guard (§5 Guard 1, applied to tier 1 per §1.3 / acceptance item
+    /// 2 of docs/tier-degradation-close-guard-spec.md): the identical guard tier 2 gets,
+    /// proven on tree-sitter's own fallback path — load-bearing, because a fix scoped to tier
+    /// 2 only ships half the defect.
+    /// </summary>
+    [Fact]
+    public void DegradedReindex_DoesNotCloseMemberFacts_WhenGrammarsBecomeUnavailable()
+    {
+        var dir = GrammarDir();
+        Assert.SkipWhen(dir is null, "ENGRAM_TEST_TREE_SITTER_DIR does not point at the compiled grammars.");
+
+        using var sandbox = new SandboxHome();
+        var repo = Path.Combine(sandbox.Home.Root, "widget-repo");
+        Directory.CreateDirectory(repo);
+        File.WriteAllText(Path.Combine(repo, "widget.ts"), WidgetTs);
+        using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
+
+        var previous = Environment.GetEnvironmentVariable(TreeSitter.EnvironmentOverride);
+        try
+        {
+            Environment.SetEnvironmentVariable(TreeSitter.EnvironmentOverride, dir);
+            var healthy = Index(connection, sandbox, repo, full: false);
+            Assert.Contains(healthy.Notes, note => note.StartsWith("tier 1:", StringComparison.Ordinal));
+
+            // Entities are addressed under the repo's registered project path
+            // (healthy.RepoPath, e.g. /projects/<slug>/code/<slug>), not the sandbox's raw
+            // filesystem directory — CodeIndexer.EnsureRepo maps one to the other on first
+            // index. Facts are asserted against that address, the same one CodeIndexer wrote.
+            var memberPath = CodePaths.ForSymbol(CodePaths.ForFile(healthy.RepoPath, "widget.ts"), "Widget/count");
+            var topPath = CodePaths.ForSymbol(CodePaths.ForFile(healthy.RepoPath, "widget.ts"), "Widget");
+            Assert.Contains(FactStore.ReadLive(connection), f => f.SubjectPath == memberPath && f.Predicate == "declared-as");
+
+            // Same unchanged tree, but this run cannot reach the grammars — a broken
+            // explicit override, not absence, so it goes through TreeSitter.Locate the way a
+            // real degraded environment would; that contract is unchanged by this guard.
+            var brokenOverride = Path.Combine(sandbox.Home.Root, "no-such-grammars");
+            Environment.SetEnvironmentVariable(TreeSitter.EnvironmentOverride, brokenOverride);
+            var degraded = Index(connection, sandbox, repo, full: true);
+
+            Assert.Contains(degraded.Notes, note =>
+                note.StartsWith("tier 1: no tree-sitter grammars available", StringComparison.Ordinal));
+            Assert.True(degraded.ClosesSkipped > 0);
+
+            var facts = FactStore.ReadLive(connection);
+            Assert.Contains(facts, f => f.SubjectPath == memberPath && f.Predicate == "declared-as");
+            Assert.Contains(facts, f => f.SubjectPath == topPath && f.Predicate == "declared-as");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(TreeSitter.EnvironmentOverride, previous);
+        }
+    }
 }

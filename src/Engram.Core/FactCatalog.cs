@@ -35,7 +35,7 @@ public static class FactCatalog
     /// </remarks>
     public static IReadOnlyList<CannedFact> ReadLongTerm(SqliteConnection connection, DateTimeOffset now)
     {
-        var facts = FactStore.ReadLive(connection);
+        var facts = FactStore.ReadLive(connection, excludeEdges: true);
         var topics = FactStore.ReadEntityNames(connection, CannedFactSeeder.TopicKind);
         var versions = FactStore.VersionCounts(connection);
         var relationCounts = FactRelations.RelationCounts(connection);

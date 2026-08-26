@@ -60,7 +60,8 @@ public sealed record LanguageDefinition(
     LanguageFixture? Fixture,
     IReadOnlyList<TreeSitterGrammar>? Grammars = null,
     string? DeclarationQuery = null,
-    string? ImportQuery = null)
+    string? ImportQuery = null,
+    string? CallQuery = null)
 {
     /// <summary>The grammar that parses one of this row's extensions, or null at tier 0/2.</summary>
     public TreeSitterGrammar? GrammarFor(string extension)
@@ -109,11 +110,24 @@ public static class LanguageRegistry
     // not program-anchored, so a class matches wherever it sits, and each carries @scope
     // beside @name — the binding has no node navigation on purpose, nesting is the
     // pattern's shape, and ts_query_new validates that shape like everything else. @params
-    // feeds overload disambiguation; a `private` member is filtered on its declaration
-    // line, and `#name` members never match because (property_identifier) is not
-    // (private_property_identifier). Verified against the compiled grammars, where the
-    // vocabularies differ: TS names classes with (type_identifier) and has interface, enum,
-    // type alias and abstract class node types JS does not.
+    // feeds overload disambiguation. Members are captured at every visibility (all-members
+    // spec): a `private` member has no runtime effect in TS/JS and is captured the same as
+    // any other. `#name` members are the one true runtime-enforced privacy the language
+    // has — the grammar names that name a (private_property_identifier), a distinct node
+    // type from (property_identifier), so each member pattern below is duplicated once for
+    // it; the `#` is part of the captured text and is kept, since stripping it would
+    // collide `#count` with a public `count` in the same class. Verified against the
+    // compiled grammars, where the vocabularies differ: TS names classes with
+    // (type_identifier) and has interface, enum, type alias and abstract class node types
+    // JS does not. method_signature (the bodiless overload-declaration form) pairs with
+    // private_property_identifier too (E7, verified against the compiled grammar: a
+    // `#name(): void;` / `#name(n: number): void;` overload set parses and each signature
+    // is captured at its own address, distinct from the implementation) — without this
+    // pairing an overload signature on a `#`-private method matches nothing and only the
+    // implementation is emitted. Two pairings stay correctly absent, by construction: an
+    // interface cannot declare a `#`-private member (interface_declaration never gets a
+    // private_property_identifier row), and `abstract` and `#`-private are mutually
+    // exclusive (abstract_method_signature never gets one either).
     private const string TypeScriptDeclarations = """
         (program (function_declaration name: (identifier) @name parameters: (formal_parameters) @params))
         (program (generator_function_declaration name: (identifier) @name parameters: (formal_parameters) @params))
@@ -134,12 +148,23 @@ public static class LanguageRegistry
         (program (export_statement declaration: (lexical_declaration (variable_declarator name: (identifier) @name))))
         (program (export_statement declaration: (variable_declaration (variable_declarator name: (identifier) @name))))
         (class_declaration name: (type_identifier) @scope body: (class_body (method_definition name: (property_identifier) @name parameters: (formal_parameters) @params)))
+        (class_declaration name: (type_identifier) @scope body: (class_body (method_definition name: (private_property_identifier) @name parameters: (formal_parameters) @params)))
         (class_declaration name: (type_identifier) @scope body: (class_body (method_signature name: (property_identifier) @name parameters: (formal_parameters) @params)))
+        (class_declaration name: (type_identifier) @scope body: (class_body (method_signature name: (private_property_identifier) @name parameters: (formal_parameters) @params)))
         (class_declaration name: (type_identifier) @scope body: (class_body (public_field_definition name: (property_identifier) @name)))
+        (class_declaration name: (type_identifier) @scope body: (class_body (public_field_definition name: (private_property_identifier) @name)))
         (abstract_class_declaration name: (type_identifier) @scope body: (class_body (method_definition name: (property_identifier) @name parameters: (formal_parameters) @params)))
+        (abstract_class_declaration name: (type_identifier) @scope body: (class_body (method_definition name: (private_property_identifier) @name parameters: (formal_parameters) @params)))
         (abstract_class_declaration name: (type_identifier) @scope body: (class_body (method_signature name: (property_identifier) @name parameters: (formal_parameters) @params)))
+        (abstract_class_declaration name: (type_identifier) @scope body: (class_body (method_signature name: (private_property_identifier) @name parameters: (formal_parameters) @params)))
+        ; no abstract_method_signature + private_property_identifier pairing: an abstract member
+        ; must be reachable from a subclass, so TypeScript rejects both `abstract #foo()` and
+        ; `private abstract foo()`. The construct does not exist, rather than being skipped.
+        ; Confirmed against tsc: TS18019 ('abstract' modifier cannot be used with a private
+        ; identifier) and TS1243 ('private' modifier cannot be used with 'abstract' modifier).
         (abstract_class_declaration name: (type_identifier) @scope body: (class_body (abstract_method_signature name: (property_identifier) @name parameters: (formal_parameters) @params)))
         (abstract_class_declaration name: (type_identifier) @scope body: (class_body (public_field_definition name: (property_identifier) @name)))
+        (abstract_class_declaration name: (type_identifier) @scope body: (class_body (public_field_definition name: (private_property_identifier) @name)))
         (interface_declaration name: (type_identifier) @scope body: (interface_body (method_signature name: (property_identifier) @name parameters: (formal_parameters) @params)))
         (interface_declaration name: (type_identifier) @scope body: (interface_body (property_signature name: (property_identifier) @name)))
         """;
@@ -154,7 +179,9 @@ public static class LanguageRegistry
         (program (export_statement declaration: (lexical_declaration (variable_declarator name: (identifier) @name))))
         (program (export_statement declaration: (variable_declaration (variable_declarator name: (identifier) @name))))
         (class_declaration name: (identifier) @scope body: (class_body (method_definition name: (property_identifier) @name parameters: (formal_parameters) @params)))
+        (class_declaration name: (identifier) @scope body: (class_body (method_definition name: (private_property_identifier) @name parameters: (formal_parameters) @params)))
         (class_declaration name: (identifier) @scope body: (class_body (field_definition property: (property_identifier) @name)))
+        (class_declaration name: (identifier) @scope body: (class_body (field_definition property: (private_property_identifier) @name)))
         """;
 
     // Shared across TS and JS: import statements, require(), and dynamic import() all use
@@ -165,6 +192,16 @@ public static class LanguageRegistry
         (call_expression function: (identifier) @_fn arguments: (arguments (string (string_fragment) @module)) (#eq? @_fn "require"))
         (call_expression function: (import) arguments: (arguments (string (string_fragment) @module)))
         """;
+
+    // Flat by design (§5.2): a nested query has no way to reach a call inside an if/for/try
+    // body (tree-sitter's query language has no descendant operator, and the field-chain
+    // patterns above only match a fixed statement shape), so attribution is a parent walk
+    // in TreeSitter.cs instead of a query shape. TS and JS get their own compiled query
+    // (D47) even though the pattern text is identical, since ts_query_new validates node
+    // types per grammar.
+    private const string TypeScriptCalls = "(call_expression function: (_) @callee)";
+
+    private const string JavaScriptCalls = "(call_expression function: (_) @callee)";
 
     /// <summary>Catch-all for files no row claims: impressions only, nothing extracted.</summary>
     public static readonly LanguageDefinition Text = new(
@@ -236,9 +273,18 @@ public static class LanguageRegistry
                     export class Scanner {
                         depth = 1;
                         private cache = "";
+                        #id = "";
                         probe(): void;
                         probe(deep: boolean): void;
                         probe(deep?: boolean): void {}
+                        private reset(): void;
+                        private reset(n: number): void;
+                        private reset(n?: number): void {}
+                        #clear(): void;
+                        #clear(n: number): void;
+                        #clear(n?: number): void {}
+                        @deprecated
+                        private legacy(): void {}
                         get size(): number { return this.depth; }
                     }
                     """,
@@ -251,9 +297,18 @@ public static class LanguageRegistry
                     "Options/limit",
                     "Scanner",
                     "Scanner/depth",
+                    "Scanner/cache",
+                    "Scanner/#id",
                     "Scanner/probe()",
                     "Scanner/probe(deep: boolean)",
                     "Scanner/probe(deep?: boolean)",
+                    "Scanner/reset()",
+                    "Scanner/reset(n: number)",
+                    "Scanner/reset(n?: number)",
+                    "Scanner/#clear()",
+                    "Scanner/#clear(n: number)",
+                    "Scanner/#clear(n?: number)",
+                    "Scanner/legacy",
                     "Scanner/size",
                     "scan",
                 ]),
@@ -263,7 +318,8 @@ public static class LanguageRegistry
                 new(Library: "tsx", Symbol: "tree_sitter_tsx", Extensions: [".tsx"]),
             ],
             DeclarationQuery: TypeScriptDeclarations,
-            ImportQuery: ScriptImports),
+            ImportQuery: ScriptImports,
+            CallQuery: TypeScriptCalls),
         new(
             Id: "javascript",
             DisplayName: "JavaScript",
@@ -298,13 +354,15 @@ public static class LanguageRegistry
                 [
                     "Runner",
                     "Runner/limit",
+                    "Runner/#secret",
                     "Runner/run()",
                     "Runner/run(times)",
                     "main",
                 ]),
             Grammars: [new(Library: "javascript", Symbol: "tree_sitter_javascript", Extensions: [])],
             DeclarationQuery: JavaScriptDeclarations,
-            ImportQuery: ScriptImports),
+            ImportQuery: ScriptImports,
+            CallQuery: JavaScriptCalls),
         new(
             Id: "markdown",
             DisplayName: "Markdown",
