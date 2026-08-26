@@ -103,6 +103,13 @@ public sealed class EngramHome
     public string MemoryGuardStatePath { get; }
 
     /// <summary>
+    /// Sessions <c>lookup-nudge</c> has already nudged once this run, one <c>session_id</c> per
+    /// line. Separate from <see cref="MemoryGuardStatePath"/> so the two nudges never spend each
+    /// other's one-shot.
+    /// </summary>
+    public string LookupNudgeStatePath { get; }
+
+    /// <summary>
     /// Claude Code's user-scope settings file. It is outside the Engram home on purpose — it
     /// belongs to Claude Code — but it is resolved here because this is the only place allowed
     /// to turn a home directory into a path.
@@ -135,6 +142,7 @@ public sealed class EngramHome
         IndexProgressPath = Path.Combine(root, "indexing.json");
         GrantedPermissionsPath = Path.Combine(root, "granted-permissions.json");
         MemoryGuardStatePath = Path.Combine(root, "memory-guard.state");
+        LookupNudgeStatePath = Path.Combine(root, "lookup-nudge.state");
         ClaudeSettingsPath = Path.Combine(userProfileDirectory, ".claude", "settings.json");
         ClaudeProjectsDir = Path.Combine(userProfileDirectory, ".claude", "projects");
     }

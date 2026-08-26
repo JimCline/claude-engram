@@ -19,6 +19,7 @@ internal sealed record HookStdinInput(
     [property: JsonPropertyName("agent_id")] string? AgentId = null,
     [property: JsonPropertyName("agent_type")] string? AgentType = null,
     [property: JsonPropertyName("prompt")] string? Prompt = null,
+    [property: JsonPropertyName("tool_name")] string? ToolName = null,
     [property: JsonPropertyName("tool_input")] HookToolInput? ToolInput = null,
     // PostCompact carries the whole compaction summary inline, so the harvester (D62 2b)
     // never reads the transcript: no tail-read, no poll for a record a separate write path
@@ -36,9 +37,12 @@ internal sealed record HookStdinInput(
 
 // PostToolUse puts the edited file here, for the four tools file-touched matches on. Only
 // file_path is modelled: MultiEdit still names one file, and the rest of tool_input is that
-// tool's own business.
+// tool's own business. pattern and command are lookup-nudge's inputs — Grep and Glob name the
+// query in pattern, Bash carries the whole command line and the pattern is dug out of it.
 internal sealed record HookToolInput(
-    [property: JsonPropertyName("file_path")] string? FilePath = null);
+    [property: JsonPropertyName("file_path")] string? FilePath = null,
+    [property: JsonPropertyName("pattern")] string? Pattern = null,
+    [property: JsonPropertyName("command")] string? Command = null);
 
 // PreToolUse's own shape — AdditionalContextHookOutput cannot be reused, since
 // hookSpecificOutput.additionalContext is required there and a permission decision carries none.

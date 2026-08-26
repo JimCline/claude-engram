@@ -18,7 +18,7 @@ internal static class HookCommand
 
         var eventName = rest[0];
         if (eventName is not ("session-start" or "subagent-start" or "pre-compact" or "post-compact"
-            or "user-prompt" or "file-touched" or "memory-guard"))
+            or "user-prompt" or "file-touched" or "memory-guard" or "lookup-nudge"))
         {
             return Usage(stderr);
         }
@@ -50,6 +50,7 @@ internal static class HookCommand
             "user-prompt" => RunUserPrompt(home, stdout, ReadPayload()),
             "file-touched" => RunFileTouched(home, ReadPayload()),
             "memory-guard" => RunMemoryGuard(home, stdout, ReadPayload()),
+            "lookup-nudge" => RunLookupNudge(home, stdout, ReadPayload()),
             _ => 0,
         };
     }
@@ -712,14 +713,14 @@ internal static class HookCommand
             return 0;
         }
 
-        if (MemoryGuardState.Contains(home, sessionId))
+        if (SessionNudgeState.Contains(home.MemoryGuardStatePath, sessionId))
         {
             return 0;
         }
 
         // Before emitting the deny, not after — a crash between the two must not produce a
         // session that gets denied twice; the reverse order risks exactly that.
-        if (!MemoryGuardState.TryAppend(home, sessionId))
+        if (!SessionNudgeState.TryAppend(home.MemoryGuardStatePath, sessionId))
         {
             return 0;
         }
@@ -749,6 +750,87 @@ internal static class HookCommand
         + "instead — supersede the auto-captured id if one was printed. If the file write is "
         + "genuinely right (content that must stay human-browsable on disk), re-run the exact "
         + "same call and it will proceed; this reminder fires once per session.";
+
+    // PreToolUse fires ahead of every Grep, Glob and Bash — a wider net than memory-guard's
+    // Write|Edit|MultiEdit and the widest of any hook here — so the non-matching path must do
+    // nothing beyond parse-stdin -> shape check -> exit 0, with no state, telemetry or database
+    // touch before SymbolQueryDetector has said yes. Bash is in the matcher deliberately, and it
+    // is the expensive half: a shell `grep -rn ProcessFile` is the exact call this exists to
+    // catch, and a matcher of Grep|Glob alone would miss the incident that motivated the hook
+    // while still taxing the two tools it does cover.
+    //
+    // The classifier, not the matcher, is what keeps this cheap in practice — see
+    // SymbolQueryDetector, where every rule is a reason to stay silent. Ordinary word searches,
+    // literals, TODOs and glob paths fall out before any I/O happens.
+    private static int RunLookupNudge(EngramHome home, TextWriter stdout, HookStdinInput? payload)
+    {
+        if (payload?.ToolInput is not { } toolInput)
+        {
+            return 0;
+        }
+
+        // Grep and Glob name the query outright; Bash hides it in a command line, and a command
+        // that is not a search at all yields null here without touching anything else.
+        var query = payload.ToolName switch
+        {
+            "Grep" or "Glob" => toolInput.Pattern,
+            "Bash" => SymbolQueryDetector.ExtractSearchPattern(toolInput.Command),
+            _ => null,
+        };
+
+        if (!SymbolQueryDetector.LooksLikeSymbol(query))
+        {
+            return 0;
+        }
+
+        if (Precedence(home) == MemoryPrecedence.Off)
+        {
+            return 0;
+        }
+
+        if (payload.SessionId is not { Length: > 0 } sessionId)
+        {
+            return 0;
+        }
+
+        if (SessionNudgeState.Contains(home.LookupNudgeStatePath, sessionId))
+        {
+            return 0;
+        }
+
+        // Before the deny, for the reason memory-guard records above: a crash between the two
+        // must not leave a session that gets denied twice.
+        if (!SessionNudgeState.TryAppend(home.LookupNudgeStatePath, sessionId))
+        {
+            return 0;
+        }
+
+        try
+        {
+            Telemetry.Append(home, new TelemetryRecord(
+                Timestamp: DateTimeOffset.UtcNow.ToString("o"),
+                SessionId: sessionId,
+                Kind: TelemetryEventKind.LookupNudge,
+                Query: query));
+        }
+        catch
+        {
+        }
+
+        WriteJson(stdout, HookJsonContext.Default.PreToolUseHookOutput,
+            new PreToolUseHookOutput(new PreToolUseHookSpecificOutput(
+                "PreToolUse", "deny", LookupNudgeDenyReason(query!))));
+
+        return 0;
+    }
+
+    private static string LookupNudgeDenyReason(string query) =>
+        $"Engram lookup nudge: \"{query}\" is shaped like a symbol, and Engram indexes this repo's "
+        + "code graph. Try engram_navigate first — relation defined_at for where it lives, callers "
+        + "or callees to trace a call chain, imports for a file's dependencies. If the repo has "
+        + "not been indexed yet, engram_index_repo builds the graph. If Engram has nothing, or you "
+        + "are searching text rather than resolving a symbol, re-run the exact same call and it "
+        + "will proceed; this reminder fires once per session.";
 
     private static void WriteJson<T>(TextWriter stdout, System.Text.Json.Serialization.Metadata.JsonTypeInfo<T> typeInfo, T value)
     {

@@ -85,6 +85,19 @@ public static class TelemetryEventKind
     /// </remarks>
     public const string MemoryGuard = "memory-guard";
 
+    /// <summary>
+    /// The <c>lookup-nudge</c> PreToolUse hook deferring a symbol-shaped Grep/Glob/shell search to
+    /// <c>engram_navigate</c>, once per session.
+    /// </summary>
+    /// <remarks>
+    /// Its own kind for the same reason <see cref="MemoryGuard"/> is: a nudge toward a tool is not
+    /// evidence the model reached for memory on its own, and D18/D43 read the memory kinds to
+    /// answer exactly that. It also makes the classifier's false-positive rate readable after the
+    /// fact — the one number that decides whether the matcher is too wide — which is otherwise
+    /// unmeasurable, since a nudge that fired wrongly leaves no other trace.
+    /// </remarks>
+    public const string LookupNudge = "lookup-nudge";
+
     /// <summary>A run of <c>engram index</c>, which had recorded nothing at all until now.</summary>
     public const string Index = "index";
 
@@ -140,7 +153,8 @@ public static class TelemetryEventKind
     [
         Recall, Remember, Digest, Browse, Expand, Revise, Timeline, Judge,
         SessionStart, ServerStart, ServerStop, SessionOpen, SubagentStart, PreCompact, PostCompact,
-        FileTouched, UserPrompt, MemoryGuard, Index, Embedding, Enrollment, Sync, Navigate, Report,
+        FileTouched, UserPrompt, MemoryGuard, LookupNudge, Index, Embedding, Enrollment, Sync,
+        Navigate, Report,
     ];
 }
 
