@@ -365,13 +365,18 @@ public class TreeSitterTests
         using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
 
         var previous = Environment.GetEnvironmentVariable(TreeSitter.EnvironmentOverride);
-        var memberPath = CodePaths.ForSymbol(CodePaths.ForFile(repo, "widget.ts"), "Widget/count");
-        var topPath = CodePaths.ForSymbol(CodePaths.ForFile(repo, "widget.ts"), "Widget");
         try
         {
             Environment.SetEnvironmentVariable(TreeSitter.EnvironmentOverride, dir);
             var healthy = Index(connection, sandbox, repo, full: false);
             Assert.Contains(healthy.Notes, note => note.StartsWith("tier 1:", StringComparison.Ordinal));
+
+            // Entities are addressed under the repo's registered project path
+            // (healthy.RepoPath, e.g. /projects/<slug>/code/<slug>), not the sandbox's raw
+            // filesystem directory — CodeIndexer.EnsureRepo maps one to the other on first
+            // index. Facts are asserted against that address, the same one CodeIndexer wrote.
+            var memberPath = CodePaths.ForSymbol(CodePaths.ForFile(healthy.RepoPath, "widget.ts"), "Widget/count");
+            var topPath = CodePaths.ForSymbol(CodePaths.ForFile(healthy.RepoPath, "widget.ts"), "Widget");
             Assert.Contains(FactStore.ReadLive(connection), f => f.SubjectPath == memberPath && f.Predicate == "declared-as");
 
             // Same unchanged tree, but this run cannot reach the grammars — a broken
