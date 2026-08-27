@@ -1,9 +1,9 @@
 # Closing the graph-query gap — verdicts and design
 
-Design only. Nothing here was executed; no code was edited. Companion to
-`docs/specs/graphify-comparison.md`, which established the gaps. This document decides
-which are worth closing **for engram's actual job — code lookups for a coding agent** —
-and designs only the ones that survive that test.
+Design only. Nothing here was executed; no code was edited. Follows on from a prior
+comparison against a reference code-comprehension tool, which established the gaps. This
+document decides which are worth closing **for engram's actual job — code lookups for a
+coding agent** — and designs only the ones that survive that test.
 
 **Headline: three of the four items come back `skip` or `close-later`. The one thing worth
 doing now is the cheapest item on the list (tier-1 grammars), and the most valuable
@@ -86,7 +86,7 @@ Three consequences, all load-bearing below:
 ### automating it would make it worse.
 
 The ask behind "multi-hop" is nearly always one question: *what breaks if I change X* —
-graphify's `affected`. A coding agent can answer that today by calling `navigate
+an `affected`-style query. A coding agent can answer that today by calling `navigate
 relation=callers` on X, then on each result. That composition already exists, and rung 1
 of the ladder applies: **the agent is the traversal loop.**
 
@@ -101,9 +101,9 @@ confident, more wrong answer. That is the failure mode this repo names elsewhere
 result that reads as coverage when it is noise (D44's `coverage: high` over six
 stem-matched engineering notes).
 
-graphify can traverse deeply because it earned the right to: build-time Jaro-Winkler
-dedup with optional LLM resolution (`build.py:1371-1389`), plus a hub-degree guard that
-refuses to transit high-degree nodes (`serve.py:925-933`). engram has **none** of the
+A reference tool can traverse deeply because it earned the right to: build-time
+Jaro-Winkler dedup with optional LLM resolution, plus a hub-degree guard that refuses to
+transit high-degree nodes. engram has **none** of the
 first and **no degree data of any kind** — confirmed absent, a grep for
 `degree|fanin|fan_in|CountCalls|FanOut` over `src/` and `tests/` returns zero hits.
 Shipping depth without identity resolution or a hub guard copies the feature and not the
@@ -151,13 +151,13 @@ an argument that it should be — consequence 2 stands regardless of how fast th
 
 ---
 
-## 2. Relation coverage (4 vs graphify's 11–16)
+## 2. Relation coverage (4 vs a reference tool's 11–16)
 
 > **Superseded in part by §8.** The per-relation triage below stands; the *cost* claim for
 > `implements`/`inherits`/`contains` does not, and the predicate naming is settled by
 > §8.5.
 
-| graphify relation | engram | verdict | why |
+| reference relation | engram | verdict | why |
 |---|---|---|---|
 | `inherits`, `extends` | absent | **CLOSE-LATER** → *see §8* | The strongest case on the list. |
 | `implements` | absent | **CLOSE-LATER** → *see §8* | Same. |
@@ -322,7 +322,7 @@ wrong action; see §9.3.*
 | 1b | Hub/ambiguity note on `callers` | **CLOSE-NOW** (shipped in `6aa2f33`) | A caller cannot tell an over-approximation from an answer. |
 | 2 | Inheritance + `contains`, **syntactic** | **CLOSE-NOW** (§8) | Rides §3's rows and version bump. Puts engram *in the running* for the question at all. |
 | 2a | Semantic transitive closure | **CLOSE-LATER** (§8) | The part Grep genuinely cannot do; needs a `Compilation`. |
-| 2b | The other nine graphify relations | **SKIP** | Grep-equivalent, or language-specific for languages engram has no grammar for. |
+| 2b | The other nine reference relations | **SKIP** | Grep-equivalent, or language-specific for languages engram has no grammar for. |
 | 3 | Tier-1 grammars (Python, GDScript) | **CLOSE-NOW** | A grammar binary plus one registry row. |
 | 4 | Navigate latency at 50k | **DONE** (§9) | Measured. H1 confirmed by shape, magnitude small. |
 | 4b | Resolver / leaf-column index work | **DEFER** (§9.5) | Under budget at 10x the real corpus, and the obvious index does not fix the measured floor. |
