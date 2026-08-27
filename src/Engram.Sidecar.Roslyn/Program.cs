@@ -11,8 +11,12 @@ using Microsoft.CodeAnalysis.CSharp.Syntax;
 //
 // Protocol, one JSON object per line both ways:
 //   in:  {"path": "<repo-relative>", "content": "<source>"}
-//   out: {"path": ..., "symbols": [{"name","kind","declaration","doc","scope"?,"params"?}],
-//         "imports": [...]}
+//   out: {"path": ..., "symbols": [{"name","kind","declaration","doc","scope"?,"params"?,"bases"?}],
+//         "imports": [...], "calls": [...]}
+//   "bases" is the base list exactly as written (class/interface/struct/record only, never
+//   an enum's underlying type) — one undifferentiated list, because this process has no
+//   Compilation to tell a base class from an interface (§8.1, §8.5.1). Emitted only for
+//   top-level (unscoped) declarations — see the "Top-level only" comment where it is built.
 //   out on a file it cannot analyze: {"path": ..., "error": "..."} — the core falls back
 //   to tier 0 for that file and nothing else.
 //
@@ -80,7 +84,18 @@ static JsonObject Analyze(string path, string content)
     foreach (var declaration in root.DescendantNodes().OfType<BaseTypeDeclarationSyntax>())
     {
         var scope = ScopeOf(declaration);
-        Emit(symbols, attribution, declaration.Identifier.Text, KindOf(declaration), declaration, scope, parameters: null);
+
+        // Enums have a BaseList too (the underlying integral type), which is not
+        // inheritance — restrict to TypeDeclarationSyntax (class/interface/struct/record).
+        // Top-level only: DeepTier.Merge resolves a base list's TypeName through the file's
+        // top-level declarations alone (§8.6), so a nested type's bases would not be
+        // dropped there but misattributed to any unrelated top-level type of the same name —
+        // never emit them in the first place.
+        var bases = scope is null && declaration is TypeDeclarationSyntax { BaseList.Types.Count: > 0 } typeWithBases
+            ? typeWithBases.BaseList!.Types.Select(t => t.Type.ToString()).ToList()
+            : null;
+
+        Emit(symbols, attribution, declaration.Identifier.Text, KindOf(declaration), declaration, scope, parameters: null, bases: bases);
 
         // Enums are BaseType but not Type: their members are values, not surface (D48).
         if (declaration is TypeDeclarationSyntax type)
@@ -214,7 +229,8 @@ static void Emit(
     MemberDeclarationSyntax declaration,
     string? scope,
     string? parameters,
-    SyntaxNode? attributionNode = null)
+    SyntaxNode? attributionNode = null,
+    List<string>? bases = null)
 {
     var declarationLine = DeclarationLine(declaration);
     var doc = DocSummary(declaration);
@@ -237,6 +253,17 @@ static void Emit(
     if (parameters is not null)
     {
         symbol["params"] = parameters;
+    }
+
+    if (bases is { Count: > 0 })
+    {
+        var baseArray = new JsonArray();
+        foreach (var b in bases)
+        {
+            ((IList<JsonNode?>)baseArray).Add(JsonValue.Create(b));
+        }
+
+        symbol["bases"] = baseArray;
     }
 
     ((IList<JsonNode?>)symbols).Add(symbol);

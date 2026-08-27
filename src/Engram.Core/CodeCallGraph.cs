@@ -39,13 +39,23 @@ public sealed record CallerMatch(
 
 public sealed record CalleeMatch(string? DeclarationPath, string Callee, CallRankSignal Signal, int? AnalyzerTier = null);
 
+/// <param name="DistinctSpellings">
+/// Every distinct <c>symbol-name</c> spelling <see cref="CodeCallGraph.Callers"/> leaf-matched
+/// (§1b): more than one means the query name is ambiguous and the callers below may include
+/// unrelated symbols sharing a leaf. Empty when there is nothing to be ambiguous about
+/// (<see cref="Found"/> false, or the query resolved but nothing leaf-matched).
+/// </param>
 public sealed record CallersResult(
     IReadOnlyList<CallerMatch> Callers,
     int DeclarationCount,
     int TotalMatches,
     bool Found,
     ExtractionCoverage Coverage = ExtractionCoverage.Unknown,
-    SymbolMatchTier QueryTier = SymbolMatchTier.Exact);
+    SymbolMatchTier QueryTier = SymbolMatchTier.Exact,
+    IReadOnlyList<string> DistinctSpellings = null!)
+{
+    public IReadOnlyList<string> DistinctSpellings { get; init; } = DistinctSpellings ?? [];
+}
 
 public sealed record CalleesResult(
     IReadOnlyList<CalleeMatch> Callees,
@@ -79,6 +89,7 @@ public static class CodeCallGraph
         var declarationFiles = declarations.Select(d => FileOf(d.Path)).Distinct(StringComparer.Ordinal).ToList();
 
         var objects = MatchingSymbolNames(connection, leaves);
+        var distinctSpellings = objects.Select(o => o.Name).Distinct(StringComparer.Ordinal).ToList();
         var calls = LiveCallsToObjects(connection, objects.Select(o => o.Path).ToList(), repoNeedle);
 
         var ranked = calls
@@ -93,7 +104,8 @@ public static class CodeCallGraph
 
         var coverage = AggregateCoverage(connection, declarationFiles);
         return new CallersResult(
-            ranked.Take(limit).ToList(), declarations.Count, ranked.Count, Found: true, coverage, declarations[0].Tier);
+            ranked.Take(limit).ToList(), declarations.Count, ranked.Count, Found: true, coverage, declarations[0].Tier,
+            distinctSpellings);
     }
 
     /// <summary>
@@ -112,12 +124,21 @@ public static class CodeCallGraph
         var coverage = AggregateCoverage(connection, declarations.Select(d => FileOf(d.Path)).Distinct(StringComparer.Ordinal).ToList());
         var calls = LiveCallsFromSubjects(connection, declarations.Select(d => d.Path).ToList(), repoNeedle);
 
+        // L1+L2 (docs/specs/callees-fanout-resolution.md §3.1/§3.2): resolve every distinct
+        // leaf once, in two batched queries (one per tier), instead of once per call row. The
+        // measured cost (navigate-latency-results.md, "H2, the callees many-callees case") is
+        // this per-row SymbolResolver.Resolve call; batching reproduces its exact per-name
+        // "stop at the first tier that returns rows" semantics via the tier-1/tier-2 partition
+        // below, applied to the whole distinct leaf set instead of one name at a time.
+        var distinctLeaves = calls.Select(c => CodePaths.LeafOf(c.Callee)).Distinct(StringComparer.Ordinal).ToList();
+        var candidatesByLeaf = ResolveLeavesBatched(connection, distinctLeaves, repoNeedle, perNameLimit: 1000);
+
         var results = new List<CalleeMatch>();
         foreach (var (callerPath, callee, analyzerTier) in calls)
         {
             var leaf = CodePaths.LeafOf(callee);
             var qualifier = QualifierOf(callee);
-            var candidates = SymbolResolver.Resolve(connection, leaf, 1000, repoNeedle, SymbolMatchTier.CaseInsensitive);
+            var candidates = candidatesByLeaf[leaf];
 
             if (candidates.Count == 0)
             {
@@ -135,6 +156,135 @@ public static class CodeCallGraph
 
         var ranked = results.OrderBy(r => r.Signal).ThenBy(r => r.Callee, StringComparer.Ordinal).ToList();
         return new CalleesResult(ranked.Take(limit).ToList(), ranked.Count, Found: true, coverage, declarations[0].Tier);
+    }
+
+    private const int LeafBatchChunkSize = 500;
+
+    /// <summary>
+    /// Batched replacement for a per-leaf <see cref="SymbolResolver.Resolve"/> loop
+    /// (docs/specs/callees-fanout-resolution.md §3.2), capped at
+    /// <see cref="SymbolMatchTier.CaseInsensitive"/> exactly as <see cref="Callees"/>'s
+    /// per-row call was — tier 3 (the unindexable leading-wildcard scan) is never reached
+    /// from this path (NE-4). Reproduces <c>Resolve</c>'s per-name "stop at the first tier
+    /// that returns rows" semantics via the tier-1/tier-2 partition below, applied to the
+    /// whole distinct leaf set rather than one name at a time. Every leaf in <paramref
+    /// name="leaves"/> is guaranteed a key in the result, empty if unresolved at either tier.
+    /// </summary>
+    private static Dictionary<string, List<SymbolMatch>> ResolveLeavesBatched(
+        SqliteConnection connection, IReadOnlyList<string> leaves, string? repoNeedle, int perNameLimit)
+    {
+        var byLeaf = new Dictionary<string, List<SymbolMatch>>(StringComparer.Ordinal);
+        foreach (var leaf in leaves)
+        {
+            byLeaf[leaf] = [];
+        }
+
+        // Tier 1: exact match. Grouped by the row's own name, which for this tier equals the
+        // queried leaf exactly.
+        var exactRows = new Dictionary<string, List<(string Path, string Name)>>(StringComparer.Ordinal);
+        for (var start = 0; start < leaves.Count; start += LeafBatchChunkSize)
+        {
+            var chunk = leaves.Skip(start).Take(LeafBatchChunkSize).ToList();
+            foreach (var row in QueryManyByName(connection, chunk, repoNeedle, exact: true))
+            {
+                if (!exactRows.TryGetValue(row.Name, out var list))
+                {
+                    list = [];
+                    exactRows[row.Name] = list;
+                }
+
+                list.Add(row);
+            }
+        }
+
+        foreach (var leaf in leaves)
+        {
+            if (exactRows.TryGetValue(leaf, out var rows))
+            {
+                // Per-name LIMIT applied here, in C#, not in the batched SQL: a single SQL
+                // LIMIT would apply globally across every name in the statement, silently
+                // truncating some names to nothing while one consumes the whole budget
+                // (docs/specs/callees-fanout-resolution.md §3.2, trap 1).
+                byLeaf[leaf] = rows.OrderBy(r => r.Path, StringComparer.Ordinal).Take(perNameLimit)
+                    .Select(r => new SymbolMatch(r.Path, r.Name, SymbolMatchTier.Exact)).ToList();
+            }
+        }
+
+        // Tier 2: case-insensitive, only for leaves tier 1 left empty. Grouped by the row's
+        // name lower-cased, since a COLLATE NOCASE match can return a different-case spelling
+        // than the queried leaf, and two residue leaves that differ only by case must both
+        // see the same candidate set (exactly what per-name Resolve would do for each of them).
+        var residue = leaves.Where(l => byLeaf[l].Count == 0).Distinct(StringComparer.Ordinal).ToList();
+        if (residue.Count > 0)
+        {
+            var nocaseRows = new Dictionary<string, List<(string Path, string Name)>>(StringComparer.Ordinal);
+            for (var start = 0; start < residue.Count; start += LeafBatchChunkSize)
+            {
+                var chunk = residue.Skip(start).Take(LeafBatchChunkSize).ToList();
+                foreach (var row in QueryManyByName(connection, chunk, repoNeedle, exact: false))
+                {
+                    var key = row.Name.ToLowerInvariant();
+                    if (!nocaseRows.TryGetValue(key, out var list))
+                    {
+                        list = [];
+                        nocaseRows[key] = list;
+                    }
+
+                    list.Add(row);
+                }
+            }
+
+            foreach (var leaf in residue)
+            {
+                if (nocaseRows.TryGetValue(leaf.ToLowerInvariant(), out var rows))
+                {
+                    byLeaf[leaf] = rows.OrderBy(r => r.Path, StringComparer.Ordinal).Take(perNameLimit)
+                        .Select(r => new SymbolMatch(r.Path, r.Name, SymbolMatchTier.CaseInsensitive)).ToList();
+                }
+            }
+        }
+
+        return byLeaf;
+    }
+
+    // One statement per chunk over the distinct name set — chunked at 500 (matching
+    // RetrievalExplainer's precedent) because a single IN(...) bound one parameter per name
+    // hits SQLite's 32,766 SQL-variable ceiling on a large enough fan-out (§9 of
+    // close-graph-query-gap.md; trap 3). No SQL LIMIT: the caller applies the per-name cap
+    // after grouping (trap 1). Ordered by (name, path), matching Resolve's own ORDER BY path
+    // within each name (trap 2).
+    private static List<(string Path, string Name)> QueryManyByName(
+        SqliteConnection connection, IReadOnlyList<string> names, string? repoNeedle, bool exact)
+    {
+        using var command = connection.CreateCommand();
+        var placeholders = new string[names.Count];
+        for (var i = 0; i < names.Count; i++)
+        {
+            placeholders[i] = $"$n{i}";
+            command.Parameters.AddWithValue(placeholders[i], names[i]);
+        }
+
+        // COLLATE binds to the operand immediately to its left, so it must precede IN to affect
+        // every comparison inside the list — trailing it after the closing paren is a silent no-op.
+        var nameClause = exact ? "e.name" : "e.name COLLATE NOCASE";
+        var repoClause = repoNeedle is null ? string.Empty : " AND e.path LIKE '%' || $repo || '%'";
+        command.CommandText =
+            $"SELECT e.path, e.name FROM entity e WHERE e.kind = 'symbol' "
+                + $"AND {nameClause} IN ({string.Join(", ", placeholders)}){repoClause} "
+                + "ORDER BY e.name, e.path;";
+        if (repoNeedle is not null)
+        {
+            command.Parameters.AddWithValue("$repo", repoNeedle);
+        }
+
+        var rows = new List<(string, string)>();
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            rows.Add((reader.GetString(0), reader.GetString(1)));
+        }
+
+        return rows;
     }
 
     /// <summary>
@@ -180,7 +330,7 @@ public static class CodeCallGraph
     // Symbol-name entities are shared between "imports" objects and "calls" objects (both
     // written names under /symbol-names/), so the leaf filter runs in C# rather than trying
     // to express §6.5's two-separator rule in SQL.
-    private static List<(string Path, string Name)> MatchingSymbolNames(
+    public static List<(string Path, string Name)> MatchingSymbolNames(
         SqliteConnection connection, IReadOnlyList<string> leaves)
     {
         var leafSet = new HashSet<string>(leaves, StringComparer.Ordinal);
@@ -214,7 +364,8 @@ public static class CodeCallGraph
         var repoClause = repoNeedle is null ? string.Empty : " AND f.path LIKE '%' || $repo || '%'";
         command.CommandText =
             $"SELECT f.path, o.name, f.analyzer_tier FROM fact f JOIN entity o ON o.id = f.object_id "
-                + $"WHERE f.predicate = 'calls' AND f.valid_to IS NULL AND o.path IN ({placeholders}){repoClause};";
+                + "WHERE f.predicate = 'calls' AND f.valid_to IS NULL AND f.object_id IS NOT NULL "
+                + $"AND o.path IN ({placeholders}){repoClause};";
         for (var i = 0; i < objectPaths.Count; i++)
         {
             command.Parameters.AddWithValue($"$o{i}", objectPaths[i]);
@@ -336,7 +487,7 @@ public static class CodeCallGraph
         return head.Split(' ', StringSplitOptions.RemoveEmptyEntries).Any(w => TypeDeclarationKeywords.Contains(w, StringComparer.Ordinal));
     }
 
-    private static string FileOf(string path)
+    public static string FileOf(string path)
     {
         var hash = path.IndexOf('#');
         return hash < 0 ? path : path[..hash];

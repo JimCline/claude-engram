@@ -37,6 +37,23 @@ internal sealed class VectorSandbox : IDisposable
                 LearnedVia: "stated"),
             DateTimeOffset.UnixEpoch.AddSeconds(1)).FactId;
 
+    /// <summary>A regenerable, object-bearing fact — the shape edge-fact-lane-eligibility.md
+    /// §2.2 excludes from the text and vector lanes.</summary>
+    public long AddEdgeFact(string name, string predicate, string objectName) =>
+        FactStore.Remember(
+            Connection,
+            new FactWrite(
+                SubjectPath: $"test/{name}",
+                SubjectKind: "symbol",
+                Predicate: predicate,
+                Body: $"{predicate} {objectName}",
+                Scope: "code",
+                LearnedVia: "observed",
+                Regenerable: true,
+                ObjectPath: $"test/{objectName}",
+                ObjectKind: "symbol-name"),
+            DateTimeOffset.UnixEpoch.AddSeconds(1)).FactId;
+
     public void AddFacts(int count)
     {
         for (var i = 0; i < count; i++)

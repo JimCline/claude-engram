@@ -42,7 +42,7 @@ public static class FactTokenIndex
     /// not that anything is broken, since recall reports the overlap lane unavailable rather
     /// than fail (spec ruling 3: no scanning fallback).
     /// </summary>
-    internal const int CurrentVersion = 1;
+    internal const int CurrentVersion = 2;
 
     private const string ReadinessKey = "fact_token_version";
 
@@ -61,8 +61,8 @@ public static class FactTokenIndex
     /// </summary>
     public static void Add(SqliteConnection connection, SqliteTransaction transaction, long factId)
     {
-        var (path, name, body, predicate) = ReadForIndexing(connection, transaction, factId);
-        if (CodePredicates.EdgeBearing.Contains(predicate))
+        var (path, name, body, regenerable, hasObject) = ReadForIndexing(connection, transaction, factId);
+        if (regenerable && hasObject)
         {
             return;
         }
@@ -103,7 +103,7 @@ public static class FactTokenIndex
         var candidates = ReadIds(
             connection,
             "SELECT id FROM fact WHERE valid_to IS NULL "
-            + "AND predicate NOT IN (" + CodePredicates.EdgeBearingSqlList + ") "
+            + "AND NOT (regenerable IS 1 AND object_id IS NOT NULL) "
             + "AND id NOT IN (SELECT DISTINCT fact_id FROM fact_token);");
 
         if (candidates.Count == 0)
@@ -289,14 +289,14 @@ public static class FactTokenIndex
         command.ExecuteNonQuery();
     }
 
-    private static (string Path, string Name, string Body, string Predicate) ReadForIndexing(
+    private static (string Path, string Name, string Body, bool Regenerable, bool HasObject) ReadForIndexing(
         SqliteConnection connection, SqliteTransaction transaction, long factId)
     {
         using var command = connection.CreateCommand();
         command.Transaction = transaction;
         command.CommandText =
-            "SELECT f.path, e.name, f.body, f.predicate FROM fact f JOIN entity e ON e.id = f.subject_id "
-            + "WHERE f.id = $id;";
+            "SELECT f.path, e.name, f.body, f.regenerable, f.object_id FROM fact f "
+            + "JOIN entity e ON e.id = f.subject_id WHERE f.id = $id;";
         command.Parameters.AddWithValue("$id", factId);
 
         using var reader = command.ExecuteReader();
@@ -305,7 +305,9 @@ public static class FactTokenIndex
             throw new InvalidOperationException($"fact_token: no fact with id {factId} to index.");
         }
 
-        return (reader.GetString(0), reader.GetString(1), reader.GetString(2), reader.GetString(3));
+        return (
+            reader.GetString(0), reader.GetString(1), reader.GetString(2),
+            reader.GetInt32(3) == 1, !reader.IsDBNull(4));
     }
 
     private static List<(long Id, string Path, string Name, string Body)> ReadLiveForIndexing(
@@ -318,7 +320,7 @@ public static class FactTokenIndex
             SELECT f.id, f.path, e.name, f.body
               FROM fact f
               JOIN entity e ON e.id = f.subject_id
-             WHERE f.valid_to IS NULL AND f.predicate NOT IN ({CodePredicates.EdgeBearingSqlList});
+             WHERE f.valid_to IS NULL AND NOT (f.regenerable IS 1 AND f.object_id IS NOT NULL);
             """;
 
         var facts = new List<(long, string, string, string)>();

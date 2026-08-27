@@ -623,4 +623,41 @@ public class BackupStoreTests
         Assert.Equal(T0.AddHours(-1), listed[0].TakenAt);
         Assert.Equal(T0.AddHours(-3), listed[2].TakenAt);
     }
+
+    // --- fingerprint (backup-fingerprint-semantics.md) ---------------------------------------
+
+    private static long WriteEdge(
+        SqliteConnection connection, string subjectPath, string predicate, string body, string objectPath,
+        DateTimeOffset at) =>
+        FactStore.Remember(
+            connection,
+            new FactWrite(
+                subjectPath, "symbol", predicate, body, "code", "observed",
+                Regenerable: true, ObjectPath: objectPath, ObjectKind: "symbol-name"),
+            at).FactId;
+
+    [Fact]
+    public void Fingerprint_DoesNotMove_WhenOnlyARegenerableEdgeFactIsWritten()
+    {
+        using var sandbox = new SandboxHome(initialize: false);
+        using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
+        Write(connection, "/knowledge/testing/kestrel", "It binds loopback only.", T0);
+
+        var before = BackupFingerprint.Read(connection);
+        WriteEdge(connection, "/projects/p/code/r/a.ts#outer", "calls", "calls inner", "/code/symbol-name/inner", T0);
+
+        Assert.Equal(before, BackupFingerprint.Read(connection));
+    }
+
+    [Fact]
+    public void Fingerprint_Moves_WhenAnAuthoredFactIsWritten()
+    {
+        using var sandbox = new SandboxHome(initialize: false);
+        using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
+
+        var before = BackupFingerprint.Read(connection);
+        Write(connection, "/knowledge/testing/kestrel", "It binds loopback only.", T0);
+
+        Assert.NotEqual(before, BackupFingerprint.Read(connection));
+    }
 }

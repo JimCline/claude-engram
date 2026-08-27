@@ -21,11 +21,27 @@ public sealed record DeepCall(
     string Callee,
     int Line);
 
+/// <summary>
+/// One observed base-list entry: a top-level type names another type as its base or
+/// interface. <paramref name="TypeName"/> is the declaring type's own name, resolved to its
+/// fragment by <see cref="DeepTier.Merge"/> against the file's top-level declarations only —
+/// a nested type of the same name is silently dropped rather than misattributed, since
+/// nested-type declarations are not addressed at all today (§8.6). <paramref name="Predicate"/>
+/// is decided by the producer, which is the one place that knows the language's ruling
+/// (§8.5.1): <c>inherits</c>/<c>implements</c> where the grammar distinguishes them,
+/// <c>derives-from</c> where it cannot.
+/// </summary>
+public sealed record DeepInherit(
+    string TypeName,
+    string BaseName,
+    string Predicate);
+
 /// <summary>One deeper-tier view of one file: what it saw, or why it could not look.</summary>
 /// <remarks>
-/// <paramref name="Calls"/> has no default value deliberately (§4 of the Phase 3 spec): a
-/// producer that is not updated to state its calls must fail to compile, not silently
-/// report "this file makes no calls" — which is indistinguishable from the truth.
+/// <paramref name="Calls"/> and <paramref name="Inherits"/> have no default value
+/// deliberately (§4 of the Phase 3 spec): a producer that is not updated to state them must
+/// fail to compile, not silently report "this file has none" — which is indistinguishable
+/// from the truth.
 /// </remarks>
 public sealed record DeepAnalysis(
     string Path,
@@ -33,6 +49,7 @@ public sealed record DeepAnalysis(
     IReadOnlyList<string> Imports,
     string? Error,
     IReadOnlyList<DeepCall> Calls,
+    IReadOnlyList<DeepInherit> Inherits,
     int Tier);
 
 /// <summary>
@@ -114,25 +131,80 @@ public static class DeepTier
         // One address holds one declaration fact, first declaration wins: partial classes
         // declare one name twice, and a residual overload collision — same scope, name,
         // and written parameter list — is one address by the same rule (D48).
+        var fragments = Fragments(analysis.Symbols);
         var seen = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var (fragment, symbol) in Fragments(analysis.Symbols))
+
+        // Top-level declarations only (§8.6/D48: nested-type declarations are not addressed
+        // today), keyed by name so a base-list or containment edge can find its declaring
+        // type's fragment without re-deriving Fragments' collision logic.
+        var topLevel = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var (fragment, symbol) in fragments)
         {
-            if (!seen.Add(fragment))
+            if (symbol.Scope is null)
+            {
+                topLevel.TryAdd(symbol.Name, fragment);
+            }
+        }
+
+        // An overload set (three `probe` signatures, say) shares one name and one container,
+        // so it would otherwise produce that many byte-identical `contains` candidates —
+        // which the indexer's live-fact key does not distinguish, so writing more than one
+        // closes and reinserts a fact identical to itself, a spurious supersession CLAUDE.md's
+        // append-only-facts invariant forbids. Dedup before the write, not after.
+        var containsSeen = new HashSet<(string Container, string Member)>();
+
+        foreach (var (fragment, symbol) in fragments)
+        {
+            if (seen.Add(fragment))
+            {
+                var symbolPath = CodePaths.ForSymbol(fileEntityPath, fragment);
+                merged.Add(new CodeCandidate(
+                    symbolPath, "symbol", symbol.Name, "declared-as", CodeAnalyzer.Cap(symbol.Declaration),
+                    AnalyzerTier: analysis.Tier));
+
+                if (!string.IsNullOrWhiteSpace(symbol.Doc))
+                {
+                    merged.Add(new CodeCandidate(
+                        symbolPath, "symbol", symbol.Name, "about", CodeAnalyzer.Cap(symbol.Doc),
+                        AnalyzerTier: analysis.Tier));
+                }
+            }
+
+            // contains (§8.4): the sidecar/grammar already emits scope, so this writes what
+            // it already knows as an object-bearing fact rather than a new extraction.
+            // Object side keeps the weak-identity scheme calls/inherits use — a member name
+            // as written, not a resolved entity (§2's design sketch).
+            if (symbol.Scope is { Length: > 0 } containerName
+                && topLevel.TryGetValue(containerName, out var containerFragment)
+                && containsSeen.Add((containerFragment, symbol.Name)))
+            {
+                merged.Add(new CodeCandidate(
+                    CodePaths.ForSymbol(fileEntityPath, containerFragment), "symbol", containerName, "contains",
+                    CodeAnalyzer.Cap("contains " + symbol.Name),
+                    Object: symbol.Name,
+                    AnalyzerTier: analysis.Tier));
+            }
+        }
+
+        // F4 residual: a partial type's base list can be declared on more than one of its
+        // partial declarations (two `partial class Foo : IBar` parts, say), each producing
+        // the same DeepInherit entry — the same byte-identical-candidate hazard the
+        // contains dedup above exists to prevent, and the same fix.
+        var inheritsSeen = new HashSet<(string TypeFragment, string Predicate, string BaseName)>();
+
+        foreach (var inherit in analysis.Inherits)
+        {
+            if (!topLevel.TryGetValue(inherit.TypeName, out var typeFragment)
+                || !inheritsSeen.Add((typeFragment, inherit.Predicate, inherit.BaseName)))
             {
                 continue;
             }
 
-            var symbolPath = CodePaths.ForSymbol(fileEntityPath, fragment);
             merged.Add(new CodeCandidate(
-                symbolPath, "symbol", symbol.Name, "declared-as", CodeAnalyzer.Cap(symbol.Declaration),
+                CodePaths.ForSymbol(fileEntityPath, typeFragment), "symbol", inherit.TypeName, inherit.Predicate,
+                CodeAnalyzer.Cap(inherit.Predicate + " " + inherit.BaseName),
+                Object: inherit.BaseName,
                 AnalyzerTier: analysis.Tier));
-
-            if (!string.IsNullOrWhiteSpace(symbol.Doc))
-            {
-                merged.Add(new CodeCandidate(
-                    symbolPath, "symbol", symbol.Name, "about", CodeAnalyzer.Cap(symbol.Doc),
-                    AnalyzerTier: analysis.Tier));
-            }
         }
 
         var importedModules = new SortedSet<string>(analysis.Imports, StringComparer.Ordinal);

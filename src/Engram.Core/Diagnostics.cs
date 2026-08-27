@@ -473,10 +473,18 @@ public static class Diagnostics
                 "upgrade Engram; an older binary must not write to a newer store");
         }
 
+        // BackupFingerprint now counts authored facts only (backup-fingerprint-semantics.md
+        // §3) — narrower than "every live/closed fact", so the label says so rather than
+        // silently changing what it means (the D43 mistake). Entity count is unrelated to the
+        // fingerprint's belief-content scope (entities are addressing metadata, D2) and is read
+        // directly here rather than through it.
         var facts = BackupFingerprint.Read(connection);
+        using var entityCountCommand = connection.CreateCommand();
+        entityCountCommand.CommandText = "SELECT COUNT(*) FROM entity;";
+        var entityCount = (long)entityCountCommand.ExecuteScalar()!;
         var detail =
-            $"schema {version}, {Plural(facts.Facts, "live fact")}, {facts.ClosedFacts} closed, "
-            + $"{facts.Entities} entities, {Bytes(new FileInfo(home.DatabasePath).Length)}";
+            $"schema {version}, {Plural(facts.Facts, "authored fact")}, {facts.ClosedFacts} closed, "
+            + $"{entityCount} entities, {Bytes(new FileInfo(home.DatabasePath).Length)}";
 
         return version < EngramDatabase.SchemaVersion
             ? new Diagnosis(

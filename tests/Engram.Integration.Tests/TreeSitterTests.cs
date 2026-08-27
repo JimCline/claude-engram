@@ -54,6 +54,16 @@ public class TreeSitterTests
                 Assert.Equal(
                     language.Fixture.ExpectedImports.Order(),
                     analysis.Imports.Order());
+
+                // §8/§8.5: the 12 hand-authored inheritance patterns (10 TypeScript, 2
+                // JavaScript) driven through the real compiled grammar, not seeded facts —
+                // this is the guard the export_statement-wrapped-heritage bug had none of.
+                if (language.Fixture.ExpectedInherits is { } expectedInherits)
+                {
+                    Assert.Equal(
+                        expectedInherits.Order(),
+                        analysis.Inherits.Select(i => $"{i.TypeName} {i.Predicate} {i.BaseName}").Order());
+                }
             }
         }
 

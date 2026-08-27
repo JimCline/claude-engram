@@ -7,35 +7,39 @@ namespace Engram.Core;
 /// A fingerprint of authored truth, used to decide whether a snapshot would say anything new.
 /// </summary>
 /// <remarks>
-/// <para>Counts rather than content, because this runs on a timer and has to be cheap. It moves on
-/// every operation that changes what the store believes: a fact written, a fact closed, an entity
-/// or edge added, a rename (which lands a row in <c>entity_alias</c>), a supersession recorded.
-/// Derived state is deliberately absent — the FTS index and salience are rebuildable (D8), so a
-/// snapshot taken because the index changed would be a copy taken for no reason.</para>
+/// <para>Counts rather than content, because this runs on a timer and has to be cheap. It moves
+/// only when authored truth moved (<c>fact WHERE regenerable = 0</c>) plus the supersession
+/// structure over those facts (backup-fingerprint-semantics.md §3) — a code fact written or
+/// closed by <c>index --apply</c> does not move it, because that is derived state a re-index can
+/// always reproduce.</para>
 ///
-/// <para><c>MAX(id)</c> sits alongside the count so that a write and a delete of equal size cannot
-/// cancel out. Nothing deletes facts today, which is exactly why the guard is cheap to keep and
-/// expensive to add back later.</para>
+/// <para><c>MAX(id)</c> sits alongside the count, restricted to authored facts the same way, so
+/// that an authored write and an authored close of equal size cannot cancel out.</para>
+///
+/// <para><c>entity</c>/<c>entity_alias</c> are deliberately absent: an entity is addressing
+/// metadata (D2), not belief content, and one holding an authored fact is already counted through
+/// the fact terms, which move when that fact is written. <c>edge</c>, <c>fact_relation</c> and
+/// <c>fact_sync_request</c> stay unrestricted — none of the three moves during a code-only
+/// <c>index --apply</c> (backup-fingerprint-semantics.md NE-2, measured empirically), so there is
+/// no regenerable-driven noise to filter out of them.</para>
 ///
 /// <para><b><c>ClosedFacts</c> is redundant today and is kept anyway, which is worth stating
-/// rather than implying.</b> Both paths that set <c>valid_to</c> also insert a supersession row —
-/// forgetting and superseding — so the supersession count alone already moves whenever a fact
-/// closes, and no test here can distinguish the two. It stays because it costs one scan and does
-/// not depend on two tables agreeing. Do not write a test claiming to guard it: there is no
-/// production path that would make such a test fail.</para>
+/// rather than implying.</b> Both paths that set <c>valid_to</c> on an authored fact also insert a
+/// supersession row — forgetting and superseding — so the restricted supersession count alone
+/// already moves whenever an authored fact closes, and no test here can distinguish the two. It
+/// stays because it costs one scan and does not depend on two tables agreeing. Do not write a test
+/// claiming to guard it: there is no production path that would make such a test fail.</para>
 /// </remarks>
 public readonly record struct BackupFingerprint(
     long Facts,
     long MaxFactId,
     long ClosedFacts,
-    long Entities,
-    long Aliases,
     long Supersessions,
     long Edges,
     long Relations,
     long SyncRequests)
 {
-    public bool IsEmpty => Facts == 0 && Entities == 0 && Edges == 0;
+    public bool IsEmpty => Facts == 0;
 
     public static BackupFingerprint Read(SqliteConnection connection)
     {
@@ -44,12 +48,12 @@ public readonly record struct BackupFingerprint(
         using var command = connection.CreateCommand();
         command.CommandText =
             """
-            SELECT (SELECT COUNT(*) FROM fact),
-                   (SELECT COALESCE(MAX(id), 0) FROM fact),
-                   (SELECT COUNT(*) FROM fact WHERE valid_to IS NOT NULL),
-                   (SELECT COUNT(*) FROM entity),
-                   (SELECT COUNT(*) FROM entity_alias),
-                   (SELECT COUNT(*) FROM supersession),
+            SELECT (SELECT COUNT(*) FROM fact WHERE regenerable = 0),
+                   (SELECT COALESCE(MAX(id), 0) FROM fact WHERE regenerable = 0),
+                   (SELECT COUNT(*) FROM fact WHERE valid_to IS NOT NULL AND regenerable = 0),
+                   (SELECT COUNT(*) FROM supersession s
+                      JOIN fact nf ON nf.id = s.new_fact_id
+                     WHERE nf.regenerable = 0),
                    (SELECT COUNT(*) FROM edge),
                    (SELECT COUNT(*) FROM fact_relation),
                    (SELECT COUNT(*) FROM fact_sync_request);
@@ -68,9 +72,7 @@ public readonly record struct BackupFingerprint(
             reader.GetInt64(3),
             reader.GetInt64(4),
             reader.GetInt64(5),
-            reader.GetInt64(6),
-            reader.GetInt64(7),
-            reader.GetInt64(8));
+            reader.GetInt64(6));
     }
 }
 
@@ -548,7 +550,7 @@ public static class BackupStore
         {
             // An unreadable snapshot is not a reason to skip taking a good one. Returning a
             // fingerprint that cannot match any live store says exactly that.
-            return new BackupFingerprint(-1, -1, -1, -1, -1, -1, -1, -1, -1);
+            return new BackupFingerprint(-1, -1, -1, -1, -1, -1, -1);
         }
     }
 

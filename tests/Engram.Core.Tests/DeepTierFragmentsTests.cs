@@ -86,7 +86,7 @@ public class DeepTierFragmentsTests
         var merged = DeepTier.Merge(
             "/projects/p/code/r/Http.cs",
             [],
-            new DeepAnalysis("Http.cs", [first, second], [], null, [], Tier: 1));
+            new DeepAnalysis("Http.cs", [first, second], [], null, [], [], Tier: 1));
 
         var declared = Assert.Single(merged, c => c.Predicate == "declared-as");
         Assert.Equal("first", declared.Body);
@@ -112,6 +112,7 @@ public class DeepTierFragmentsTests
             [],
             null,
             [new DeepCall("Run", "Helper", 1)],
+            [],
             Tier: 2);
 
         var merged = DeepTier.Merge("/projects/p/code/r/Widget.cs", tierZero, analysis);
@@ -136,11 +137,57 @@ public class DeepTierFragmentsTests
         {
             new("/projects/p/code/r/Widget.cs", "file", "Widget.cs", "about", "A widget."),
         };
-        var analysis = new DeepAnalysis("Widget.cs", [], [], "parse error", [], Tier: 2);
+        var analysis = new DeepAnalysis("Widget.cs", [], [], "parse error", [], [], Tier: 2);
 
         var merged = DeepTier.Merge("/projects/p/code/r/Widget.cs", tierZero, analysis);
 
         Assert.Equal(0, Assert.Single(merged).AnalyzerTier);
+    }
+
+    // F4 (review of graph-enhance): an overload set shares one name and one container, so it
+    // would otherwise produce that many byte-identical `contains` candidates for the same
+    // (container, member) pair — which the indexer's live-fact key cannot tell apart, so
+    // writing more than one closes and reinserts a fact identical to itself, a spurious
+    // supersession CLAUDE.md's append-only-facts invariant forbids. Falsify by removing the
+    // dedup guard in DeepTier.Merge: this count goes from 1 to 3.
+    [Fact]
+    public void Merge_OverloadsOfOneMember_YieldOnlyOneContainsCandidate()
+    {
+        var container = Symbol("Http");
+        var overloads = new[]
+        {
+            Symbol("Get", "Http", "()"),
+            Symbol("Get", "Http", "(string key)"),
+            Symbol("Get", "Http", "(string key, int count)"),
+        };
+
+        var analysis = new DeepAnalysis(
+            "Http.cs", [container, .. overloads], [], null, [], [], Tier: 1);
+
+        var merged = DeepTier.Merge("/projects/p/code/r/Http.cs", [], analysis);
+
+        var contains = Assert.Single(merged, c => c.Predicate == "contains");
+        Assert.Equal("Get", contains.Object);
+    }
+
+    // F4 residual (second review of graph-enhance): a partial type can carry its base list
+    // on more than one partial declaration (two `partial class Foo : IBar` parts each
+    // repeating the base), producing the same byte-identical-candidate hazard the contains
+    // dedup above fixes. Falsify by removing the inheritsSeen guard: this count goes to 2.
+    [Fact]
+    public void Merge_APartialTypesRepeatedBaseList_YieldsOnlyOneInheritsCandidate()
+    {
+        var first = Symbol("Foo") with { Declaration = "partial class Foo : IBar" };
+        var second = Symbol("Foo") with { Declaration = "partial class Foo : IBar" };
+        var inherits = new[] { new DeepInherit("Foo", "IBar", "derives-from") };
+
+        var analysis = new DeepAnalysis(
+            "Foo.cs", [first, second], [], null, [], inherits, Tier: 2);
+
+        var merged = DeepTier.Merge("/projects/p/code/r/Foo.cs", [], analysis);
+
+        var derives = Assert.Single(merged, c => c.Predicate == "derives-from");
+        Assert.Equal("IBar", derives.Object);
     }
 
     // item 6 / §7.1: a missing deep tier stamps tier 0, never the registry's entitled tier —

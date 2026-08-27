@@ -191,6 +191,12 @@ CREATE INDEX ix_fact_scope   ON fact(scope) WHERE valid_to IS NULL;
 -- regenerable rows are the minority and the query is always "which may I discard".
 CREATE INDEX ix_fact_regenerable ON fact(regenerable) WHERE regenerable = 1;
 
+-- Reverse-edge lookups (callers) resolve object_id -> subject; without this they scan
+-- fact. Partial on object_id IS NOT NULL to match ux_fact_edge_live's partition: a row
+-- with no object can never match object_id = ?, so indexing one is write cost and no
+-- read (fact-object-index-migration.md §1).
+CREATE INDEX ix_fact_object ON fact(object_id, predicate) WHERE valid_to IS NULL AND object_id IS NOT NULL;
+
 
 -- ---------------------------------------------------------------------------
 -- Supersession: why a belief changed.
@@ -296,20 +302,24 @@ CREATE VIRTUAL TABLE fact_fts USING fts5(
   tokenize='porter unicode61'
 );
 
--- Code-navigation edges (CodePredicates.EdgeBearing) never enter the lexical
--- lanes: tens of thousands of near-identical edge bodies would inflate D44's
--- coverage as corroboration-shaped noise, and nobody recalls an edge body in
--- words. The predicate list must stay identical across all four triggers and
--- EngramDatabase.RebuildFactFts's interpolated copy.
+-- Regenerable, object-bearing facts (code-navigation edges: calls, imports)
+-- never enter the lexical lanes: tens of thousands of near-identical edge
+-- bodies would inflate D44's coverage as corroboration-shaped noise, and
+-- nobody recalls an edge body in words. The condition is structural rather
+-- than an enumerated predicate list (edge-fact-lane-eligibility.md §2.3) —
+-- FactTokenIndex and VectorIndex read the same two columns — and must stay
+-- identical across all four triggers and EngramDatabase.RebuildFactFts's
+-- copy. `IS`, not `=`: a NULL regenerable must fall to the safe (included)
+-- side, not silently drop the row (§2.2.1).
 CREATE TRIGGER fact_fts_insert AFTER INSERT ON fact
-  WHEN new.predicate NOT IN ('calls', 'imports') BEGIN
+  WHEN NOT (new.regenerable IS 1 AND new.object_id IS NOT NULL) BEGIN
   INSERT INTO fact_fts(rowid, body, predicate, path)
     VALUES (new.id, new.body, new.predicate, new.path);
 END;
 
 CREATE TRIGGER fact_fts_close AFTER UPDATE OF valid_to ON fact
   WHEN old.valid_to IS NULL AND new.valid_to IS NOT NULL
-    AND old.predicate NOT IN ('calls', 'imports') BEGIN
+    AND NOT (old.regenerable IS 1 AND old.object_id IS NOT NULL) BEGIN
   INSERT INTO fact_fts(fact_fts, rowid, body, predicate, path)
     VALUES ('delete', old.id, old.body, old.predicate, old.path);
 END;
@@ -320,7 +330,7 @@ END;
 -- "database disk image is malformed (11)" — which made every closed fact
 -- undeletable and would have broken `compact` on its first prune.
 CREATE TRIGGER fact_fts_delete AFTER DELETE ON fact
-  WHEN old.valid_to IS NULL AND old.predicate NOT IN ('calls', 'imports') BEGIN
+  WHEN old.valid_to IS NULL AND NOT (old.regenerable IS 1 AND old.object_id IS NOT NULL) BEGIN
   INSERT INTO fact_fts(fact_fts, rowid, body, predicate, path)
     VALUES ('delete', old.id, old.body, old.predicate, old.path);
 END;
@@ -331,7 +341,7 @@ END;
 -- fact indexed under its old address with nothing to say so.
 CREATE TRIGGER fact_fts_repath AFTER UPDATE OF path ON fact
   WHEN new.valid_to IS NULL AND old.path <> new.path
-    AND new.predicate NOT IN ('calls', 'imports') BEGIN
+    AND NOT (new.regenerable IS 1 AND new.object_id IS NOT NULL) BEGIN
   INSERT INTO fact_fts(fact_fts, rowid, body, predicate, path)
     VALUES ('delete', old.id, old.body, old.predicate, old.path);
   INSERT INTO fact_fts(rowid, body, predicate, path)
@@ -480,13 +490,13 @@ CREATE TABLE fact_review (
 
 
 CREATE TABLE schema_meta (key TEXT PRIMARY KEY, value TEXT);
-INSERT INTO schema_meta(key, value) VALUES ('schema_version', '14');
+INSERT INTO schema_meta(key, value) VALUES ('schema_version', '16');
 
 -- Built by a fresh CREATE, and pre-stamped ready: an empty table matches whatever
 -- FactTokenIndex.Rebuild would produce over zero facts, so a new store needs no rebuild pass.
 -- The version must track FactTokenIndex.CurrentVersion by hand — this file cannot reference a
 -- C# constant, the same duplication schema_version above already accepts.
-INSERT INTO schema_meta(key, value) VALUES ('fact_token_version', '1');
+INSERT INTO schema_meta(key, value) VALUES ('fact_token_version', '2');
 
 
 -- ---------------------------------------------------------------------------

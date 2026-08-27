@@ -24,7 +24,18 @@ public class McpToolSurfaceBudgetTests
     // not reflected over by ToolMethods() and are not counted in this figure — a separate,
     // unmeasured gap. Raising this number is a deliberate edit that needs a reason in the
     // commit message, not a knob to turn when a description outgrows it.
-    private const int MaxDefinitionChars = 6281;
+    //
+    // Re-baselined 6,281 -> 6,443 when engram_navigate gained implements/implementers/members
+    // (docs/specs/close-graph-query-gap.md §2/§8): three new relations answering questions
+    // Grep gets wrong (inheritance, interface implementation, type members) are worth the
+    // description cost the same way defined_at/imports were.
+    //
+    // Re-baselined 6,443 -> 6,550 (§11.1, Architect ruling): the nested-type-drop caveat moved
+    // out of a per-result note that fired on ~100% of implements/implementers/members results
+    // (a constant, not a discriminator — D37 says a banner is read as noise) and into this
+    // static description instead, which is sent once per turn rather than once per matching
+    // result. Net cost per session goes down; this ceiling only measures the one-time cost.
+    private const int MaxDefinitionChars = 6550;
 
     // 10 -> 11 when engram_navigate joined for code navigation (docs/code-navigation-spec.md
     // §3.4): defined_at/imports read entity and fact tables directly rather than going through

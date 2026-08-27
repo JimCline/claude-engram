@@ -1035,6 +1035,116 @@ public class SchemaMigrationTests
         Assert.Equal(ThreadIndexShape(fresh), ThreadIndexShape(migrated));
     }
 
+    /// <summary>
+    /// Version 16 added <c>ix_fact_object</c>, serving the reverse-edge (<c>callers</c>) lookup
+    /// that previously scanned <c>fact</c> once per candidate (fact-object-index-migration.md §1).
+    /// </summary>
+    /// <remarks>
+    /// <para>Compared by shape (<c>pragma_index_list</c>/<c>pragma_index_info</c>), not by
+    /// <c>sqlite_master</c> DDL text: <c>docs/engram-schema.sql</c>'s copy and the migration's
+    /// <c>CREATE INDEX IF NOT EXISTS</c> copy legitimately differ in text for the same logical
+    /// index, unlike the trigger case where byte-identical text was the right check (§5.2).
+    /// <c>partial=1</c> is the field that differs from <see cref="ThreadIndexShape"/>'s
+    /// <c>partial=0</c> and is what catches a dropped <c>WHERE</c> clause.</para>
+    ///
+    /// <para>The <c>DROP INDEX</c> is the D60 fix already applied to the v5 test above:
+    /// <see cref="WriteVersion1Store"/> rolls a current-schema store back, so it does not remove
+    /// indexes, and a broken v16 migration would otherwise no-op against a fixture that already
+    /// has the index.</para>
+    ///
+    /// <para>The shape assertion alone cannot tell a correct predicate from a wrong one that
+    /// happens to still be partial, so the query-plan assertion is required alongside it — it is
+    /// the only check that fails when the predicate SQLite sees does not imply the index's and the
+    /// lookup silently degrades back to a scan (§5.3).</para>
+    /// </remarks>
+    [Fact]
+    public void AMigratedStore_HasTheSameObjectIndexAsAFreshOne()
+    {
+        using var migratedHome = new SandboxHome(initialize: false);
+        using var freshHome = new SandboxHome(initialize: false);
+        WriteVersion1Store(migratedHome, "/knowledge/testing/kestrel", "It binds loopback only.");
+        using (var pre = EngramDatabase.Open(migratedHome.Home))
+        {
+            Execute(pre, "DROP INDEX ix_fact_object;");
+        }
+
+        using var migrated = EngramDatabase.OpenInitialized(migratedHome.Home);
+        using var fresh = EngramDatabase.OpenInitialized(freshHome.Home);
+
+        Assert.Equal("object_id,predicate partial=1", ObjectIndexShape(fresh));
+        Assert.Equal(ObjectIndexShape(fresh), ObjectIndexShape(migrated));
+        Assert.Contains("USING INDEX ix_fact_object", CallersQueryPlan(migrated));
+        Assert.Contains("USING INDEX ix_fact_object", ImplementersQueryPlan(migrated));
+    }
+
+    private static string ObjectIndexShape(SqliteConnection connection)
+    {
+        using var list = connection.CreateCommand();
+        list.CommandText = "SELECT partial FROM pragma_index_list('fact') WHERE name = 'ix_fact_object';";
+        if (list.ExecuteScalar() is not long partial)
+        {
+            return "(absent)";
+        }
+
+        using var info = connection.CreateCommand();
+        info.CommandText = "SELECT group_concat(name) FROM (SELECT name FROM pragma_index_info('ix_fact_object'));";
+        return $"{info.ExecuteScalar()} partial={partial}";
+    }
+
+    /// <summary>
+    /// The exact WHERE clause <see cref="CodeCallGraph"/>'s <c>callers</c> lookup runs, so this
+    /// proves the predicate SQLite actually sees is usable — <c>pragma_index_list.partial</c>
+    /// reports whether an index is partial but never what its predicate says, so a shape match
+    /// alone cannot catch a predicate SQLite declines to match (§5.3).
+    /// </summary>
+    private static string CallersQueryPlan(SqliteConnection connection)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText =
+            "EXPLAIN QUERY PLAN SELECT f.path, o.name, f.analyzer_tier FROM fact f JOIN entity o ON o.id = f.object_id "
+                + "WHERE f.predicate = 'calls' AND f.valid_to IS NULL AND f.object_id IS NOT NULL AND o.path IN ($o0);";
+        command.Parameters.AddWithValue("$o0", "/anything");
+
+        var lines = new List<string>();
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            lines.Add(reader.GetString(reader.GetOrdinal("detail")));
+        }
+
+        return string.Join(" | ", lines);
+    }
+
+    /// <summary>
+    /// The exact WHERE clause <c>EngramMcpTools.NavigateImplementers</c> runs (the windowed
+    /// reverse-edge query 5d4fb33 collapsed the old per-predicate loop into) — same reasoning as
+    /// <see cref="CallersQueryPlan"/>: the shape check alone cannot tell whether this query's
+    /// predicate is actually usable.
+    /// </summary>
+    private static string ImplementersQueryPlan(SqliteConnection connection)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText =
+            "EXPLAIN QUERY PLAN WITH ranked AS ("
+                + "SELECT f.path AS subject_path, f.predicate AS predicate, "
+                + "ROW_NUMBER() OVER (PARTITION BY f.predicate ORDER BY f.predicate, f.path) AS rn "
+                + "FROM fact f JOIN entity o ON o.id = f.object_id "
+                + "WHERE f.predicate IN ($p0) AND f.valid_to IS NULL AND f.object_id IS NOT NULL "
+                + "AND o.path IN ($o0)"
+                + ") SELECT subject_path, predicate, rn FROM ranked WHERE rn <= 1001;";
+        command.Parameters.AddWithValue("$p0", "implements");
+        command.Parameters.AddWithValue("$o0", "/anything");
+
+        var lines = new List<string>();
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            lines.Add(reader.GetString(reader.GetOrdinal("detail")));
+        }
+
+        return string.Join(" | ", lines);
+    }
+
     private static string ThreadIndexShape(SqliteConnection connection)
     {
         using var list = connection.CreateCommand();

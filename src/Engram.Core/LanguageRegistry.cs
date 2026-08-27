@@ -14,7 +14,8 @@ public sealed record LanguageFixture(
     string Source,
     IReadOnlyList<string> ExpectedSymbols,
     IReadOnlyList<string> ExpectedImports,
-    IReadOnlyList<string>? ExpectedDeepSymbols = null);
+    IReadOnlyList<string>? ExpectedDeepSymbols = null,
+    IReadOnlyList<string>? ExpectedInherits = null);
 
 /// <summary>
 /// One tree-sitter grammar (D47): which library file carries it, which export produces it,
@@ -26,6 +27,20 @@ public sealed record TreeSitterGrammar(
     string Library,
     string Symbol,
     IReadOnlyList<string> Extensions);
+
+/// <summary>
+/// Which inheritance predicate(s) a language's grammar can justify (Ultra-Advisor ruling,
+/// §8.5.1): <see cref="Split"/> where extends/implements are syntactically distinct
+/// (TypeScript, JavaScript, Java, GDScript's <c>extends</c>), <see cref="DerivesFrom"/>
+/// where one base list cannot be told apart (C#, Python), <see cref="None"/> where the
+/// language has no base-list construct at all.
+/// </summary>
+public enum InheritancePredicate
+{
+    None,
+    Split,
+    DerivesFrom,
+}
 
 /// <summary>One language: what it is called, which files are its, and what tier-0 can extract.</summary>
 /// <remarks>
@@ -61,7 +76,10 @@ public sealed record LanguageDefinition(
     IReadOnlyList<TreeSitterGrammar>? Grammars = null,
     string? DeclarationQuery = null,
     string? ImportQuery = null,
-    string? CallQuery = null)
+    string? CallQuery = null,
+    InheritancePredicate InheritancePredicate = InheritancePredicate.None,
+    string? InheritanceQuery = null,
+    bool NestedTypeEdgesDropped = false)
 {
     /// <summary>The grammar that parses one of this row's extensions, or null at tier 0/2.</summary>
     public TreeSitterGrammar? GrammarFor(string extension)
@@ -203,6 +221,43 @@ public static class LanguageRegistry
 
     private const string JavaScriptCalls = "(call_expression function: (_) @callee)";
 
+    // Base-list edges (§8.5, §8.6), top-level declarations only, matching the declaration
+    // queries' own scope. @scope names the declaring type itself (not a container), reusing
+    // the same capture-name convention the member patterns above use for "the type this
+    // belongs to". @base -> inherits, @iface -> implements (§8.5.1's per-language split);
+    // wildcards on the base/interface node absorb generic_type/nested_type_identifier/
+    // type_identifier without listing each. Verified by dumping tree-sitter-typescript
+    // 0.23.2's actual parse tree (ts_node_string) for a fixture exercising every shape
+    // below — both the bare and export_statement-wrapped forms are needed, since an
+    // exported class/interface nests one level deeper than an unexported one (the same
+    // reason the declaration queries above carry both forms).
+    //
+    // TypeScript interface `extends` is deliberately mapped to @base (inherits), not @iface:
+    // it is an interface extending an interface, not a class implementing one (§8.6's
+    // flagged, unresolved-by-the-amendment call).
+    private const string TypeScriptInheritance = """
+        (program (class_declaration name: (type_identifier) @scope (class_heritage (extends_clause value: (_) @base))))
+        (program (class_declaration name: (type_identifier) @scope (class_heritage (implements_clause (_) @iface))))
+        (program (abstract_class_declaration name: (type_identifier) @scope (class_heritage (extends_clause value: (_) @base))))
+        (program (abstract_class_declaration name: (type_identifier) @scope (class_heritage (implements_clause (_) @iface))))
+        (program (interface_declaration name: (type_identifier) @scope (extends_type_clause type: (_) @base)))
+        (program (export_statement declaration: (class_declaration name: (type_identifier) @scope (class_heritage (extends_clause value: (_) @base)))))
+        (program (export_statement declaration: (class_declaration name: (type_identifier) @scope (class_heritage (implements_clause (_) @iface)))))
+        (program (export_statement declaration: (abstract_class_declaration name: (type_identifier) @scope (class_heritage (extends_clause value: (_) @base)))))
+        (program (export_statement declaration: (abstract_class_declaration name: (type_identifier) @scope (class_heritage (implements_clause (_) @iface)))))
+        (program (export_statement declaration: (interface_declaration name: (type_identifier) @scope (extends_type_clause type: (_) @base))))
+        """;
+
+    // JavaScript's class_heritage has no extends_clause/implements_clause split — it is a
+    // single expression (tree-sitter-javascript 0.25.0's node-types) — and there is no
+    // interface construct, so only @base is ever captured. InheritancePredicate.Split still
+    // applies (§8.5.1 groups JS with TS/Java/GDScript): the query simply never produces an
+    // @iface capture, which is honest rather than a lie, since JS syntax cannot express one.
+    private const string JavaScriptInheritance = """
+        (program (class_declaration name: (identifier) @scope (class_heritage (_) @base)))
+        (program (export_statement declaration: (class_declaration name: (identifier) @scope (class_heritage (_) @base))))
+        """;
+
     /// <summary>Catch-all for files no row claims: impressions only, nothing extracted.</summary>
     public static readonly LanguageDefinition Text = new(
         Id: "text",
@@ -245,7 +300,9 @@ public static class LanguageRegistry
                     enum Color { Red }
                     """,
                 ExpectedSymbols: ["Widget", "Point", "Color"],
-                ExpectedImports: ["System.Text", "System.Math"])),
+                ExpectedImports: ["System.Text", "System.Math"]),
+            InheritancePredicate: InheritancePredicate.DerivesFrom,
+            NestedTypeEdgesDropped: true),
         new(
             Id: "typescript",
             DisplayName: "TypeScript",
@@ -266,11 +323,16 @@ public static class LanguageRegistry
                     import { readFile } from "node:fs";
                     import config from "./config";
 
-                    export interface Options { deep: boolean; limit(n: number): void }
+                    export interface Options extends BaseOptions { deep: boolean; limit(n: number): void }
                     export async function scan(o: Options): Promise<void> {}
                     const hidden = 1;
 
-                    export class Scanner {
+                    class BareBoth extends BareBase implements BareIface {}
+                    abstract class BareAbstractBoth extends AbsBase implements AbsIface {}
+                    interface BareIfaceExt extends BareIface {}
+                    export abstract class ExportedAbstract extends AbsBase implements AbsIface {}
+
+                    export class Scanner extends ScannerBase implements Trackable {
                         depth = 1;
                         private cache = "";
                         #id = "";
@@ -288,13 +350,17 @@ public static class LanguageRegistry
                         get size(): number { return this.depth; }
                     }
                     """,
-                ExpectedSymbols: ["Options", "scan", "Scanner"],
+                ExpectedSymbols: ["Options", "scan", "Scanner", "ExportedAbstract"],
                 ExpectedImports: ["node:fs", "./config"],
                 ExpectedDeepSymbols:
                 [
                     "Options",
                     "Options/deep",
                     "Options/limit",
+                    "BareBoth",
+                    "BareAbstractBoth",
+                    "BareIfaceExt",
+                    "ExportedAbstract",
                     "Scanner",
                     "Scanner/depth",
                     "Scanner/cache",
@@ -311,6 +377,19 @@ public static class LanguageRegistry
                     "Scanner/legacy",
                     "Scanner/size",
                     "scan",
+                ],
+                ExpectedInherits:
+                [
+                    "BareAbstractBoth implements AbsIface",
+                    "BareAbstractBoth inherits AbsBase",
+                    "BareBoth implements BareIface",
+                    "BareBoth inherits BareBase",
+                    "BareIfaceExt inherits BareIface",
+                    "ExportedAbstract implements AbsIface",
+                    "ExportedAbstract inherits AbsBase",
+                    "Options inherits BaseOptions",
+                    "Scanner implements Trackable",
+                    "Scanner inherits ScannerBase",
                 ]),
             Grammars:
             [
@@ -319,7 +398,10 @@ public static class LanguageRegistry
             ],
             DeclarationQuery: TypeScriptDeclarations,
             ImportQuery: ScriptImports,
-            CallQuery: TypeScriptCalls),
+            CallQuery: TypeScriptCalls,
+            InheritancePredicate: InheritancePredicate.Split,
+            InheritanceQuery: TypeScriptInheritance,
+            NestedTypeEdgesDropped: true),
         new(
             Id: "javascript",
             DisplayName: "JavaScript",
@@ -340,7 +422,9 @@ public static class LanguageRegistry
                     import path from "path";
                     const local = require("./local");
 
-                    export class Runner {
+                    class BareWorker extends BareBase {}
+
+                    export class Runner extends RunnerBase {
                         limit = 10;
                         #secret = "";
                         run() {}
@@ -352,17 +436,26 @@ public static class LanguageRegistry
                 ExpectedImports: ["path", "./local"],
                 ExpectedDeepSymbols:
                 [
+                    "BareWorker",
                     "Runner",
                     "Runner/limit",
                     "Runner/#secret",
                     "Runner/run()",
                     "Runner/run(times)",
                     "main",
+                ],
+                ExpectedInherits:
+                [
+                    "BareWorker inherits BareBase",
+                    "Runner inherits RunnerBase",
                 ]),
             Grammars: [new(Library: "javascript", Symbol: "tree_sitter_javascript", Extensions: [])],
             DeclarationQuery: JavaScriptDeclarations,
             ImportQuery: ScriptImports,
-            CallQuery: JavaScriptCalls),
+            CallQuery: JavaScriptCalls,
+            InheritancePredicate: InheritancePredicate.Split,
+            InheritanceQuery: JavaScriptInheritance,
+            NestedTypeEdgesDropped: true),
         new(
             Id: "markdown",
             DisplayName: "Markdown",

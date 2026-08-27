@@ -20,7 +20,7 @@ namespace Engram.Core;
 /// </remarks>
 public static class EngramDatabase
 {
-    public const int SchemaVersion = 14;
+    public const int SchemaVersion = 16;
 
     public const int BusyTimeoutMilliseconds = 5000;
 
@@ -497,6 +497,34 @@ public static class EngramDatabase
 
             WriteMeta(connection, null, "schema_version", "14");
         }
+
+        if (from < 15)
+        {
+            // fact_fts's eligibility rule moves from an enumerated predicate list to the same
+            // structural condition FactTokenIndex/VectorIndex/FactStore already use, so all three
+            // lanes agree again (edge-fact-lane-eligibility.md §2.3). Trigger DDL is schema, so
+            // this is a migration rather than a repair.
+            RebuildFactFts(connection);
+
+            WriteMeta(connection, null, "schema_version", "15");
+        }
+
+        if (from < 16)
+        {
+            // Pure query planning, like ix_fact_thread at v5: creates no state, reconciles with
+            // nothing, and the reverse-edge lookups it serves are correct without it — only slow.
+            // Partial on object_id IS NOT NULL to match ux_fact_edge_live's partition: a row with
+            // no object can never match object_id = ?, so indexing one is write cost and no read.
+            Execute(
+                connection,
+                null,
+                """
+                CREATE INDEX IF NOT EXISTS ix_fact_object ON fact(object_id, predicate)
+                  WHERE valid_to IS NULL AND object_id IS NOT NULL;
+                """);
+
+            WriteMeta(connection, null, "schema_version", "16");
+        }
     }
 
     /// <summary>
@@ -517,15 +545,10 @@ public static class EngramDatabase
     /// </remarks>
     internal static void RebuildFactFts(SqliteConnection connection, SqliteTransaction? transaction = null)
     {
-        // The predicate list is interpolated from CodePredicates.EdgeBearingSqlList rather than
-        // typed as a literal here, so this and docs/engram-schema.sql's copy cannot drift the way
-        // a hand-duplicated SQL tokenizer would (CLAUDE.md's fact_token rationale, applied here).
-        var edgePredicates = CodePredicates.EdgeBearingSqlList;
-
         Execute(
             connection,
             transaction,
-            $"""
+            """
             DROP TRIGGER IF EXISTS fact_fts_insert;
             DROP TRIGGER IF EXISTS fact_fts_close;
             DROP TRIGGER IF EXISTS fact_fts_delete;
@@ -542,27 +565,27 @@ public static class EngramDatabase
             );
 
             CREATE TRIGGER fact_fts_insert AFTER INSERT ON fact
-              WHEN new.predicate NOT IN ({edgePredicates}) BEGIN
+              WHEN NOT (new.regenerable IS 1 AND new.object_id IS NOT NULL) BEGIN
               INSERT INTO fact_fts(rowid, body, predicate, path)
                 VALUES (new.id, new.body, new.predicate, new.path);
             END;
 
             CREATE TRIGGER fact_fts_close AFTER UPDATE OF valid_to ON fact
               WHEN old.valid_to IS NULL AND new.valid_to IS NOT NULL
-                AND old.predicate NOT IN ({edgePredicates}) BEGIN
+                AND NOT (old.regenerable IS 1 AND old.object_id IS NOT NULL) BEGIN
               INSERT INTO fact_fts(fact_fts, rowid, body, predicate, path)
                 VALUES ('delete', old.id, old.body, old.predicate, old.path);
             END;
 
             CREATE TRIGGER fact_fts_delete AFTER DELETE ON fact
-              WHEN old.valid_to IS NULL AND old.predicate NOT IN ({edgePredicates}) BEGIN
+              WHEN old.valid_to IS NULL AND NOT (old.regenerable IS 1 AND old.object_id IS NOT NULL) BEGIN
               INSERT INTO fact_fts(fact_fts, rowid, body, predicate, path)
                 VALUES ('delete', old.id, old.body, old.predicate, old.path);
             END;
 
             CREATE TRIGGER fact_fts_repath AFTER UPDATE OF path ON fact
               WHEN new.valid_to IS NULL AND old.path <> new.path
-                AND new.predicate NOT IN ({edgePredicates}) BEGIN
+                AND NOT (new.regenerable IS 1 AND new.object_id IS NOT NULL) BEGIN
               INSERT INTO fact_fts(fact_fts, rowid, body, predicate, path)
                 VALUES ('delete', old.id, old.body, old.predicate, old.path);
               INSERT INTO fact_fts(rowid, body, predicate, path)
@@ -571,7 +594,7 @@ public static class EngramDatabase
 
             INSERT INTO fact_fts(rowid, body, predicate, path)
               SELECT id, body, predicate, path FROM fact
-              WHERE valid_to IS NULL AND predicate NOT IN ({edgePredicates});
+              WHERE valid_to IS NULL AND NOT (regenerable IS 1 AND object_id IS NOT NULL);
             """);
     }
 

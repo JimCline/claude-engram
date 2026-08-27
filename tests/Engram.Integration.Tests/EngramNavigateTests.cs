@@ -85,17 +85,6 @@ public class EngramNavigateTests
         Assert.Contains("System.Text", result);
     }
 
-    [Theory]
-    [InlineData("neighbors")]
-    public void PhaseThreeRelations_AnswerNotYetIndexed_NeverAnEmptyResult(string relation)
-    {
-        using var sandbox = new SandboxHome();
-
-        var result = EngramMcpTools.Navigate(sandbox.Home, Session, "anything", relation);
-
-        Assert.Contains("not yet indexed", result);
-    }
-
     [Fact]
     public void UnknownRelation_IsRejected()
     {

@@ -723,16 +723,18 @@ public sealed class EngramMcpTools
 
     [McpServerTool(Name = "engram_navigate")]
     [Description(
-        "Where is a symbol defined, what does a file import, or who calls/is called by a symbol — a " +
+        "Where is a symbol defined, what does a file import, who calls/is called by a symbol, what " +
+        "does a type inherit/implement or who implements it, or what members a type declares — a " +
         "deterministic lookup over indexed code, not a search. Use it instead of Read/Grep to answer " +
-        "'where is Z defined', 'what does Y import', 'who calls Z', or 'what does Z call'. relation is " +
-        "defined_at, imports, callers, or callees; neighbors is recognized but answers 'not yet indexed' " +
-        "rather than an empty result.")]
+        "'where is Z defined', 'what does Y import', 'who calls Z', 'what does Z call', 'what does Z " +
+        "implement', 'who implements Z', or 'what members does Z have'. relation is defined_at, " +
+        "imports, callers, callees, implements, implementers, or members. implements/implementers/" +
+        "members drop base-list and containment edges for types nested inside another type.")]
     public static string Navigate(
         EngramHome home,
         McpSessionId session,
-        [Description("A symbol name for defined_at/callers/callees, or a file path for imports.")] string query,
-        [Description("One of: defined_at, imports, callers, callees, neighbors.")] string relation,
+        [Description("A symbol name for defined_at/callers/callees/implements/implementers/members, or a file path for imports.")] string query,
+        [Description("One of: defined_at, imports, callers, callees, implements, implementers, members.")] string relation,
         [Description("Restrict matches to one repo's indexed code, by its slug.")] string? repo = null,
         [Description("Maximum matches returned. Defaults to 20, clamped to 1-100.")] int limit = 20)
     {
@@ -740,25 +742,20 @@ public sealed class EngramMcpTools
         var normalizedRelation = relation.Trim().ToLowerInvariant();
 
         NavigateOutcome outcome;
-        if (normalizedRelation is "neighbors")
+        using (var connection = EngramDatabase.OpenInitialized(home))
         {
-            outcome = NavigateOutcome.NotFound(
-                "'neighbors' is not yet indexed. This is not a negative result; it means the "
-                    + "question cannot be answered yet, not that the answer is empty.",
-                coverageCaveat: false);
-        }
-        else
-        {
-            using var connection = EngramDatabase.OpenInitialized(home);
             outcome = normalizedRelation switch
             {
                 "defined_at" => NavigateDefinedAt(connection, query, repo, limit),
                 "imports" => NavigateImports(connection, query, repo, limit),
                 "callers" => NavigateCallers(connection, query, repo, limit),
                 "callees" => NavigateCallees(connection, query, repo, limit),
+                "implements" => NavigateImplements(connection, query, repo, limit),
+                "implementers" => NavigateImplementers(connection, query, repo, limit),
+                "members" => NavigateMembers(connection, query, repo, limit),
                 _ => NavigateOutcome.NotFound(
-                    $"Unknown relation '{relation}'. Use defined_at, imports, callers, or callees "
-                        + "(neighbors is recognized but not yet indexed).",
+                    $"Unknown relation '{relation}'. Use defined_at, imports, callers, callees, "
+                        + "implements, implementers, or members.",
                     coverageCaveat: false),
             };
         }
@@ -992,6 +989,17 @@ public sealed class EngramMcpTools
         }
 
         builder.Append(":\n");
+
+        // §1b: an over-approximation trusted rather than sanity-checked (first-reach, §8.2)
+        // is a worse failure than a wrong answer, because it is invisible. Say so when the
+        // query leaf matched more than one distinct callee spelling.
+        if (result.DistinctSpellings.Count > 1)
+        {
+            builder.Append("note: '").Append(query).Append("' matched ").Append(result.DistinctSpellings.Count)
+                .Append(" distinct callee spellings (").Append(string.Join(", ", result.DistinctSpellings.Take(5)))
+                .Append(result.DistinctSpellings.Count > 5 ? ", …" : string.Empty)
+                .Append("); these callers are matched by leaf name and may include unrelated symbols.\n");
+        }
         var staleCount = 0;
         foreach (var caller in result.Callers)
         {
@@ -1101,6 +1109,358 @@ public sealed class EngramMcpTools
         var extractionTierLabels = extractionTiers.Select(ExtractionTierLabel).Distinct().ToList();
         return new NavigateOutcome(
             builder.ToString().TrimEnd('\n'), Found: true, Tiers: [], ExtractionTiers: extractionTierLabels);
+    }
+
+    // The one union implementation (§8.5.3 item 2): every navigate relation that asks about
+    // base lists reads all three predicates so a caller asking "implements" gets a match
+    // regardless of which one the language's grammar could justify (§8.5.1).
+    private static readonly string[] InheritancePredicates = ["inherits", "implements", "derives-from"];
+
+    private static NavigateOutcome NavigateImplements(SqliteConnection connection, string query, string? repo, int limit)
+    {
+        var repoNeedle = RepoNeedle(repo);
+        if (repoNeedle is not null && !RepoIndexed(connection, repoNeedle))
+        {
+            return NavigateOutcome.NotFound($"Repo '{repo}' is not indexed. Nothing to search.");
+        }
+
+        var matches = SymbolResolver.Resolve(connection, query, limit, repoNeedle);
+        if (matches.Count == 0)
+        {
+            return NavigateOutcome.NotFound(
+                $"No symbol named '{query}' found (checked exact, case-insensitive, and substring match).");
+        }
+
+        var rows = new List<(SymbolMatch Match, StoredFact Fact, string BaseName)>();
+        foreach (var match in matches)
+        {
+            foreach (var predicate in InheritancePredicates)
+            {
+                foreach (var fact in FactStore.History(connection, match.Path, predicate).Where(f => f.ValidTo is null))
+                {
+                    rows.Add((match, fact, ObjectNameOf(connection, fact.Id) ?? "(unknown)"));
+                }
+            }
+        }
+
+        if (rows.Count == 0)
+        {
+            return NavigateOutcome.NotFound($"No recorded base-list edges for '{query}'.");
+        }
+
+        var displayed = rows.Take(limit).ToList();
+        var builder = new System.Text.StringBuilder();
+        builder.Append(CountText(displayed.Count, "base-list edge")).Append(" for '").Append(query).Append('\'');
+        if (rows.Count > displayed.Count)
+        {
+            builder.Append(" (showing ").Append(displayed.Count).Append(" of ").Append(rows.Count).Append(')');
+        }
+
+        builder.Append(":\n");
+
+        var staleCount = 0;
+        foreach (var (match, fact, baseName) in displayed)
+        {
+            builder.Append("  [").Append(fact.Predicate).Append(']');
+            if (AppendFreshness(builder, connection, match.Path))
+            {
+                staleCount++;
+            }
+
+            builder.Append(' ').Append(match.Path).Append(" -> ").Append(baseName).Append('\n');
+        }
+
+        AppendOverApproximationNote(builder, displayed.Select(r => r.Fact.Predicate));
+
+        if (staleCount > 0)
+        {
+            builder.Append(NavigateOutcome.StaleFootnote(staleCount)).Append('\n');
+        }
+
+        return new NavigateOutcome(builder.ToString().TrimEnd('\n'), Found: true, Tiers: [], ExtractionTiers: []);
+    }
+
+    private static NavigateOutcome NavigateImplementers(SqliteConnection connection, string query, string? repo, int limit)
+    {
+        var repoNeedle = RepoNeedle(repo);
+        if (repoNeedle is not null && !RepoIndexed(connection, repoNeedle))
+        {
+            return NavigateOutcome.NotFound($"Repo '{repo}' is not indexed. Nothing to search.");
+        }
+
+        // §11.2 (Architect ruling): leaf-match both sides via CodeCallGraph.MatchingSymbolNames,
+        // the same mechanism `callers` uses for the structurally identical question (find stored
+        // symbol-name objects naming X, return their subjects) — exact string equality against
+        // `o.path` was an unargued divergence from that relation's leaf matching. Deliberately
+        // NOT SymbolResolver's NOCASE/substring tiers: substring would return `IFooBar` for a
+        // query of `IFoo`, the same false positive class Grep is being replaced for.
+        var objects = CodeCallGraph.MatchingSymbolNames(connection, [CodePaths.LeafOf(query)]);
+        var distinctSpellings = objects.Select(o => o.Name).Distinct(StringComparer.Ordinal).ToList();
+
+        var rows = new List<(string SubjectPath, string Predicate, int? AnalyzerTier)>();
+        var truncatedPredicates = new List<string>();
+        if (objects.Count > 0)
+        {
+            var objectPaths = objects.Select(o => o.Path).ToList();
+
+            // Ultra-Advisor ruling (graph-index-audit follow-up): one statement, not a
+            // 3-query-per-predicate loop — §8.5.3.2's one-implementation rule applies to this
+            // union the same way it applies to the predicate list itself. Not a flat LIMIT,
+            // though: a single unpartitioned cap would let a 1000+-row `inherits` hub starve
+            // `derives-from` out of the fetched set entirely, silently breaking
+            // AppendOverApproximationNote below, which depends on every predicate actually
+            // being sampled. ROW_NUMBER() OVER (PARTITION BY predicate) preserves the
+            // per-predicate cap inside the single query. Fetching rn <= 1001 rather than 1000
+            // is how a predicate's own cap-hit is detected without a second query — the 1001st
+            // row (if present) is dropped from `rows` but its predicate is marked truncated.
+            using var command = connection.CreateCommand();
+            var objectPlaceholders = string.Join(',', objectPaths.Select((_, i) => $"$o{i}"));
+            var predicateParams = InheritancePredicates.Select((p, i) => (Name: $"$p{i}", Value: p)).ToList();
+            var predicatePlaceholders = string.Join(',', predicateParams.Select(p => p.Name));
+            var repoClause = repoNeedle is null ? string.Empty : " AND f.path LIKE '%' || $repo || '%'";
+            command.CommandText =
+                "WITH ranked AS ("
+                    + "SELECT f.path AS subject_path, f.predicate AS predicate, f.analyzer_tier AS analyzer_tier, "
+                    + "ROW_NUMBER() OVER (PARTITION BY f.predicate ORDER BY f.predicate, f.path) AS rn "
+                    + "FROM fact f JOIN entity o ON o.id = f.object_id "
+                    + $"WHERE f.predicate IN ({predicatePlaceholders}) AND f.valid_to IS NULL "
+                    + "AND f.object_id IS NOT NULL "
+                    + $"AND o.path IN ({objectPlaceholders}){repoClause}"
+                    + ") SELECT subject_path, predicate, analyzer_tier, rn FROM ranked WHERE rn <= 1001 "
+                    + "ORDER BY predicate, subject_path;";
+            foreach (var p in predicateParams)
+            {
+                command.Parameters.AddWithValue(p.Name, p.Value);
+            }
+
+            for (var i = 0; i < objectPaths.Count; i++)
+            {
+                command.Parameters.AddWithValue($"$o{i}", objectPaths[i]);
+            }
+
+            if (repoNeedle is not null)
+            {
+                command.Parameters.AddWithValue("$repo", repoNeedle);
+            }
+
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                var predicate = reader.GetString(1);
+                var rn = reader.GetInt32(3);
+                if (rn > 1000)
+                {
+                    truncatedPredicates.Add(predicate);
+                    continue;
+                }
+
+                rows.Add((reader.GetString(0), predicate, reader.IsDBNull(2) ? null : reader.GetInt32(2)));
+            }
+        }
+
+        if (rows.Count == 0)
+        {
+            var miss =
+                $"No recorded type names '{query}' as a base or interface (this is a name-as-written "
+                    + "match, matched by leaf name).";
+            if (HasTypeArgumentMarker(query) || HasParameterizedSpelling(connection, query))
+            {
+                miss += " " + GenericsGapNote;
+            }
+
+            return NavigateOutcome.NotFound(miss);
+        }
+
+        var displayed = rows.Take(limit).ToList();
+        var builder = new System.Text.StringBuilder();
+        builder.Append(CountText(displayed.Count, "implementer")).Append(" of '").Append(query).Append('\'');
+        if (rows.Count > displayed.Count)
+        {
+            builder.Append(" (showing ").Append(displayed.Count).Append(" of ").Append(rows.Count).Append(')');
+        }
+
+        builder.Append(":\n");
+
+        // §8.5.3 item 4 / §10.2 (Architect ruling): a returned list makes an implicit
+        // completeness claim, so this relation's exact-match-only limitation must be
+        // declared whenever the query could plausibly have been affected by it — not only
+        // on a total miss, which was the original, incomplete asymmetry. The gap class
+        // itself (generics missed by exact match) is a static property of this relation;
+        // whether to print it is decided per call, from either side's spelling: the query
+        // itself, or a stored candidate spelled with type arguments the query lacks.
+        if (HasTypeArgumentMarker(query) || HasParameterizedSpelling(connection, query))
+        {
+            builder.Append("note: ").Append(GenericsGapNote).Append('\n');
+        }
+
+        // §11.2 / §1b: leaf matching makes `IFoo` hit `NS1.IFoo` and `NS2.IFoo` alike — an
+        // over-approximation on the object side, marked the same way `callers`' hub note
+        // marks its own leaf-matched ambiguity (already shipped in 6aa2f33, reused not
+        // reinvented).
+        if (distinctSpellings.Count > 1)
+        {
+            builder.Append("note: '").Append(query).Append("' matched ").Append(distinctSpellings.Count)
+                .Append(" distinct type spellings (").Append(string.Join(", ", distinctSpellings.Take(5)))
+                .Append(distinctSpellings.Count > 5 ? ", …" : string.Empty)
+                .Append("); these results are matched by leaf name and may include unrelated types.\n");
+        }
+
+        // graph-index-audit §2.4: `LIMIT 1000` (now per predicate inside the windowed query
+        // above) is a real cap, and a capped list makes the same implicit completeness claim
+        // §8.5.3 item 4 forbids leaving silent — this is that rule's discrimination test
+        // applied to the cap itself: fires only on the predicates that actually hit it, not
+        // unconditionally.
+        if (truncatedPredicates.Count > 0)
+        {
+            builder.Append("note: more than 1000 live '")
+                .Append(string.Join("'/'", truncatedPredicates))
+                .Append("' edge(s) exist for '").Append(query)
+                .Append("'; only the first 1000 per predicate are included above.\n");
+        }
+
+        var staleCount = 0;
+        foreach (var (subjectPath, predicate, _) in displayed)
+        {
+            builder.Append("  [").Append(predicate).Append(']');
+            if (AppendFreshness(builder, connection, subjectPath))
+            {
+                staleCount++;
+            }
+
+            builder.Append(' ').Append(subjectPath).Append('\n');
+        }
+
+        AppendOverApproximationNote(builder, displayed.Select(r => r.Predicate));
+
+        if (staleCount > 0)
+        {
+            builder.Append(NavigateOutcome.StaleFootnote(staleCount)).Append('\n');
+        }
+
+        return new NavigateOutcome(builder.ToString().TrimEnd('\n'), Found: true, Tiers: [], ExtractionTiers: []);
+    }
+
+    private static NavigateOutcome NavigateMembers(SqliteConnection connection, string query, string? repo, int limit)
+    {
+        var repoNeedle = RepoNeedle(repo);
+        if (repoNeedle is not null && !RepoIndexed(connection, repoNeedle))
+        {
+            return NavigateOutcome.NotFound($"Repo '{repo}' is not indexed. Nothing to search.");
+        }
+
+        var matches = SymbolResolver.Resolve(connection, query, limit, repoNeedle);
+        if (matches.Count == 0)
+        {
+            return NavigateOutcome.NotFound(
+                $"No symbol named '{query}' found (checked exact, case-insensitive, and substring match).");
+        }
+
+        var rows = new List<(SymbolMatch Match, StoredFact Fact, string MemberName)>();
+        foreach (var match in matches)
+        {
+            foreach (var fact in FactStore.History(connection, match.Path, "contains").Where(f => f.ValidTo is null))
+            {
+                rows.Add((match, fact, ObjectNameOf(connection, fact.Id) ?? "(unknown)"));
+            }
+        }
+
+        if (rows.Count == 0)
+        {
+            return NavigateOutcome.NotFound($"No recorded members of '{query}'.");
+        }
+
+        var displayed = rows.Take(limit).ToList();
+        var builder = new System.Text.StringBuilder();
+        builder.Append(CountText(displayed.Count, "member")).Append(" of '").Append(query).Append('\'');
+        if (rows.Count > displayed.Count)
+        {
+            builder.Append(" (showing ").Append(displayed.Count).Append(" of ").Append(rows.Count).Append(')');
+        }
+
+        builder.Append(":\n");
+
+        var staleCount = 0;
+        foreach (var (match, _, memberName) in displayed)
+        {
+            builder.Append("  ");
+            if (AppendFreshness(builder, connection, match.Path))
+            {
+                staleCount++;
+            }
+
+            builder.Append(' ').Append(match.Path).Append(" -> ").Append(memberName).Append('\n');
+        }
+
+        if (staleCount > 0)
+        {
+            builder.Append(NavigateOutcome.StaleFootnote(staleCount)).Append('\n');
+        }
+
+        return new NavigateOutcome(builder.ToString().TrimEnd('\n'), Found: true, Tiers: [], ExtractionTiers: []);
+    }
+
+    /// <summary>
+    /// §8.5.3 item 3: a <c>derives-from</c> hit answering an implements/inherits question is
+    /// an over-approximation — the parser could not tell base class from interface — and must
+    /// say so, or the union quietly turns "could not tell" into "yes".
+    /// </summary>
+    private static void AppendOverApproximationNote(System.Text.StringBuilder builder, IEnumerable<string> predicates)
+    {
+        var list = predicates as IReadOnlyCollection<string> ?? predicates.ToList();
+        var derivesFrom = list.Count(p => p == "derives-from");
+        if (derivesFrom == 0)
+        {
+            return;
+        }
+
+        builder.Append("note: ").Append(derivesFrom).Append(" of ").Append(list.Count)
+            .Append(" results are from languages whose syntax does not distinguish base classes "
+                + "from interfaces (C#, Python); those are base-list entries, not confirmed interface "
+                + "implementations.\n");
+    }
+
+    // §8.5.3 item 4 / §10.2: a statically-known gap of the `implementers` relation itself
+    // (query side, not per-file data) — exact-name matching cannot find a base-list entry
+    // spelled with different type arguments than the query. Fix-or-declare: not fixed, so
+    // declared, and surfaced only when the query's own spelling shows it could plausibly
+    // have been affected, per the same discipline `[stale]` already uses.
+    private const string GenericsGapNote =
+        "'implementers' matches base-list entries by exact spelling only; a differently "
+            + "parameterized spelling of this type (e.g. a different generic argument) would be missed.";
+
+    private static bool HasTypeArgumentMarker(string text) => text.Contains('<', StringComparison.Ordinal);
+
+    // §8.5.3 item 4: the dominant case is the query spelled bare (`IComparer`) against a
+    // stored base-list entry spelled with type arguments (`IComparer<T>`) — the query itself
+    // then carries no marker, so HasTypeArgumentMarker(query) alone never fires exactly when
+    // the caveat is most needed. Probe the object side directly: does any stored symbol-name
+    // start with this spelling followed by '<'? % and _ are LIKE metacharacters and symbol
+    // names routinely contain '_' (and the escaping of '%' in CodePaths.ForSymbolName itself
+    // reintroduces a literal '%'), so the probed spelling must be escaped, not just embedded.
+    // ESCAPE keeps this query from using entity's unique-path index for a range scan — an
+    // accepted cost, since correctness on '_'-bearing names matters more here than one extra
+    // full scan per implementers call, and case-insensitive LIKE cannot use that index anyway
+    // (see the ix_entity_kind comment in docs/engram-schema.sql).
+    private static bool HasParameterizedSpelling(SqliteConnection connection, string query)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText =
+            "SELECT 1 FROM entity WHERE kind = 'symbol-name' AND path LIKE $prefix ESCAPE '\\' LIMIT 1;";
+        command.Parameters.AddWithValue("$prefix", EscapeLikePattern(CodePaths.ForSymbolName(query)) + "<%");
+        return command.ExecuteScalar() is not null;
+    }
+
+    private static string EscapeLikePattern(string text) =>
+        text.Replace("\\", "\\\\", StringComparison.Ordinal)
+            .Replace("%", "\\%", StringComparison.Ordinal)
+            .Replace("_", "\\_", StringComparison.Ordinal);
+
+    private static string? ObjectNameOf(SqliteConnection connection, long factId)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT o.path FROM fact f JOIN entity o ON o.id = f.object_id WHERE f.id = $id;";
+        command.Parameters.AddWithValue("$id", factId);
+        return command.ExecuteScalar() is string path ? CodePaths.SymbolNameOf(path) ?? path : null;
     }
 
     private static string TierLabel(SymbolMatchTier tier) => tier switch
