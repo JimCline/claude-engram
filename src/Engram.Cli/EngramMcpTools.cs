@@ -728,7 +728,8 @@ public sealed class EngramMcpTools
         "deterministic lookup over indexed code, not a search. Use it instead of Read/Grep to answer " +
         "'where is Z defined', 'what does Y import', 'who calls Z', 'what does Z call', 'what does Z " +
         "implement', 'who implements Z', or 'what members does Z have'. relation is defined_at, " +
-        "imports, callers, callees, implements, implementers, or members.")]
+        "imports, callers, callees, implements, implementers, or members. implements/implementers/" +
+        "members drop base-list and containment edges for types nested inside another type.")]
     public static string Navigate(
         EngramHome home,
         McpSessionId session,
@@ -1170,7 +1171,6 @@ public sealed class EngramMcpTools
         }
 
         AppendOverApproximationNote(builder, displayed.Select(r => r.Fact.Predicate));
-        AppendNestedTypeGapNoteIfApplicable(builder, displayed.Select(r => r.Match.Path));
 
         if (staleCount > 0)
         {
@@ -1188,31 +1188,48 @@ public sealed class EngramMcpTools
             return NavigateOutcome.NotFound($"Repo '{repo}' is not indexed. Nothing to search.");
         }
 
-        var objectPath = CodePaths.ForSymbolName(query);
-        var rows = new List<(string SubjectPath, string Predicate, int? AnalyzerTier)>();
-        foreach (var predicate in InheritancePredicates)
-        {
-            using var command = connection.CreateCommand();
-            var repoClause = repoNeedle is null ? string.Empty : " AND f.path LIKE '%' || $repo || '%'";
-            // F3: capping this fetch at the caller's display `limit` (per predicate, so up
-            // to 3x it) made `rows.Count` undercount the true total whenever one predicate
-            // alone had more matches than `limit` — the SQL query truncated before the
-            // predicates were even combined. Fetch generously here (matching the 1000 cap
-            // SymbolResolver.Resolve uses elsewhere in this file); `limit` governs display only.
-            command.CommandText =
-                "SELECT f.path, f.analyzer_tier FROM fact f JOIN entity o ON o.id = f.object_id "
-                    + $"WHERE f.predicate = $predicate AND f.valid_to IS NULL AND o.path = $object{repoClause} LIMIT 1000;";
-            command.Parameters.AddWithValue("$predicate", predicate);
-            command.Parameters.AddWithValue("$object", objectPath);
-            if (repoNeedle is not null)
-            {
-                command.Parameters.AddWithValue("$repo", repoNeedle);
-            }
+        // §11.2 (Architect ruling): leaf-match both sides via CodeCallGraph.MatchingSymbolNames,
+        // the same mechanism `callers` uses for the structurally identical question (find stored
+        // symbol-name objects naming X, return their subjects) — exact string equality against
+        // `o.path` was an unargued divergence from that relation's leaf matching. Deliberately
+        // NOT SymbolResolver's NOCASE/substring tiers: substring would return `IFooBar` for a
+        // query of `IFoo`, the same false positive class Grep is being replaced for.
+        var objects = CodeCallGraph.MatchingSymbolNames(connection, [CodePaths.LeafOf(query)]);
+        var distinctSpellings = objects.Select(o => o.Name).Distinct(StringComparer.Ordinal).ToList();
 
-            using var reader = command.ExecuteReader();
-            while (reader.Read())
+        var rows = new List<(string SubjectPath, string Predicate, int? AnalyzerTier)>();
+        if (objects.Count > 0)
+        {
+            var objectPaths = objects.Select(o => o.Path).ToList();
+            foreach (var predicate in InheritancePredicates)
             {
-                rows.Add((reader.GetString(0), predicate, reader.IsDBNull(1) ? null : reader.GetInt32(1)));
+                using var command = connection.CreateCommand();
+                var placeholders = string.Join(',', objectPaths.Select((_, i) => $"$o{i}"));
+                var repoClause = repoNeedle is null ? string.Empty : " AND f.path LIKE '%' || $repo || '%'";
+                // F3: capping this fetch at the caller's display `limit` (per predicate, so up
+                // to 3x it) made `rows.Count` undercount the true total whenever one predicate
+                // alone had more matches than `limit` — the SQL query truncated before the
+                // predicates were even combined. Fetch generously here (matching the 1000 cap
+                // SymbolResolver.Resolve uses elsewhere in this file); `limit` governs display only.
+                command.CommandText =
+                    "SELECT f.path, f.analyzer_tier FROM fact f JOIN entity o ON o.id = f.object_id "
+                        + $"WHERE f.predicate = $predicate AND f.valid_to IS NULL AND o.path IN ({placeholders}){repoClause} LIMIT 1000;";
+                command.Parameters.AddWithValue("$predicate", predicate);
+                for (var i = 0; i < objectPaths.Count; i++)
+                {
+                    command.Parameters.AddWithValue($"$o{i}", objectPaths[i]);
+                }
+
+                if (repoNeedle is not null)
+                {
+                    command.Parameters.AddWithValue("$repo", repoNeedle);
+                }
+
+                using var reader = command.ExecuteReader();
+                while (reader.Read())
+                {
+                    rows.Add((reader.GetString(0), predicate, reader.IsDBNull(1) ? null : reader.GetInt32(1)));
+                }
             }
         }
 
@@ -1220,7 +1237,7 @@ public sealed class EngramMcpTools
         {
             var miss =
                 $"No recorded type names '{query}' as a base or interface (this is a name-as-written "
-                    + "match, not a resolved symbol — checked exact spelling only).";
+                    + "match, matched by leaf name).";
             if (HasTypeArgumentMarker(query) || HasParameterizedSpelling(connection, query))
             {
                 miss += " " + GenericsGapNote;
@@ -1251,6 +1268,18 @@ public sealed class EngramMcpTools
             builder.Append("note: ").Append(GenericsGapNote).Append('\n');
         }
 
+        // §11.2 / §1b: leaf matching makes `IFoo` hit `NS1.IFoo` and `NS2.IFoo` alike — an
+        // over-approximation on the object side, marked the same way `callers`' hub note
+        // marks its own leaf-matched ambiguity (already shipped in 6aa2f33, reused not
+        // reinvented).
+        if (distinctSpellings.Count > 1)
+        {
+            builder.Append("note: '").Append(query).Append("' matched ").Append(distinctSpellings.Count)
+                .Append(" distinct type spellings (").Append(string.Join(", ", distinctSpellings.Take(5)))
+                .Append(distinctSpellings.Count > 5 ? ", …" : string.Empty)
+                .Append("); these results are matched by leaf name and may include unrelated types.\n");
+        }
+
         var staleCount = 0;
         foreach (var (subjectPath, predicate, _) in displayed)
         {
@@ -1264,7 +1293,6 @@ public sealed class EngramMcpTools
         }
 
         AppendOverApproximationNote(builder, displayed.Select(r => r.Predicate));
-        AppendNestedTypeGapNoteIfApplicable(builder, displayed.Select(r => r.SubjectPath));
 
         if (staleCount > 0)
         {
@@ -1324,8 +1352,6 @@ public sealed class EngramMcpTools
 
             builder.Append(' ').Append(match.Path).Append(" -> ").Append(memberName).Append('\n');
         }
-
-        AppendNestedTypeGapNoteIfApplicable(builder, displayed.Select(r => r.Match.Path));
 
         if (staleCount > 0)
         {
@@ -1390,40 +1416,6 @@ public sealed class EngramMcpTools
         text.Replace("\\", "\\\\", StringComparison.Ordinal)
             .Replace("%", "\\%", StringComparison.Ordinal)
             .Replace("_", "\\_", StringComparison.Ordinal);
-
-    // §8.5.3 item 4 / §10.2: the second required static gap class, extraction-side rather
-    // than query-side — DeepTier.Merge (src/Engram.Core/DeepAnalysis.cs) resolves both base
-    // lists and containment against a file's top-level declarations only, so a type nested
-    // inside another type drops its own inheritance and containment edges silently. Declared
-    // per LanguageDefinition row (the same mechanism InheritancePredicate uses), fired only
-    // when a displayed result actually belongs to a language whose row declares it. Scoped to
-    // the displayed rows, not the full result set, matching AppendOverApproximationNote above:
-    // the note caveats how to read what's on screen, not what a truncated remainder might
-    // contain — a rows-beyond-`limit` reader already learns of the truncation from the
-    // "(showing N of M)" line and can page for more.
-    private const string NestedTypeGapNoteTail =
-        " not address nested-type declarations (§8.6); base-list and containment edges for a "
-            + "type nested inside another type are dropped rather than shown here.";
-
-    private static void AppendNestedTypeGapNoteIfApplicable(
-        System.Text.StringBuilder builder, IEnumerable<string> subjectPaths)
-    {
-        var languages = subjectPaths
-            .Select(CodeCallGraph.FileOf)
-            .Select(LanguageRegistry.Resolve)
-            .Where(l => l.NestedTypeEdgesDropped)
-            .Select(l => l.DisplayName)
-            .Distinct(StringComparer.Ordinal)
-            .ToList();
-
-        if (languages.Count == 0)
-        {
-            return;
-        }
-
-        builder.Append("note: ").Append(string.Join(", ", languages))
-            .Append(languages.Count == 1 ? " does" : " do").Append(NestedTypeGapNoteTail).Append('\n');
-    }
 
     private static string? ObjectNameOf(SqliteConnection connection, long factId)
     {

@@ -23,11 +23,17 @@ namespace Engram.EndToEnd.Tests;
 /// around (CLAUDE.md's D37 rule, applied to a benchmark).
 /// </para>
 /// <para>
-/// Deviation from the spec's literal "3 shapes × 4 relations": only <c>callers</c> and
-/// <c>callees</c> are measured. §4's own decision table and both hypotheses (H1, H2) concern
-/// only those two; <c>defined_at</c>/<c>imports</c> cost is a single <c>SymbolResolver.Resolve</c>
-/// call with no hypothesis attached here, already characterized by D58 for the same query shape
-/// in recall. Noted rather than silently narrowed.
+/// Deviation from the spec's literal "3 shapes × 4 relations": <c>defined_at</c>/<c>imports</c>
+/// cost is a single <c>SymbolResolver.Resolve</c> call with no hypothesis attached here, already
+/// characterized by D58 for the same query shape in recall. Noted rather than silently narrowed.
+/// </para>
+/// <para>
+/// §11.2 (Architect ruling on the qualifier-spelling fix) adds an <c>implementers</c> arm: it
+/// moved from one indexed equality to a <see cref="Engram.Core.CodeCallGraph.MatchingSymbolNames"/>
+/// scan, the same mechanism this file already measures for <c>callers</c>/<c>callees</c>, and
+/// §9.4 priced that move at +17.80 ms @50k — a number this harness exists to check rather than
+/// take on faith. <see cref="GenerateRepo"/> now also emits <c>class … extends …</c> declarations
+/// at the same stride as the hub/distinctive callers, so the same corpus serves both measurements.
 /// </para>
 /// </remarks>
 public class NavigateLatencyMeasurementTests
@@ -130,6 +136,10 @@ public class NavigateLatencyMeasurementTests
                     ("callees", "distinctive", "Fn_1"),
                     ("callees", "distinctive-b", "Fn_1"),
                     ("callees", "hub", "Fn_0"),
+                    ("implementers", "no-match", NoMatchQuery),
+                    ("implementers", "distinctive", DistinctiveQuery),
+                    ("implementers", "distinctive-b", DistinctiveQuery),
+                    ("implementers", "hub", HubQuery),
                 };
 
                 // Warm up every arm once before timing any of them, then alternate arms on every
@@ -235,6 +245,17 @@ public class NavigateLatencyMeasurementTests
         calls.CommandText = "SELECT COUNT(*) FROM fact WHERE predicate = 'calls' AND valid_to IS NULL;";
         var callsCount = (long)calls.ExecuteScalar()!;
         Assert.True(callsCount >= minExpectedSymbolNames, $"expected roughly {expectedFunctions} live calls facts, found {callsCount}.");
+
+        using var inherits = connection.CreateCommand();
+        inherits.CommandText =
+            "SELECT COUNT(*) FROM fact WHERE predicate IN ('inherits', 'implements', 'derives-from') AND valid_to IS NULL;";
+        var inheritsCount = (long)inherits.ExecuteScalar()!;
+        var minExpectedInherits = (long)(expectedFunctions / (double)HubCallerStride * 0.5);
+        Assert.True(
+            inheritsCount >= minExpectedInherits,
+            $"expected at least {minExpectedInherits} live inheritance facts (hub/distinctive classes " +
+            $"seeded at the same stride as hub/distinctive callers), found {inheritsCount} — the fixture " +
+            "did not seed what the implementers arm needs.");
     }
 
     private static string GenerateRepo(int functionCount)
@@ -253,23 +274,33 @@ public class NavigateLatencyMeasurementTests
                 {
                     builder.AppendLine("function Hub() {}");
                     builder.AppendLine("function DistinctiveTargetFn() {}");
+                    builder.AppendLine("class Hub {}");
+                    builder.AppendLine("class DistinctiveTargetFn {}");
                 }
 
                 string body;
+                string? baseSpelling;
                 if (index > 0 && index % HubCallerStride == 0)
                 {
                     body = HubSpellings[(index / HubCallerStride) % HubSpellings.Length] + "();";
+                    baseSpelling = HubSpellings[(index / HubCallerStride) % HubSpellings.Length];
                 }
                 else if (index is 1 or 2)
                 {
                     body = "DistinctiveTargetFn();";
+                    baseSpelling = "DistinctiveTargetFn";
                 }
                 else
                 {
                     body = $"Callee_{index}();";
+                    baseSpelling = null;
                 }
 
                 builder.AppendLine($"function Fn_{index}() {{ {body} }}");
+                if (baseSpelling is not null)
+                {
+                    builder.AppendLine($"class Cls_{index} extends {baseSpelling} {{}}");
+                }
             }
 
             File.WriteAllText(Path.Combine(repo, $"f{file}.js"), builder.ToString());

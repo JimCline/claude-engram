@@ -145,6 +145,90 @@ public sealed class CodeNavigationInheritanceTests
         Assert.DoesNotContain("differently parameterized", result);
     }
 
+    // §11.2 (Architect ruling): implementers leaf-matches now, the same as `callers` — a
+    // qualified stored spelling must answer a bare query, which exact-string equality
+    // (fixed by this change) previously missed silently.
+    [Fact]
+    public void Implementers_QueryIsBare_MatchesAQualifiedStoredSpelling()
+    {
+        using var sandbox = new SandboxHome();
+        using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
+
+        SeedSymbol(connection, "/projects/p/code/r/a.ts#Dog", "Dog");
+        SeedEdge(connection, "/projects/p/code/r/a.ts#Dog", "inherits", "NS.IFoo");
+
+        var result = EngramMcpTools.Navigate(sandbox.Home, Session, "IFoo", "implementers");
+
+        Assert.Contains("Dog", result);
+    }
+
+    // The mirror case: a qualified query must still find a bare stored spelling.
+    [Fact]
+    public void Implementers_QueryIsQualified_MatchesABareStoredSpelling()
+    {
+        using var sandbox = new SandboxHome();
+        using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
+
+        SeedSymbol(connection, "/projects/p/code/r/a.ts#Dog", "Dog");
+        SeedEdge(connection, "/projects/p/code/r/a.ts#Dog", "inherits", "IFoo");
+
+        var result = EngramMcpTools.Navigate(sandbox.Home, Session, "NS.IFoo", "implementers");
+
+        Assert.Contains("Dog", result);
+    }
+
+    // Explicitly out of scope per §11.2: leaf matching, not SymbolResolver's substring tier —
+    // a query for `IFoo` must not match a stored `IFooBar`, the false-positive class Grep is
+    // being replaced for.
+    [Fact]
+    public void Implementers_DoesNotSubstringMatch()
+    {
+        using var sandbox = new SandboxHome();
+        using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
+
+        SeedSymbol(connection, "/projects/p/code/r/a.ts#Dog", "Dog");
+        SeedEdge(connection, "/projects/p/code/r/a.ts#Dog", "inherits", "IFooBar");
+
+        var result = EngramMcpTools.Navigate(sandbox.Home, Session, "IFoo", "implementers");
+
+        Assert.DoesNotContain("Dog", result);
+    }
+
+    // §11.2 / §1b: leaf matching makes one query hit more than one distinct stored spelling —
+    // an object-side over-approximation, marked the same way `callers`' hub note already
+    // marks its own leaf-matched ambiguity.
+    [Fact]
+    public void Implementers_LeafMatchesMoreThanOneSpelling_CarriesTheHubNote()
+    {
+        using var sandbox = new SandboxHome();
+        using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
+
+        SeedSymbol(connection, "/projects/p/code/r/a.ts#Dog", "Dog");
+        SeedSymbol(connection, "/projects/p/code/r/a.ts#Cat", "Cat");
+        SeedEdge(connection, "/projects/p/code/r/a.ts#Dog", "inherits", "IFoo");
+        SeedEdge(connection, "/projects/p/code/r/a.ts#Cat", "inherits", "NS.IFoo");
+
+        var result = EngramMcpTools.Navigate(sandbox.Home, Session, "IFoo", "implementers");
+
+        Assert.Contains("distinct type spellings", result);
+        Assert.Contains("Dog", result);
+        Assert.Contains("Cat", result);
+    }
+
+    // §11.1 (Architect ruling): a flag true on every shipped language row is a constant, not
+    // a per-result discriminator — the caveat now lives in engram_navigate's static
+    // Description, never in a per-result note, and carries no spec-section citation.
+    [Fact]
+    public void NavigateDescription_StatesTheNestedTypeLimitation_WithNoSpecSectionCitation()
+    {
+        var method = typeof(EngramMcpTools).GetMethod(nameof(EngramMcpTools.Navigate));
+        var description = Assert.IsType<System.ComponentModel.DescriptionAttribute>(
+            Assert.Single(method!.GetCustomAttributes(typeof(System.ComponentModel.DescriptionAttribute), inherit: false)));
+
+        Assert.Contains("nested", description.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("§", description.Description, StringComparison.Ordinal);
+    }
+
     // F3 (review of graph-enhance): the header reported every matched row (up to 3x limit,
     // one query per predicate) while only `limit` rows actually printed — a mismatch. The
     // header must describe what was displayed, not what was matched.
@@ -167,53 +251,6 @@ public sealed class CodeNavigationInheritanceTests
         Assert.Contains("(showing 1 of 3)", result);
     }
 
-    // F6b (second review of graph-enhance): the second required static gap class, distinct
-    // from the generics one above — DeepTier.Merge only resolves inheritance and containment
-    // against a file's top-level declarations (§8.6), so a nested type's own edges are
-    // silently dropped for every language F5 made this universal for. Declared per
-    // LanguageDefinition row, fired whenever a displayed result belongs to such a language.
-    [Fact]
-    public void Implements_ResultFromANestedTypeDroppingLanguage_CarriesTheGapNote()
-    {
-        using var sandbox = new SandboxHome();
-        using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
-
-        SeedSymbol(connection, "/projects/p/code/r/a.ts#Widget", "Widget");
-        SeedEdge(connection, "/projects/p/code/r/a.ts#Widget", "inherits", "Base");
-
-        var result = EngramMcpTools.Navigate(sandbox.Home, Session, "Widget", "implements");
-
-        Assert.Contains("nested-type declarations", result);
-    }
-
-    [Fact]
-    public void Implementers_ResultFromANestedTypeDroppingLanguage_CarriesTheGapNote()
-    {
-        using var sandbox = new SandboxHome();
-        using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
-
-        SeedSymbol(connection, "/projects/p/code/r/a.ts#Dog", "Dog");
-        SeedEdge(connection, "/projects/p/code/r/a.ts#Dog", "inherits", "Animal");
-
-        var result = EngramMcpTools.Navigate(sandbox.Home, Session, "Animal", "implementers");
-
-        Assert.Contains("nested-type declarations", result);
-    }
-
-    [Fact]
-    public void Implements_ResultFromALanguageNotDeclaringTheGap_CarriesNoGapNote()
-    {
-        using var sandbox = new SandboxHome();
-        using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
-
-        SeedSymbol(connection, "/projects/p/code/r/a.md#Widget", "Widget");
-        SeedEdge(connection, "/projects/p/code/r/a.md#Widget", "derives-from", "Base");
-
-        var result = EngramMcpTools.Navigate(sandbox.Home, Session, "Widget", "implements");
-
-        Assert.DoesNotContain("nested-type declarations", result);
-    }
-
     [Fact]
     public void Members_ReturnsContainsEdgesForTheType()
     {
@@ -226,20 +263,6 @@ public sealed class CodeNavigationInheritanceTests
         var result = EngramMcpTools.Navigate(sandbox.Home, Session, "Widget", "members");
 
         Assert.Contains("run", result);
-    }
-
-    [Fact]
-    public void Members_ResultFromANestedTypeDroppingLanguage_CarriesTheGapNote()
-    {
-        using var sandbox = new SandboxHome();
-        using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
-
-        SeedSymbol(connection, "/projects/p/code/r/a.ts#Widget", "Widget");
-        SeedEdge(connection, "/projects/p/code/r/a.ts#Widget", "contains", "run");
-
-        var result = EngramMcpTools.Navigate(sandbox.Home, Session, "Widget", "members");
-
-        Assert.Contains("nested-type declarations", result);
     }
 
     // F2: same limit-ignored defect as Implements, on the members path.

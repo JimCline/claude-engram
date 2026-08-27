@@ -192,7 +192,7 @@ public static class CodeCallGraph
     // Symbol-name entities are shared between "imports" objects and "calls" objects (both
     // written names under /symbol-names/), so the leaf filter runs in C# rather than trying
     // to express §6.5's two-separator rule in SQL.
-    private static List<(string Path, string Name)> MatchingSymbolNames(
+    public static List<(string Path, string Name)> MatchingSymbolNames(
         SqliteConnection connection, IReadOnlyList<string> leaves)
     {
         var leafSet = new HashSet<string>(leaves, StringComparer.Ordinal);

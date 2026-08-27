@@ -108,3 +108,45 @@ an absolute threshold, and by that rule this is squarely the "H1 confirmed" row:
 - Single machine, single run per corpus size (median-of-7 per arm, not multiple full corpus
   rebuilds) — good enough to read the shape (scales vs. flat), not a tight confidence interval
   on the absolute numbers.
+
+## Addendum — §11.2's `implementers` leaf-match arm
+
+Architect priced the `implementers` leaf-match change at +17.80 ms @50k (§9.4), citing `callers`'
+own hub-arm cost above as the estimate for the same `MatchingSymbolNames` mechanism reused on
+`implementers`. §11.2's dispatch asked that this be measured on the actual change rather than
+taken on the estimate. Same method as above, same corpus and binary (rebuilt to include the
+leaf-match change), with `implementers` added as a third relation to the existing three-arm
+harness: the corpus's classes (`class Cls_N extends …`) are seeded at the same stride as the hub/
+distinctive callers, so the same repo serves both measurements — see `GenerateRepo` in
+`NavigateLatencyMeasurementTests.cs`.
+
+### 5,000 functions (implementers arm)
+
+| relation | shape | median ms | floor-subtracted ms |
+|---|---|---|---|
+| implementers | no-match | 1.39 | 0.27 |
+| implementers | distinctive | 1.76 | 0.64 |
+| implementers | distinctive-b | 1.68 | 0.56 |
+| implementers | hub | 2.11 | 0.99 |
+
+### 50,000 functions (implementers arm)
+
+| relation | shape | median ms | floor-subtracted ms |
+|---|---|---|---|
+| implementers | no-match | 11.27 | -0.34 |
+| implementers | distinctive | 14.63 | 3.02 |
+| implementers | distinctive-b | 14.52 | 2.91 |
+| implementers | hub | 16.24 | 4.63 |
+
+**Measured cost is +4.63 ms @50k for the hub arm, not the +17.80 ms estimate.** The estimate was
+`callers`' own hub-arm number reused by analogy, not a prediction computed for `implementers`
+specifically, and the two relations' hub arms do not do the same amount of work per match: this
+corpus's hub base-class spellings are declared once per matching class (one `inherits` fact per
+`Cls_N`, at the same 1-in-50 stride as hub callers), while `callers`' hub arm ranks a live `calls`
+fact for *every call site* naming a hub spelling — the `RankFrom`/`IsTypeDeclaration` work
+`CodeCallGraph.Callers` does per result, which `NavigateImplementers` does not do at all. Fewer,
+cheaper-to-process matching facts is the whole difference; `MatchingSymbolNames`'s own
+`symbol-name`-table scan is identical in both relations and is not what diverges here.
+
+Well within §9.2's budget either way — this is a correction of the number cited for the decision,
+not a reversal of the decision itself.
