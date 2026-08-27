@@ -20,7 +20,7 @@ namespace Engram.Core;
 /// </remarks>
 public static class EngramDatabase
 {
-    public const int SchemaVersion = 15;
+    public const int SchemaVersion = 16;
 
     public const int BusyTimeoutMilliseconds = 5000;
 
@@ -507,6 +507,23 @@ public static class EngramDatabase
             RebuildFactFts(connection);
 
             WriteMeta(connection, null, "schema_version", "15");
+        }
+
+        if (from < 16)
+        {
+            // Pure query planning, like ix_fact_thread at v5: creates no state, reconciles with
+            // nothing, and the reverse-edge lookups it serves are correct without it — only slow.
+            // Partial on object_id IS NOT NULL to match ux_fact_edge_live's partition: a row with
+            // no object can never match object_id = ?, so indexing one is write cost and no read.
+            Execute(
+                connection,
+                null,
+                """
+                CREATE INDEX IF NOT EXISTS ix_fact_object ON fact(object_id, predicate)
+                  WHERE valid_to IS NULL AND object_id IS NOT NULL;
+                """);
+
+            WriteMeta(connection, null, "schema_version", "16");
         }
     }
 

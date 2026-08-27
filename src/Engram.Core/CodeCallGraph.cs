@@ -364,7 +364,8 @@ public static class CodeCallGraph
         var repoClause = repoNeedle is null ? string.Empty : " AND f.path LIKE '%' || $repo || '%'";
         command.CommandText =
             $"SELECT f.path, o.name, f.analyzer_tier FROM fact f JOIN entity o ON o.id = f.object_id "
-                + $"WHERE f.predicate = 'calls' AND f.valid_to IS NULL AND o.path IN ({placeholders}){repoClause};";
+                + "WHERE f.predicate = 'calls' AND f.valid_to IS NULL AND f.object_id IS NOT NULL "
+                + $"AND o.path IN ({placeholders}){repoClause};";
         for (var i = 0; i < objectPaths.Count; i++)
         {
             command.Parameters.AddWithValue($"$o{i}", objectPaths[i]);

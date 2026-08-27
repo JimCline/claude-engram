@@ -191,6 +191,12 @@ CREATE INDEX ix_fact_scope   ON fact(scope) WHERE valid_to IS NULL;
 -- regenerable rows are the minority and the query is always "which may I discard".
 CREATE INDEX ix_fact_regenerable ON fact(regenerable) WHERE regenerable = 1;
 
+-- Reverse-edge lookups (callers) resolve object_id -> subject; without this they scan
+-- fact. Partial on object_id IS NOT NULL to match ux_fact_edge_live's partition: a row
+-- with no object can never match object_id = ?, so indexing one is write cost and no
+-- read (fact-object-index-migration.md §1).
+CREATE INDEX ix_fact_object ON fact(object_id, predicate) WHERE valid_to IS NULL AND object_id IS NOT NULL;
+
 
 -- ---------------------------------------------------------------------------
 -- Supersession: why a belief changed.
@@ -484,7 +490,7 @@ CREATE TABLE fact_review (
 
 
 CREATE TABLE schema_meta (key TEXT PRIMARY KEY, value TEXT);
-INSERT INTO schema_meta(key, value) VALUES ('schema_version', '15');
+INSERT INTO schema_meta(key, value) VALUES ('schema_version', '16');
 
 -- Built by a fresh CREATE, and pre-stamped ready: an empty table matches whatever
 -- FactTokenIndex.Rebuild would produce over zero facts, so a new store needs no rebuild pass.

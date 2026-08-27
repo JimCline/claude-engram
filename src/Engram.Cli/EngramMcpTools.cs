@@ -1224,6 +1224,7 @@ public sealed class EngramMcpTools
                     + "ROW_NUMBER() OVER (PARTITION BY f.predicate ORDER BY f.predicate, f.path) AS rn "
                     + "FROM fact f JOIN entity o ON o.id = f.object_id "
                     + $"WHERE f.predicate IN ({predicatePlaceholders}) AND f.valid_to IS NULL "
+                    + "AND f.object_id IS NOT NULL "
                     + $"AND o.path IN ({objectPlaceholders}){repoClause}"
                     + ") SELECT subject_path, predicate, analyzer_tier, rn FROM ranked WHERE rn <= 1001 "
                     + "ORDER BY predicate, subject_path;";
