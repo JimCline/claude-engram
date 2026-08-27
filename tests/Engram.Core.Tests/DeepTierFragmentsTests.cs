@@ -144,6 +144,32 @@ public class DeepTierFragmentsTests
         Assert.Equal(0, Assert.Single(merged).AnalyzerTier);
     }
 
+    // F4 (review of graph-enhance): an overload set shares one name and one container, so it
+    // would otherwise produce that many byte-identical `contains` candidates for the same
+    // (container, member) pair — which the indexer's live-fact key cannot tell apart, so
+    // writing more than one closes and reinserts a fact identical to itself, a spurious
+    // supersession CLAUDE.md's append-only-facts invariant forbids. Falsify by removing the
+    // dedup guard in DeepTier.Merge: this count goes from 1 to 3.
+    [Fact]
+    public void Merge_OverloadsOfOneMember_YieldOnlyOneContainsCandidate()
+    {
+        var container = Symbol("Http");
+        var overloads = new[]
+        {
+            Symbol("Get", "Http", "()"),
+            Symbol("Get", "Http", "(string key)"),
+            Symbol("Get", "Http", "(string key, int count)"),
+        };
+
+        var analysis = new DeepAnalysis(
+            "Http.cs", [container, .. overloads], [], null, [], [], Tier: 1);
+
+        var merged = DeepTier.Merge("/projects/p/code/r/Http.cs", [], analysis);
+
+        var contains = Assert.Single(merged, c => c.Predicate == "contains");
+        Assert.Equal("Get", contains.Object);
+    }
+
     // item 6 / §7.1: a missing deep tier stamps tier 0, never the registry's entitled tier —
     // Merge takes its tier from analysis.Tier alone, so a caller that never ran a deep analyzer
     // (tierZero only, no Merge call) must not read as anything but tier 0. Falsify by defaulting

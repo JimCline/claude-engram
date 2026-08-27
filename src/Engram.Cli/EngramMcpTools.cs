@@ -1147,11 +1147,18 @@ public sealed class EngramMcpTools
             return NavigateOutcome.NotFound($"No recorded base-list edges for '{query}'.");
         }
 
+        var displayed = rows.Take(limit).ToList();
         var builder = new System.Text.StringBuilder();
-        builder.Append(CountText(rows.Count, "base-list edge")).Append(" for '").Append(query).Append("':\n");
+        builder.Append(CountText(displayed.Count, "base-list edge")).Append(" for '").Append(query).Append('\'');
+        if (rows.Count > displayed.Count)
+        {
+            builder.Append(" (showing ").Append(displayed.Count).Append(" of ").Append(rows.Count).Append(')');
+        }
+
+        builder.Append(":\n");
 
         var staleCount = 0;
-        foreach (var (match, fact, baseName) in rows)
+        foreach (var (match, fact, baseName) in displayed)
         {
             builder.Append("  [").Append(fact.Predicate).Append(']');
             if (AppendFreshness(builder, connection, match.Path))
@@ -1162,7 +1169,7 @@ public sealed class EngramMcpTools
             builder.Append(' ').Append(match.Path).Append(" -> ").Append(baseName).Append('\n');
         }
 
-        AppendOverApproximationNote(builder, rows.Select(r => r.Fact.Predicate));
+        AppendOverApproximationNote(builder, displayed.Select(r => r.Fact.Predicate));
 
         if (staleCount > 0)
         {
@@ -1186,12 +1193,16 @@ public sealed class EngramMcpTools
         {
             using var command = connection.CreateCommand();
             var repoClause = repoNeedle is null ? string.Empty : " AND f.path LIKE '%' || $repo || '%'";
+            // F3: capping this fetch at the caller's display `limit` (per predicate, so up
+            // to 3x it) made `rows.Count` undercount the true total whenever one predicate
+            // alone had more matches than `limit` — the SQL query truncated before the
+            // predicates were even combined. Fetch generously here (matching the 1000 cap
+            // SymbolResolver.Resolve uses elsewhere in this file); `limit` governs display only.
             command.CommandText =
                 "SELECT f.path, f.analyzer_tier FROM fact f JOIN entity o ON o.id = f.object_id "
-                    + $"WHERE f.predicate = $predicate AND f.valid_to IS NULL AND o.path = $object{repoClause} LIMIT $limit;";
+                    + $"WHERE f.predicate = $predicate AND f.valid_to IS NULL AND o.path = $object{repoClause} LIMIT 1000;";
             command.Parameters.AddWithValue("$predicate", predicate);
             command.Parameters.AddWithValue("$object", objectPath);
-            command.Parameters.AddWithValue("$limit", limit);
             if (repoNeedle is not null)
             {
                 command.Parameters.AddWithValue("$repo", repoNeedle);
@@ -1211,11 +1222,18 @@ public sealed class EngramMcpTools
                     + "match, not a resolved symbol — checked exact spelling only).");
         }
 
+        var displayed = rows.Take(limit).ToList();
         var builder = new System.Text.StringBuilder();
-        builder.Append(CountText(rows.Count, "implementer")).Append(" of '").Append(query).Append("':\n");
+        builder.Append(CountText(displayed.Count, "implementer")).Append(" of '").Append(query).Append('\'');
+        if (rows.Count > displayed.Count)
+        {
+            builder.Append(" (showing ").Append(displayed.Count).Append(" of ").Append(rows.Count).Append(')');
+        }
+
+        builder.Append(":\n");
 
         var staleCount = 0;
-        foreach (var (subjectPath, predicate, _) in rows.Take(limit))
+        foreach (var (subjectPath, predicate, _) in displayed)
         {
             builder.Append("  [").Append(predicate).Append(']');
             if (AppendFreshness(builder, connection, subjectPath))
@@ -1226,7 +1244,7 @@ public sealed class EngramMcpTools
             builder.Append(' ').Append(subjectPath).Append('\n');
         }
 
-        AppendOverApproximationNote(builder, rows.Select(r => r.Predicate));
+        AppendOverApproximationNote(builder, displayed.Select(r => r.Predicate));
 
         if (staleCount > 0)
         {
@@ -1265,11 +1283,18 @@ public sealed class EngramMcpTools
             return NavigateOutcome.NotFound($"No recorded members of '{query}'.");
         }
 
+        var displayed = rows.Take(limit).ToList();
         var builder = new System.Text.StringBuilder();
-        builder.Append(CountText(rows.Count, "member")).Append(" of '").Append(query).Append("':\n");
+        builder.Append(CountText(displayed.Count, "member")).Append(" of '").Append(query).Append('\'');
+        if (rows.Count > displayed.Count)
+        {
+            builder.Append(" (showing ").Append(displayed.Count).Append(" of ").Append(rows.Count).Append(')');
+        }
+
+        builder.Append(":\n");
 
         var staleCount = 0;
-        foreach (var (match, _, memberName) in rows)
+        foreach (var (match, _, memberName) in displayed)
         {
             builder.Append("  ");
             if (AppendFreshness(builder, connection, match.Path))

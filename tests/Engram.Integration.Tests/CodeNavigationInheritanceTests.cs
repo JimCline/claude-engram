@@ -49,6 +49,26 @@ public sealed class CodeNavigationInheritanceTests
         Assert.Contains("does not distinguish base classes", result);
     }
 
+    // F2 (review of graph-enhance): limit was collected via SymbolResolver.Resolve but
+    // never applied to the base-list edges actually printed, so a caller asking for 1 got
+    // every edge regardless.
+    [Fact]
+    public void Implements_MoreEdgesThanLimit_ReportsWhatItActuallyShowed()
+    {
+        using var sandbox = new SandboxHome();
+        using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
+
+        SeedSymbol(connection, "/projects/p/code/r/a.ts#Widget", "Widget");
+        SeedEdge(connection, "/projects/p/code/r/a.ts#Widget", "inherits", "Base1");
+        SeedEdge(connection, "/projects/p/code/r/a.ts#Widget", "inherits", "Base2");
+        SeedEdge(connection, "/projects/p/code/r/a.ts#Widget", "implements", "Iface1");
+
+        var result = EngramMcpTools.Navigate(sandbox.Home, Session, "Widget", "implements", limit: 1);
+
+        Assert.Contains("1 base-list edge", result);
+        Assert.Contains("(showing 1 of 3)", result);
+    }
+
     [Fact]
     public void Implementers_FindsSubjectsNamingTheQueryAsABase()
     {
@@ -63,6 +83,28 @@ public sealed class CodeNavigationInheritanceTests
         Assert.Contains("Dog", result);
     }
 
+    // F3 (review of graph-enhance): the header reported every matched row (up to 3x limit,
+    // one query per predicate) while only `limit` rows actually printed — a mismatch. The
+    // header must describe what was displayed, not what was matched.
+    [Fact]
+    public void Implementers_MoreThanLimit_ReportsWhatItActuallyShowed()
+    {
+        using var sandbox = new SandboxHome();
+        using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
+
+        SeedSymbol(connection, "/projects/p/code/r/a.ts#Dog", "Dog");
+        SeedSymbol(connection, "/projects/p/code/r/a.ts#Cat", "Cat");
+        SeedSymbol(connection, "/projects/p/code/r/a.ts#Bird", "Bird");
+        SeedEdge(connection, "/projects/p/code/r/a.ts#Dog", "inherits", "Animal");
+        SeedEdge(connection, "/projects/p/code/r/a.ts#Cat", "inherits", "Animal");
+        SeedEdge(connection, "/projects/p/code/r/a.ts#Bird", "implements", "Animal");
+
+        var result = EngramMcpTools.Navigate(sandbox.Home, Session, "Animal", "implementers", limit: 1);
+
+        Assert.Contains("1 implementer", result);
+        Assert.Contains("(showing 1 of 3)", result);
+    }
+
     [Fact]
     public void Members_ReturnsContainsEdgesForTheType()
     {
@@ -75,6 +117,24 @@ public sealed class CodeNavigationInheritanceTests
         var result = EngramMcpTools.Navigate(sandbox.Home, Session, "Widget", "members");
 
         Assert.Contains("run", result);
+    }
+
+    // F2: same limit-ignored defect as Implements, on the members path.
+    [Fact]
+    public void Members_MoreThanLimit_ReportsWhatItActuallyShowed()
+    {
+        using var sandbox = new SandboxHome();
+        using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
+
+        SeedSymbol(connection, "/projects/p/code/r/a.ts#Widget", "Widget");
+        SeedEdge(connection, "/projects/p/code/r/a.ts#Widget", "contains", "run");
+        SeedEdge(connection, "/projects/p/code/r/a.ts#Widget", "contains", "stop");
+        SeedEdge(connection, "/projects/p/code/r/a.ts#Widget", "contains", "reset");
+
+        var result = EngramMcpTools.Navigate(sandbox.Home, Session, "Widget", "members", limit: 1);
+
+        Assert.Contains("1 member", result);
+        Assert.Contains("(showing 1 of 3)", result);
     }
 
     // §1b: an over-approximation trusted rather than sanity-checked under first-reach must

@@ -14,7 +14,8 @@ public sealed record LanguageFixture(
     string Source,
     IReadOnlyList<string> ExpectedSymbols,
     IReadOnlyList<string> ExpectedImports,
-    IReadOnlyList<string>? ExpectedDeepSymbols = null);
+    IReadOnlyList<string>? ExpectedDeepSymbols = null,
+    IReadOnlyList<string>? ExpectedInherits = null);
 
 /// <summary>
 /// One tree-sitter grammar (D47): which library file carries it, which export produces it,
@@ -320,11 +321,16 @@ public static class LanguageRegistry
                     import { readFile } from "node:fs";
                     import config from "./config";
 
-                    export interface Options { deep: boolean; limit(n: number): void }
+                    export interface Options extends BaseOptions { deep: boolean; limit(n: number): void }
                     export async function scan(o: Options): Promise<void> {}
                     const hidden = 1;
 
-                    export class Scanner {
+                    class BareBoth extends BareBase implements BareIface {}
+                    abstract class BareAbstractBoth extends AbsBase implements AbsIface {}
+                    interface BareIfaceExt extends BareIface {}
+                    export abstract class ExportedAbstract extends AbsBase implements AbsIface {}
+
+                    export class Scanner extends ScannerBase implements Trackable {
                         depth = 1;
                         private cache = "";
                         #id = "";
@@ -342,13 +348,17 @@ public static class LanguageRegistry
                         get size(): number { return this.depth; }
                     }
                     """,
-                ExpectedSymbols: ["Options", "scan", "Scanner"],
+                ExpectedSymbols: ["Options", "scan", "Scanner", "ExportedAbstract"],
                 ExpectedImports: ["node:fs", "./config"],
                 ExpectedDeepSymbols:
                 [
                     "Options",
                     "Options/deep",
                     "Options/limit",
+                    "BareBoth",
+                    "BareAbstractBoth",
+                    "BareIfaceExt",
+                    "ExportedAbstract",
                     "Scanner",
                     "Scanner/depth",
                     "Scanner/cache",
@@ -365,6 +375,19 @@ public static class LanguageRegistry
                     "Scanner/legacy",
                     "Scanner/size",
                     "scan",
+                ],
+                ExpectedInherits:
+                [
+                    "BareAbstractBoth implements AbsIface",
+                    "BareAbstractBoth inherits AbsBase",
+                    "BareBoth implements BareIface",
+                    "BareBoth inherits BareBase",
+                    "BareIfaceExt inherits BareIface",
+                    "ExportedAbstract implements AbsIface",
+                    "ExportedAbstract inherits AbsBase",
+                    "Options inherits BaseOptions",
+                    "Scanner implements Trackable",
+                    "Scanner inherits ScannerBase",
                 ]),
             Grammars:
             [
@@ -396,7 +419,9 @@ public static class LanguageRegistry
                     import path from "path";
                     const local = require("./local");
 
-                    export class Runner {
+                    class BareWorker extends BareBase {}
+
+                    export class Runner extends RunnerBase {
                         limit = 10;
                         #secret = "";
                         run() {}
@@ -408,12 +433,18 @@ public static class LanguageRegistry
                 ExpectedImports: ["path", "./local"],
                 ExpectedDeepSymbols:
                 [
+                    "BareWorker",
                     "Runner",
                     "Runner/limit",
                     "Runner/#secret",
                     "Runner/run()",
                     "Runner/run(times)",
                     "main",
+                ],
+                ExpectedInherits:
+                [
+                    "BareWorker inherits BareBase",
+                    "Runner inherits RunnerBase",
                 ]),
             Grammars: [new(Library: "javascript", Symbol: "tree_sitter_javascript", Extensions: [])],
             DeclarationQuery: JavaScriptDeclarations,

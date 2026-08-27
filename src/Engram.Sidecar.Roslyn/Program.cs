@@ -15,7 +15,8 @@ using Microsoft.CodeAnalysis.CSharp.Syntax;
 //         "imports": [...], "calls": [...]}
 //   "bases" is the base list exactly as written (class/interface/struct/record only, never
 //   an enum's underlying type) — one undifferentiated list, because this process has no
-//   Compilation to tell a base class from an interface (§8.1, §8.5.1).
+//   Compilation to tell a base class from an interface (§8.1, §8.5.1). Emitted only for
+//   top-level (unscoped) declarations — see the "Top-level only" comment where it is built.
 //   out on a file it cannot analyze: {"path": ..., "error": "..."} — the core falls back
 //   to tier 0 for that file and nothing else.
 //
@@ -86,7 +87,11 @@ static JsonObject Analyze(string path, string content)
 
         // Enums have a BaseList too (the underlying integral type), which is not
         // inheritance — restrict to TypeDeclarationSyntax (class/interface/struct/record).
-        var bases = declaration is TypeDeclarationSyntax { BaseList.Types.Count: > 0 } typeWithBases
+        // Top-level only: DeepTier.Merge resolves a base list's TypeName through the file's
+        // top-level declarations alone (§8.6), so a nested type's bases would not be
+        // dropped there but misattributed to any unrelated top-level type of the same name —
+        // never emit them in the first place.
+        var bases = scope is null && declaration is TypeDeclarationSyntax { BaseList.Types.Count: > 0 } typeWithBases
             ? typeWithBases.BaseList!.Types.Select(t => t.Type.ToString()).ToList()
             : null;
 

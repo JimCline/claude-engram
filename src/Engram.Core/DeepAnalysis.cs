@@ -146,6 +146,13 @@ public static class DeepTier
             }
         }
 
+        // An overload set (three `probe` signatures, say) shares one name and one container,
+        // so it would otherwise produce that many byte-identical `contains` candidates —
+        // which the indexer's live-fact key does not distinguish, so writing more than one
+        // closes and reinserts a fact identical to itself, a spurious supersession CLAUDE.md's
+        // append-only-facts invariant forbids. Dedup before the write, not after.
+        var containsSeen = new HashSet<(string Container, string Member)>();
+
         foreach (var (fragment, symbol) in fragments)
         {
             if (seen.Add(fragment))
@@ -167,7 +174,9 @@ public static class DeepTier
             // it already knows as an object-bearing fact rather than a new extraction.
             // Object side keeps the weak-identity scheme calls/inherits use — a member name
             // as written, not a resolved entity (§2's design sketch).
-            if (symbol.Scope is { Length: > 0 } containerName && topLevel.TryGetValue(containerName, out var containerFragment))
+            if (symbol.Scope is { Length: > 0 } containerName
+                && topLevel.TryGetValue(containerName, out var containerFragment)
+                && containsSeen.Add((containerFragment, symbol.Name)))
             {
                 merged.Add(new CodeCandidate(
                     CodePaths.ForSymbol(fileEntityPath, containerFragment), "symbol", containerName, "contains",

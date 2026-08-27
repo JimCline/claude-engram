@@ -130,6 +130,40 @@ public class RoslynSidecarTests
         Assert.Empty(color.Imports);
     }
 
+    // §8.6 / DeepInherit's contract: DeepTier.Merge resolves a base list's TypeName against
+    // a file's top-level declarations only, so a nested type's base list must never be
+    // emitted — if it were, and a top-level type happened to share the nested type's name,
+    // Merge would attribute the nested type's base to that unrelated top-level type instead
+    // of dropping it (F5). `Inner` derives from `Widget`; `Widget` itself derives from
+    // `Base`; the two must not blend.
+    [Fact]
+    public void Analyze_NestedTypeBases_AreDroppedRatherThanMisattributedToATopLevelNamesake()
+    {
+        const string source =
+            """
+            namespace Demo;
+
+            public sealed class Widget : Base
+            {
+                public sealed class Inner : Widget { }
+            }
+
+            public sealed class Base { }
+            """;
+
+        var results = RoslynSidecar.Analyze(SidecarBinary(), [("Nested.cs", source)], TimeSpan.FromSeconds(30));
+
+        Assert.NotNull(results);
+        var analysis = results["Nested.cs"];
+        Assert.Null(analysis.Error);
+
+        Assert.DoesNotContain(analysis.Inherits, i => i.TypeName == "Inner");
+
+        var widgetBases = analysis.Inherits.Where(i => i.TypeName == "Widget").ToList();
+        var onlyBase = Assert.Single(widgetBases);
+        Assert.Equal("Base", onlyBase.BaseName);
+    }
+
     [Fact]
     public void Analyze_KillsAHungSidecar_AndAnswersNull()
     {
