@@ -191,3 +191,54 @@ per-row resolution loop it drives — real gap, not settled by an index on `fact
 likely needs `Callees` to stop re-invoking `SymbolResolver.Resolve` per row (batch resolution, or
 skip re-resolving symbols already seen) rather than (or in addition to) indexing `fact`. That
 design question is out of scope here — measurement only, per this dispatch's own constraint.
+
+## Addendum — NE-2 (large-M) and the L1+L2 fix (callees-fanout-resolution.md)
+
+Architect's fix spec (`docs/specs/callees-fanout-resolution.md`) named a gap in the H2 addendum
+above: `high-fanout`'s 650 ms/50k number is the *best* case, since `FanOutFn`'s 200 callees each
+resolve to exactly one candidate (M≈1) — the loop's other cost dimension, M (candidates per
+resolved leaf, consumed by `RankFrom`), was never measured at scale. NE-2 required measuring a
+large-M case (four common leaf names — `Get`, `Add`, `Run`, `Dispose` — each colliding with 50
+same-named declarations, called 5 times each: N=20, M=50) **before** implementing anything.
+
+**NE-2, pre-fix** (this session, same corpus/method, elevated over the committed baseline from
+concurrent machine load — read the *ratio* between arms, not the absolute values):
+
+| corpus | high-fanout (N=200,M=1) | high-m-fanout (N=20,M=50) |
+|---|---|---|
+| 5,000 | 69.91 ms | 17.83 ms |
+| 50,000 | 1551.77 ms | 172.48 ms |
+
+N dominates: a 10x-larger N with M=1 cost far more than a 10x-smaller N with M=50, confirming the
+per-row `SymbolResolver.Resolve` call count (N) — not the candidate volume `RankFrom` processes
+per row (M) — is the loop's real driver, refining rather than reversing Architect's hypothesis.
+
+**Fix**: L1 (memoize per distinct leaf within one `Callees` call) + L2 (batch resolution across
+the distinct leaf set into two queries — tier-1 exact `IN(...)`, tier-2 case-insensitive on the
+tier-1 residue — instead of one `SymbolResolver.Resolve` call per callee row), replacing the
+per-row loop in `CodeCallGraph.Callees`.
+
+**NE-2/NE-1, post-fix** (published binary rebuilt with the fix, same corpus/method):
+
+| corpus | high-fanout | high-m-fanout |
+|---|---|---|
+| 5,000 | 0.37 ms | 4.91 ms |
+| 50,000 | -2.90 ms | 1.81 ms |
+
+Both arms collapsed to the no-match floor at both scales — `high-fanout` went 650 ms → -2.9 ms
+(indistinguishable from floor) at 50k, `high-m-fanout` 172 ms → 1.8 ms. NE-1 (confirm `high-fanout`
+collapses toward the low-fanout arm) and NE-2 (measure large-M before and after) both close: N is
+what the batching eliminates, and M was never expensive on its own — `RankFrom`'s per-candidate
+cost (L3, below) stayed cheap enough at M=50 not to show up once N stopped dominating.
+
+**L3 scoping (`RankFrom`, not fixed this round, per dispatch)**: `RankFrom` issues at most one
+`fact`-table query per invocation, via `ImportFilenameMatch`, gated so it only runs when both
+`SameFile` and `QualifierAgreement` miss (`SameFile`/`QualifierAgreement`/`SameRepo` are pure
+in-memory string comparisons — no DB). That one query is served by `ix_fact_path`
+(`WHERE f.path = $file AND f.predicate = 'imports' AND f.valid_to IS NULL`) — the same index lane
+`Callees`' own main query uses, so it does not interact with the still-pending `ix_fact_object`
+index question (NE-3 answered: yes, `RankFrom` reads `fact`, once, gated, on an indexed lane).
+`RankFrom` still runs once per *candidate* inside the per-row loop (N×M round trips before this
+fix, M round trips per row after), unquantified on its own because the measured post-fix numbers
+above absorb it into the same collapsed-to-floor result — no case measured here separates M's
+own cost from N's. Left unscoped as a possible follow-up rather than fixed, per the dispatch.

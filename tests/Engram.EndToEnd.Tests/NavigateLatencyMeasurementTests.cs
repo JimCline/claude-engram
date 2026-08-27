@@ -42,6 +42,13 @@ namespace Engram.EndToEnd.Tests;
 /// declared functions) closes that gap as the <c>high-fanout</c> arm; the existing
 /// <c>distinctive</c> arm (<c>Fn_1</c>, one callee) already serves as the low-fanout comparison.
 /// </para>
+/// <para>
+/// docs/specs/callees-fanout-resolution.md §2 (NE-2): <c>FanOutFn</c>'s callees each resolve
+/// to exactly one candidate (M=1), the cheapest case for the per-candidate loop. A dedicated
+/// <c>HighMFanOutFn</c> calls common leaf names (<see cref="CommonLeafNames"/>) that each
+/// collide with <see cref="CandidatesPerCommonLeaf"/> genuinely declared candidates, as the
+/// <c>high-m-fanout</c> arm, to measure the case real dispatch code produces.
+/// </para>
 /// </remarks>
 public class NavigateLatencyMeasurementTests
 {
@@ -49,6 +56,10 @@ public class NavigateLatencyMeasurementTests
     private const int FunctionsPerFile = 100;
     private const int HubCallerStride = 50;
     private const int FanOutTargetCount = 200;
+    private const int CandidatesPerCommonLeaf = 50;
+    private const int CallSitesPerCommonLeaf = 5;
+
+    private static readonly string[] CommonLeafNames = ["Get", "Add", "Run", "Dispose"];
 
     private static readonly string[] HubSpellings =
     [
@@ -145,6 +156,7 @@ public class NavigateLatencyMeasurementTests
                     ("callees", "distinctive-b", "Fn_1"),
                     ("callees", "hub", "Fn_0"),
                     ("callees", "high-fanout", "FanOutFn"),
+                    ("callees", "high-m-fanout", "HighMFanOutFn"),
                     ("implementers", "no-match", NoMatchQuery),
                     ("implementers", "distinctive", DistinctiveQuery),
                     ("implementers", "distinctive-b", DistinctiveQuery),
@@ -329,6 +341,36 @@ public class NavigateLatencyMeasurementTests
 
         fanOut.AppendLine("}");
         File.WriteAllText(Path.Combine(repo, "fanout.js"), fanOut.ToString());
+
+        // NE-2 (docs/specs/callees-fanout-resolution.md §6): FanOutFn above resolves every
+        // callee on the first tier with exactly one candidate each (M=1) -- the best case for
+        // the per-row resolve loop. Real dispatch code calls common leaf names (Get/Add/Run/
+        // Dispose) that collide with many declarations (M large), so each call site's inner
+        // loop runs CandidatesPerCommonLeaf times instead of once. Each leaf's declarations
+        // live in their own file so they mint distinct entity paths.
+        var fanOutMDir = Path.Combine(repo, "fanout-m");
+        Directory.CreateDirectory(fanOutMDir);
+        foreach (var leaf in CommonLeafNames)
+        {
+            for (var i = 0; i < CandidatesPerCommonLeaf; i++)
+            {
+                File.WriteAllText(
+                    Path.Combine(fanOutMDir, $"{leaf}_{i}.js"), $"function {leaf}() {{}}\n");
+            }
+        }
+
+        var highMCaller = new StringBuilder();
+        highMCaller.Append("function HighMFanOutFn() { ");
+        foreach (var leaf in CommonLeafNames)
+        {
+            for (var q = 0; q < CallSitesPerCommonLeaf; q++)
+            {
+                highMCaller.Append($"q{q}.{leaf}(); ");
+            }
+        }
+
+        highMCaller.AppendLine("}");
+        File.WriteAllText(Path.Combine(fanOutMDir, "caller.js"), highMCaller.ToString());
 
         return repo;
     }
