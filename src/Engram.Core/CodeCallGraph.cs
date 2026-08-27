@@ -348,7 +348,7 @@ public static class CodeCallGraph
         return head.Split(' ', StringSplitOptions.RemoveEmptyEntries).Any(w => TypeDeclarationKeywords.Contains(w, StringComparer.Ordinal));
     }
 
-    private static string FileOf(string path)
+    public static string FileOf(string path)
     {
         var hash = path.IndexOf('#');
         return hash < 0 ? path : path[..hash];

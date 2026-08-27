@@ -1371,7 +1371,12 @@ public sealed class EngramMcpTools
     // then carries no marker, so HasTypeArgumentMarker(query) alone never fires exactly when
     // the caveat is most needed. Probe the object side directly: does any stored symbol-name
     // start with this spelling followed by '<'? % and _ are LIKE metacharacters and symbol
-    // names routinely contain '_', so the probed spelling must be escaped, not just embedded.
+    // names routinely contain '_' (and the escaping of '%' in CodePaths.ForSymbolName itself
+    // reintroduces a literal '%'), so the probed spelling must be escaped, not just embedded.
+    // ESCAPE keeps this query from using entity's unique-path index for a range scan — an
+    // accepted cost, since correctness on '_'-bearing names matters more here than one extra
+    // full scan per implementers call, and case-insensitive LIKE cannot use that index anyway
+    // (see the ix_entity_kind comment in docs/engram-schema.sql).
     private static bool HasParameterizedSpelling(SqliteConnection connection, string query)
     {
         using var command = connection.CreateCommand();
@@ -1391,7 +1396,11 @@ public sealed class EngramMcpTools
     // lists and containment against a file's top-level declarations only, so a type nested
     // inside another type drops its own inheritance and containment edges silently. Declared
     // per LanguageDefinition row (the same mechanism InheritancePredicate uses), fired only
-    // when a displayed result actually belongs to a language whose row declares it.
+    // when a displayed result actually belongs to a language whose row declares it. Scoped to
+    // the displayed rows, not the full result set, matching AppendOverApproximationNote above:
+    // the note caveats how to read what's on screen, not what a truncated remainder might
+    // contain — a rows-beyond-`limit` reader already learns of the truncation from the
+    // "(showing N of M)" line and can page for more.
     private const string NestedTypeGapNoteTail =
         " not address nested-type declarations (§8.6); base-list and containment edges for a "
             + "type nested inside another type are dropped rather than shown here.";
@@ -1400,7 +1409,7 @@ public sealed class EngramMcpTools
         System.Text.StringBuilder builder, IEnumerable<string> subjectPaths)
     {
         var languages = subjectPaths
-            .Select(FileOf)
+            .Select(CodeCallGraph.FileOf)
             .Select(LanguageRegistry.Resolve)
             .Where(l => l.NestedTypeEdgesDropped)
             .Select(l => l.DisplayName)
@@ -1414,12 +1423,6 @@ public sealed class EngramMcpTools
 
         builder.Append("note: ").Append(string.Join(", ", languages))
             .Append(languages.Count == 1 ? " does" : " do").Append(NestedTypeGapNoteTail).Append('\n');
-    }
-
-    private static string FileOf(string path)
-    {
-        var hash = path.IndexOf('#', StringComparison.Ordinal);
-        return hash < 0 ? path : path[..hash];
     }
 
     private static string? ObjectNameOf(SqliteConnection connection, long factId)
