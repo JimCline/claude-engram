@@ -215,6 +215,48 @@ public sealed class CodeNavigationInheritanceTests
         Assert.Contains("Cat", result);
     }
 
+    // graph-index-audit §2.4 / Ultra-Advisor's windowed-cap ruling: a windowed per-predicate
+    // cap (ROW_NUMBER() OVER (PARTITION BY predicate)), not a flat LIMIT — proves both halves
+    // at once: the cap actually engages past 1000 rows for one predicate, and a low-volume
+    // sibling predicate still gets through rather than being starved out of the fetched set
+    // (which would silently break AppendOverApproximationNote's sampling, §8.5.3 item 3).
+    [Fact]
+    public void Implementers_MoreThan1000EdgesForOnePredicate_CapsPerPredicateAndMarksTruncation()
+    {
+        using var sandbox = new SandboxHome();
+        using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
+
+        for (var i = 0; i < 1001; i++)
+        {
+            SeedSymbol(connection, $"/projects/p/code/r/a.ts#Sub{i}", $"Sub{i}");
+            SeedEdge(connection, $"/projects/p/code/r/a.ts#Sub{i}", "inherits", "Base");
+        }
+
+        SeedSymbol(connection, "/projects/p/code/r/a.ts#Other", "Other");
+        SeedEdge(connection, "/projects/p/code/r/a.ts#Other", "derives-from", "Base");
+
+        var result = EngramMcpTools.Navigate(sandbox.Home, Session, "Base", "implementers", limit: 2000);
+
+        Assert.Contains("more than 1000", result);
+        Assert.Contains("[derives-from]", result);
+        var inheritsCount = result.Split("[inherits]", StringSplitOptions.None).Length - 1;
+        Assert.True(inheritsCount <= 1000, $"expected at most 1000 '[inherits]' lines, found {inheritsCount}");
+    }
+
+    [Fact]
+    public void Implementers_FewerThan1000Edges_CarriesNoTruncationNote()
+    {
+        using var sandbox = new SandboxHome();
+        using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
+
+        SeedSymbol(connection, "/projects/p/code/r/a.ts#Dog", "Dog");
+        SeedEdge(connection, "/projects/p/code/r/a.ts#Dog", "inherits", "Animal");
+
+        var result = EngramMcpTools.Navigate(sandbox.Home, Session, "Animal", "implementers");
+
+        Assert.DoesNotContain("more than 1000", result);
+    }
+
     // §11.1 (Architect ruling): a flag true on every shipped language row is a constant, not
     // a per-result discriminator — the caveat now lives in engram_navigate's static
     // Description, never in a per-result note, and carries no spec-section citation.

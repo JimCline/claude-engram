@@ -1198,38 +1198,62 @@ public sealed class EngramMcpTools
         var distinctSpellings = objects.Select(o => o.Name).Distinct(StringComparer.Ordinal).ToList();
 
         var rows = new List<(string SubjectPath, string Predicate, int? AnalyzerTier)>();
+        var truncatedPredicates = new List<string>();
         if (objects.Count > 0)
         {
             var objectPaths = objects.Select(o => o.Path).ToList();
-            foreach (var predicate in InheritancePredicates)
+
+            // Ultra-Advisor ruling (graph-index-audit follow-up): one statement, not a
+            // 3-query-per-predicate loop — §8.5.3.2's one-implementation rule applies to this
+            // union the same way it applies to the predicate list itself. Not a flat LIMIT,
+            // though: a single unpartitioned cap would let a 1000+-row `inherits` hub starve
+            // `derives-from` out of the fetched set entirely, silently breaking
+            // AppendOverApproximationNote below, which depends on every predicate actually
+            // being sampled. ROW_NUMBER() OVER (PARTITION BY predicate) preserves the
+            // per-predicate cap inside the single query. Fetching rn <= 1001 rather than 1000
+            // is how a predicate's own cap-hit is detected without a second query — the 1001st
+            // row (if present) is dropped from `rows` but its predicate is marked truncated.
+            using var command = connection.CreateCommand();
+            var objectPlaceholders = string.Join(',', objectPaths.Select((_, i) => $"$o{i}"));
+            var predicateParams = InheritancePredicates.Select((p, i) => (Name: $"$p{i}", Value: p)).ToList();
+            var predicatePlaceholders = string.Join(',', predicateParams.Select(p => p.Name));
+            var repoClause = repoNeedle is null ? string.Empty : " AND f.path LIKE '%' || $repo || '%'";
+            command.CommandText =
+                "WITH ranked AS ("
+                    + "SELECT f.path AS subject_path, f.predicate AS predicate, f.analyzer_tier AS analyzer_tier, "
+                    + "ROW_NUMBER() OVER (PARTITION BY f.predicate ORDER BY f.predicate, f.path) AS rn "
+                    + "FROM fact f JOIN entity o ON o.id = f.object_id "
+                    + $"WHERE f.predicate IN ({predicatePlaceholders}) AND f.valid_to IS NULL "
+                    + $"AND o.path IN ({objectPlaceholders}){repoClause}"
+                    + ") SELECT subject_path, predicate, analyzer_tier, rn FROM ranked WHERE rn <= 1001 "
+                    + "ORDER BY predicate, subject_path;";
+            foreach (var p in predicateParams)
             {
-                using var command = connection.CreateCommand();
-                var placeholders = string.Join(',', objectPaths.Select((_, i) => $"$o{i}"));
-                var repoClause = repoNeedle is null ? string.Empty : " AND f.path LIKE '%' || $repo || '%'";
-                // F3: capping this fetch at the caller's display `limit` (per predicate, so up
-                // to 3x it) made `rows.Count` undercount the true total whenever one predicate
-                // alone had more matches than `limit` — the SQL query truncated before the
-                // predicates were even combined. Fetch generously here (matching the 1000 cap
-                // SymbolResolver.Resolve uses elsewhere in this file); `limit` governs display only.
-                command.CommandText =
-                    "SELECT f.path, f.analyzer_tier FROM fact f JOIN entity o ON o.id = f.object_id "
-                        + $"WHERE f.predicate = $predicate AND f.valid_to IS NULL AND o.path IN ({placeholders}){repoClause} LIMIT 1000;";
-                command.Parameters.AddWithValue("$predicate", predicate);
-                for (var i = 0; i < objectPaths.Count; i++)
+                command.Parameters.AddWithValue(p.Name, p.Value);
+            }
+
+            for (var i = 0; i < objectPaths.Count; i++)
+            {
+                command.Parameters.AddWithValue($"$o{i}", objectPaths[i]);
+            }
+
+            if (repoNeedle is not null)
+            {
+                command.Parameters.AddWithValue("$repo", repoNeedle);
+            }
+
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                var predicate = reader.GetString(1);
+                var rn = reader.GetInt32(3);
+                if (rn > 1000)
                 {
-                    command.Parameters.AddWithValue($"$o{i}", objectPaths[i]);
+                    truncatedPredicates.Add(predicate);
+                    continue;
                 }
 
-                if (repoNeedle is not null)
-                {
-                    command.Parameters.AddWithValue("$repo", repoNeedle);
-                }
-
-                using var reader = command.ExecuteReader();
-                while (reader.Read())
-                {
-                    rows.Add((reader.GetString(0), predicate, reader.IsDBNull(1) ? null : reader.GetInt32(1)));
-                }
+                rows.Add((reader.GetString(0), predicate, reader.IsDBNull(2) ? null : reader.GetInt32(2)));
             }
         }
 
@@ -1278,6 +1302,19 @@ public sealed class EngramMcpTools
                 .Append(" distinct type spellings (").Append(string.Join(", ", distinctSpellings.Take(5)))
                 .Append(distinctSpellings.Count > 5 ? ", …" : string.Empty)
                 .Append("); these results are matched by leaf name and may include unrelated types.\n");
+        }
+
+        // graph-index-audit §2.4: `LIMIT 1000` (now per predicate inside the windowed query
+        // above) is a real cap, and a capped list makes the same implicit completeness claim
+        // §8.5.3 item 4 forbids leaving silent — this is that rule's discrimination test
+        // applied to the cap itself: fires only on the predicates that actually hit it, not
+        // unconditionally.
+        if (truncatedPredicates.Count > 0)
+        {
+            builder.Append("note: more than 1000 live '")
+                .Append(string.Join("'/'", truncatedPredicates))
+                .Append("' edge(s) exist for '").Append(query)
+                .Append("'; only the first 1000 per predicate are included above.\n");
         }
 
         var staleCount = 0;
