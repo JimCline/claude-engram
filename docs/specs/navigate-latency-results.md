@@ -150,3 +150,44 @@ cheaper-to-process matching facts is the whole difference; `MatchingSymbolNames`
 
 Well within §9.2's budget either way — this is a correction of the number cited for the decision,
 not a reversal of the decision itself.
+
+## Addendum — H2, the `callees` many-callees case (Architect/Ultra-Advisor disagreement)
+
+Architect's index audit called `callees` fully served by `ix_fact_path`. Ultra-Advisor disputed
+it: that index only covers `Callees`' own fact lookup, not the per-callee-row
+`SymbolResolver.Resolve` call `Callees` makes to resolve each callee's own declaration — an
+O(callees × corpus) cost if it isn't index-assisted, unmeasured because this file's original
+`callees` "hub" arm (`Fn_0`, one callee) never exercised more than one callee row. This addendum
+closes that gap directly: `GenerateRepo` now also emits a dedicated `FanOutFn` that calls 200
+distinct, genuinely declared `FanTarget_N` functions, added as a `high-fanout` arm; the existing
+`distinctive` arm (`Fn_1`, one callee) is the low-fanout comparison — same corpus, same binary,
+same method as above.
+
+### 5,000 functions (callees high-fanout arm)
+
+| relation | shape | median ms | floor-subtracted ms |
+|---|---|---|---|
+| callees | no-match | 1.05 | 0.00 |
+| callees | distinctive (low-fanout, 1 callee) | 0.70 | -0.35 |
+| callees | high-fanout (200 callees) | 39.57 | 38.52 |
+
+### 50,000 functions (callees high-fanout arm)
+
+| relation | shape | median ms | floor-subtracted ms |
+|---|---|---|---|
+| callees | no-match | 11.11 | 0.00 |
+| callees | distinctive (low-fanout, 1 callee) | 7.46 | -3.65 |
+| callees | high-fanout (200 callees) | 661.40 | 650.29 |
+
+**Verdict: Ultra-Advisor's side, decisively.** 200 callees costs ~38.5 ms extra at 5k and
+~650 ms extra at 50k — both scaling with callee-row-count (roughly linear: ~0.19 ms/callee @5k,
+~3.25 ms/callee @50k) *and* with corpus size (~17x for a 10x corpus, matching H1's
+`SymbolResolver.Resolve` scan-cost shape), even though every `FanTarget_N` in this arm resolves
+on the first (exact) tier — the cheapest case `Resolve` has. A function with many callees is not
+a rare shape in a real codebase (dispatch functions, orchestrators, `main`), and 650 ms for one
+`callees` call at 50,000 functions is well outside any interactive budget, unlike H1's ~30 ms
+worst case. Architect's "fully served" verdict covered the query `Callees` itself issues, not the
+per-row resolution loop it drives — real gap, not settled by an index on `fact` alone; a fix
+likely needs `Callees` to stop re-invoking `SymbolResolver.Resolve` per row (batch resolution, or
+skip re-resolving symbols already seen) rather than (or in addition to) indexing `fact`. That
+design question is out of scope here — measurement only, per this dispatch's own constraint.

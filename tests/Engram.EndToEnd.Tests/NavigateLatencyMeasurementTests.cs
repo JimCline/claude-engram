@@ -35,12 +35,20 @@ namespace Engram.EndToEnd.Tests;
 /// take on faith. <see cref="GenerateRepo"/> now also emits <c>class … extends …</c> declarations
 /// at the same stride as the hub/distinctive callers, so the same corpus serves both measurements.
 /// </para>
+/// <para>
+/// The original H2 pass had a known gap: its <c>callees</c> "hub" arm (query <c>Fn_0</c>) has
+/// exactly one callee, so it never actually exercised "one subject with many callees." A
+/// dedicated <c>FanOutFn</c> (calling <see cref="FanOutTargetCount"/> distinct, genuinely
+/// declared functions) closes that gap as the <c>high-fanout</c> arm; the existing
+/// <c>distinctive</c> arm (<c>Fn_1</c>, one callee) already serves as the low-fanout comparison.
+/// </para>
 /// </remarks>
 public class NavigateLatencyMeasurementTests
 {
     private const string RunEnvVar = "ENGRAM_RUN_LATENCY_BENCHMARK";
     private const int FunctionsPerFile = 100;
     private const int HubCallerStride = 50;
+    private const int FanOutTargetCount = 200;
 
     private static readonly string[] HubSpellings =
     [
@@ -136,6 +144,7 @@ public class NavigateLatencyMeasurementTests
                     ("callees", "distinctive", "Fn_1"),
                     ("callees", "distinctive-b", "Fn_1"),
                     ("callees", "hub", "Fn_0"),
+                    ("callees", "high-fanout", "FanOutFn"),
                     ("implementers", "no-match", NoMatchQuery),
                     ("implementers", "distinctive", DistinctiveQuery),
                     ("implementers", "distinctive-b", DistinctiveQuery),
@@ -305,6 +314,21 @@ public class NavigateLatencyMeasurementTests
 
             File.WriteAllText(Path.Combine(repo, $"f{file}.js"), builder.ToString());
         }
+
+        var fanOut = new StringBuilder();
+        for (var i = 0; i < FanOutTargetCount; i++)
+        {
+            fanOut.AppendLine($"function FanTarget_{i}() {{}}");
+        }
+
+        fanOut.Append("function FanOutFn() { ");
+        for (var i = 0; i < FanOutTargetCount; i++)
+        {
+            fanOut.Append($"FanTarget_{i}(); ");
+        }
+
+        fanOut.AppendLine("}");
+        File.WriteAllText(Path.Combine(repo, "fanout.js"), fanOut.ToString());
 
         return repo;
     }
