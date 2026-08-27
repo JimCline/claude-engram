@@ -218,8 +218,9 @@ public sealed unsafe class TreeSitter : IDisposable
             }
 
             var calls = ExtractCalls(lang, language, root, source, symbols, declNodes);
+            var inherits = ExtractInherits(lang, language, root, source);
 
-            return new DeepAnalysis(relativePath, symbols, modules, null, calls, Tier: 1);
+            return new DeepAnalysis(relativePath, symbols, modules, null, calls, inherits, Tier: 1);
         }
         finally
         {
@@ -287,6 +288,51 @@ public sealed unsafe class TreeSitter : IDisposable
         }
 
         return calls;
+    }
+
+    /// <summary>
+    /// Base-list edges (§8.5/§8.6): independent of the declaration/import/call passes (C2) —
+    /// a language with no <see cref="LanguageDefinition.InheritanceQuery"/> simply
+    /// contributes none. The predicate is decided here, the one place that knows the
+    /// language's §8.5.1 ruling, rather than at merge time.
+    /// </summary>
+    private List<DeepInherit> ExtractInherits(IntPtr lang, LanguageDefinition language, TsNode root, byte[] source)
+    {
+        if (language.InheritanceQuery is null)
+        {
+            return [];
+        }
+
+        var query = Compile(lang, language.Id, "inheritance", language.InheritanceQuery);
+        if (query is null)
+        {
+            return [];
+        }
+
+        var inherits = new List<DeepInherit>();
+        foreach (var captures in Matches(query, root, source))
+        {
+            if (!captures.TryGetValue("scope", out var scopeNode))
+            {
+                continue;
+            }
+
+            var typeName = Text(scopeNode, source);
+
+            if (captures.TryGetValue("base", out var baseNode))
+            {
+                var predicate = language.InheritancePredicate == InheritancePredicate.DerivesFrom ? "derives-from" : "inherits";
+                inherits.Add(new DeepInherit(typeName, Text(baseNode, source), predicate));
+            }
+
+            if (captures.TryGetValue("iface", out var ifaceNode))
+            {
+                var predicate = language.InheritancePredicate == InheritancePredicate.DerivesFrom ? "derives-from" : "implements";
+                inherits.Add(new DeepInherit(typeName, Text(ifaceNode, source), predicate));
+            }
+        }
+
+        return inherits;
     }
 
     private IntPtr? LoadLanguage(string languageId, TreeSitterGrammar grammar)

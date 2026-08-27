@@ -153,11 +153,16 @@ public static class RoslynSidecar
 
         if (record["error"]?.GetValue<string>() is { } error)
         {
-            return new DeepAnalysis(path, [], [], error, [], Tier: 2);
+            return new DeepAnalysis(path, [], [], error, [], [], Tier: 2);
         }
 
         var symbols = new List<DeepSymbol>();
         var symbolsById = new Dictionary<int, DeepSymbol>();
+
+        // C# has one undifferentiated base list (§8.5.1), so every entry here is
+        // derives-from — never inherits/implements, which the sidecar has no basis to tell
+        // apart without a Compilation (§8.1).
+        var inherits = new List<DeepInherit>();
         if (record["symbols"] is JsonArray symbolArray)
         {
             foreach (var node in symbolArray)
@@ -178,6 +183,17 @@ public static class RoslynSidecar
                     if (symbol["id"]?.GetValue<int>() is { } id)
                     {
                         symbolsById[id] = deepSymbol;
+                    }
+
+                    if (symbol["bases"] is JsonArray baseArray)
+                    {
+                        foreach (var baseNode in baseArray)
+                        {
+                            if (baseNode?.GetValue<string>() is { Length: > 0 } baseName)
+                            {
+                                inherits.Add(new DeepInherit(name, baseName, "derives-from"));
+                            }
+                        }
                     }
                 }
             }
@@ -232,6 +248,6 @@ public static class RoslynSidecar
             }
         }
 
-        return new DeepAnalysis(path, symbols, imports, null, calls, Tier: 2);
+        return new DeepAnalysis(path, symbols, imports, null, calls, inherits, Tier: 2);
     }
 }

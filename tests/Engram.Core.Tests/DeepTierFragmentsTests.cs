@@ -86,7 +86,7 @@ public class DeepTierFragmentsTests
         var merged = DeepTier.Merge(
             "/projects/p/code/r/Http.cs",
             [],
-            new DeepAnalysis("Http.cs", [first, second], [], null, [], Tier: 1));
+            new DeepAnalysis("Http.cs", [first, second], [], null, [], [], Tier: 1));
 
         var declared = Assert.Single(merged, c => c.Predicate == "declared-as");
         Assert.Equal("first", declared.Body);
@@ -112,6 +112,7 @@ public class DeepTierFragmentsTests
             [],
             null,
             [new DeepCall("Run", "Helper", 1)],
+            [],
             Tier: 2);
 
         var merged = DeepTier.Merge("/projects/p/code/r/Widget.cs", tierZero, analysis);
@@ -136,7 +137,7 @@ public class DeepTierFragmentsTests
         {
             new("/projects/p/code/r/Widget.cs", "file", "Widget.cs", "about", "A widget."),
         };
-        var analysis = new DeepAnalysis("Widget.cs", [], [], "parse error", [], Tier: 2);
+        var analysis = new DeepAnalysis("Widget.cs", [], [], "parse error", [], [], Tier: 2);
 
         var merged = DeepTier.Merge("/projects/p/code/r/Widget.cs", tierZero, analysis);
 

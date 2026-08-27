@@ -30,7 +30,10 @@ public static class CodeAnalyzer
     // what makes existing stores re-read under the better extractor.
     // 5: member emission widened to every visibility, both tiers (all-members spec) —
     // addressing is unchanged (GrammarVersion stays 2), only which members are observed.
-    public const int AnalyzerVersion = 5;
+    // 6: derives-from/inherits/implements and contains edges (§2/§8.5 of
+    // close-graph-query-gap.md) — new predicates, no addressing change, so this bumps
+    // AnalyzerVersion rather than GrammarVersion, following the precedent version 5 set.
+    public const int AnalyzerVersion = 6;
 
     public static IReadOnlyList<CodeCandidate> Analyze(
         string fileEntityPath,

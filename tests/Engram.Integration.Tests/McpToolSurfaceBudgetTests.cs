@@ -24,7 +24,12 @@ public class McpToolSurfaceBudgetTests
     // not reflected over by ToolMethods() and are not counted in this figure — a separate,
     // unmeasured gap. Raising this number is a deliberate edit that needs a reason in the
     // commit message, not a knob to turn when a description outgrows it.
-    private const int MaxDefinitionChars = 6281;
+    //
+    // Re-baselined 6,281 -> 6,443 when engram_navigate gained implements/implementers/members
+    // (docs/specs/close-graph-query-gap.md §2/§8): three new relations answering questions
+    // Grep gets wrong (inheritance, interface implementation, type members) are worth the
+    // description cost the same way defined_at/imports were.
+    private const int MaxDefinitionChars = 6443;
 
     // 10 -> 11 when engram_navigate joined for code navigation (docs/code-navigation-spec.md
     // §3.4): defined_at/imports read entity and fact tables directly rather than going through

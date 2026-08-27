@@ -367,15 +367,16 @@ public sealed class CodeNavigationPhase3Tests
         Assert.DoesNotContain("attributed to the enclosing type", result);
     }
 
-    // §7: `neighbors` alone still refuses; `callers`/`callees` no longer share that refusal.
+    // §8.4's corollary: an advertised-but-unbuilt relation is worse than an unadvertised one
+    // under a first-reach mandate, so `neighbors` is retired rather than kept refusing.
     [Fact]
-    public void Neighbors_StillAnswersNotYetIndexed()
+    public void Neighbors_IsNoLongerASpecialCase_AndIsRejectedLikeAnyUnknownRelation()
     {
         using var sandbox = new SandboxHome();
 
         var result = EngramMcpTools.Navigate(sandbox.Home, Session, "anything", "neighbors");
 
-        Assert.Contains("not yet indexed", result);
+        Assert.Contains("Unknown relation 'neighbors'", result);
     }
 
     [Theory]

@@ -723,16 +723,17 @@ public sealed class EngramMcpTools
 
     [McpServerTool(Name = "engram_navigate")]
     [Description(
-        "Where is a symbol defined, what does a file import, or who calls/is called by a symbol — a " +
+        "Where is a symbol defined, what does a file import, who calls/is called by a symbol, what " +
+        "does a type inherit/implement or who implements it, or what members a type declares — a " +
         "deterministic lookup over indexed code, not a search. Use it instead of Read/Grep to answer " +
-        "'where is Z defined', 'what does Y import', 'who calls Z', or 'what does Z call'. relation is " +
-        "defined_at, imports, callers, or callees; neighbors is recognized but answers 'not yet indexed' " +
-        "rather than an empty result.")]
+        "'where is Z defined', 'what does Y import', 'who calls Z', 'what does Z call', 'what does Z " +
+        "implement', 'who implements Z', or 'what members does Z have'. relation is defined_at, " +
+        "imports, callers, callees, implements, implementers, or members.")]
     public static string Navigate(
         EngramHome home,
         McpSessionId session,
-        [Description("A symbol name for defined_at/callers/callees, or a file path for imports.")] string query,
-        [Description("One of: defined_at, imports, callers, callees, neighbors.")] string relation,
+        [Description("A symbol name for defined_at/callers/callees/implements/implementers/members, or a file path for imports.")] string query,
+        [Description("One of: defined_at, imports, callers, callees, implements, implementers, members.")] string relation,
         [Description("Restrict matches to one repo's indexed code, by its slug.")] string? repo = null,
         [Description("Maximum matches returned. Defaults to 20, clamped to 1-100.")] int limit = 20)
     {
@@ -740,25 +741,20 @@ public sealed class EngramMcpTools
         var normalizedRelation = relation.Trim().ToLowerInvariant();
 
         NavigateOutcome outcome;
-        if (normalizedRelation is "neighbors")
+        using (var connection = EngramDatabase.OpenInitialized(home))
         {
-            outcome = NavigateOutcome.NotFound(
-                "'neighbors' is not yet indexed. This is not a negative result; it means the "
-                    + "question cannot be answered yet, not that the answer is empty.",
-                coverageCaveat: false);
-        }
-        else
-        {
-            using var connection = EngramDatabase.OpenInitialized(home);
             outcome = normalizedRelation switch
             {
                 "defined_at" => NavigateDefinedAt(connection, query, repo, limit),
                 "imports" => NavigateImports(connection, query, repo, limit),
                 "callers" => NavigateCallers(connection, query, repo, limit),
                 "callees" => NavigateCallees(connection, query, repo, limit),
+                "implements" => NavigateImplements(connection, query, repo, limit),
+                "implementers" => NavigateImplementers(connection, query, repo, limit),
+                "members" => NavigateMembers(connection, query, repo, limit),
                 _ => NavigateOutcome.NotFound(
-                    $"Unknown relation '{relation}'. Use defined_at, imports, callers, or callees "
-                        + "(neighbors is recognized but not yet indexed).",
+                    $"Unknown relation '{relation}'. Use defined_at, imports, callers, callees, "
+                        + "implements, implementers, or members.",
                     coverageCaveat: false),
             };
         }
@@ -992,6 +988,17 @@ public sealed class EngramMcpTools
         }
 
         builder.Append(":\n");
+
+        // §1b: an over-approximation trusted rather than sanity-checked (first-reach, §8.2)
+        // is a worse failure than a wrong answer, because it is invisible. Say so when the
+        // query leaf matched more than one distinct callee spelling.
+        if (result.DistinctSpellings.Count > 1)
+        {
+            builder.Append("note: '").Append(query).Append("' matched ").Append(result.DistinctSpellings.Count)
+                .Append(" distinct callee spellings (").Append(string.Join(", ", result.DistinctSpellings.Take(5)))
+                .Append(result.DistinctSpellings.Count > 5 ? ", …" : string.Empty)
+                .Append("); these callers are matched by leaf name and may include unrelated symbols.\n");
+        }
         var staleCount = 0;
         foreach (var caller in result.Callers)
         {
@@ -1101,6 +1108,212 @@ public sealed class EngramMcpTools
         var extractionTierLabels = extractionTiers.Select(ExtractionTierLabel).Distinct().ToList();
         return new NavigateOutcome(
             builder.ToString().TrimEnd('\n'), Found: true, Tiers: [], ExtractionTiers: extractionTierLabels);
+    }
+
+    // The one union implementation (§8.5.3 item 2): every navigate relation that asks about
+    // base lists reads all three predicates so a caller asking "implements" gets a match
+    // regardless of which one the language's grammar could justify (§8.5.1).
+    private static readonly string[] InheritancePredicates = ["inherits", "implements", "derives-from"];
+
+    private static NavigateOutcome NavigateImplements(SqliteConnection connection, string query, string? repo, int limit)
+    {
+        var repoNeedle = RepoNeedle(repo);
+        if (repoNeedle is not null && !RepoIndexed(connection, repoNeedle))
+        {
+            return NavigateOutcome.NotFound($"Repo '{repo}' is not indexed. Nothing to search.");
+        }
+
+        var matches = SymbolResolver.Resolve(connection, query, limit, repoNeedle);
+        if (matches.Count == 0)
+        {
+            return NavigateOutcome.NotFound(
+                $"No symbol named '{query}' found (checked exact, case-insensitive, and substring match).");
+        }
+
+        var rows = new List<(SymbolMatch Match, StoredFact Fact, string BaseName)>();
+        foreach (var match in matches)
+        {
+            foreach (var predicate in InheritancePredicates)
+            {
+                foreach (var fact in FactStore.History(connection, match.Path, predicate).Where(f => f.ValidTo is null))
+                {
+                    rows.Add((match, fact, ObjectNameOf(connection, fact.Id) ?? "(unknown)"));
+                }
+            }
+        }
+
+        if (rows.Count == 0)
+        {
+            return NavigateOutcome.NotFound($"No recorded base-list edges for '{query}'.");
+        }
+
+        var builder = new System.Text.StringBuilder();
+        builder.Append(CountText(rows.Count, "base-list edge")).Append(" for '").Append(query).Append("':\n");
+
+        var staleCount = 0;
+        foreach (var (match, fact, baseName) in rows)
+        {
+            builder.Append("  [").Append(fact.Predicate).Append(']');
+            if (AppendFreshness(builder, connection, match.Path))
+            {
+                staleCount++;
+            }
+
+            builder.Append(' ').Append(match.Path).Append(" -> ").Append(baseName).Append('\n');
+        }
+
+        AppendOverApproximationNote(builder, rows.Select(r => r.Fact.Predicate));
+
+        if (staleCount > 0)
+        {
+            builder.Append(NavigateOutcome.StaleFootnote(staleCount)).Append('\n');
+        }
+
+        return new NavigateOutcome(builder.ToString().TrimEnd('\n'), Found: true, Tiers: [], ExtractionTiers: []);
+    }
+
+    private static NavigateOutcome NavigateImplementers(SqliteConnection connection, string query, string? repo, int limit)
+    {
+        var repoNeedle = RepoNeedle(repo);
+        if (repoNeedle is not null && !RepoIndexed(connection, repoNeedle))
+        {
+            return NavigateOutcome.NotFound($"Repo '{repo}' is not indexed. Nothing to search.");
+        }
+
+        var objectPath = CodePaths.ForSymbolName(query);
+        var rows = new List<(string SubjectPath, string Predicate, int? AnalyzerTier)>();
+        foreach (var predicate in InheritancePredicates)
+        {
+            using var command = connection.CreateCommand();
+            var repoClause = repoNeedle is null ? string.Empty : " AND f.path LIKE '%' || $repo || '%'";
+            command.CommandText =
+                "SELECT f.path, f.analyzer_tier FROM fact f JOIN entity o ON o.id = f.object_id "
+                    + $"WHERE f.predicate = $predicate AND f.valid_to IS NULL AND o.path = $object{repoClause} LIMIT $limit;";
+            command.Parameters.AddWithValue("$predicate", predicate);
+            command.Parameters.AddWithValue("$object", objectPath);
+            command.Parameters.AddWithValue("$limit", limit);
+            if (repoNeedle is not null)
+            {
+                command.Parameters.AddWithValue("$repo", repoNeedle);
+            }
+
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                rows.Add((reader.GetString(0), predicate, reader.IsDBNull(1) ? null : reader.GetInt32(1)));
+            }
+        }
+
+        if (rows.Count == 0)
+        {
+            return NavigateOutcome.NotFound(
+                $"No recorded type names '{query}' as a base or interface (this is a name-as-written "
+                    + "match, not a resolved symbol — checked exact spelling only).");
+        }
+
+        var builder = new System.Text.StringBuilder();
+        builder.Append(CountText(rows.Count, "implementer")).Append(" of '").Append(query).Append("':\n");
+
+        var staleCount = 0;
+        foreach (var (subjectPath, predicate, _) in rows.Take(limit))
+        {
+            builder.Append("  [").Append(predicate).Append(']');
+            if (AppendFreshness(builder, connection, subjectPath))
+            {
+                staleCount++;
+            }
+
+            builder.Append(' ').Append(subjectPath).Append('\n');
+        }
+
+        AppendOverApproximationNote(builder, rows.Select(r => r.Predicate));
+
+        if (staleCount > 0)
+        {
+            builder.Append(NavigateOutcome.StaleFootnote(staleCount)).Append('\n');
+        }
+
+        return new NavigateOutcome(builder.ToString().TrimEnd('\n'), Found: true, Tiers: [], ExtractionTiers: []);
+    }
+
+    private static NavigateOutcome NavigateMembers(SqliteConnection connection, string query, string? repo, int limit)
+    {
+        var repoNeedle = RepoNeedle(repo);
+        if (repoNeedle is not null && !RepoIndexed(connection, repoNeedle))
+        {
+            return NavigateOutcome.NotFound($"Repo '{repo}' is not indexed. Nothing to search.");
+        }
+
+        var matches = SymbolResolver.Resolve(connection, query, limit, repoNeedle);
+        if (matches.Count == 0)
+        {
+            return NavigateOutcome.NotFound(
+                $"No symbol named '{query}' found (checked exact, case-insensitive, and substring match).");
+        }
+
+        var rows = new List<(SymbolMatch Match, StoredFact Fact, string MemberName)>();
+        foreach (var match in matches)
+        {
+            foreach (var fact in FactStore.History(connection, match.Path, "contains").Where(f => f.ValidTo is null))
+            {
+                rows.Add((match, fact, ObjectNameOf(connection, fact.Id) ?? "(unknown)"));
+            }
+        }
+
+        if (rows.Count == 0)
+        {
+            return NavigateOutcome.NotFound($"No recorded members of '{query}'.");
+        }
+
+        var builder = new System.Text.StringBuilder();
+        builder.Append(CountText(rows.Count, "member")).Append(" of '").Append(query).Append("':\n");
+
+        var staleCount = 0;
+        foreach (var (match, _, memberName) in rows)
+        {
+            builder.Append("  ");
+            if (AppendFreshness(builder, connection, match.Path))
+            {
+                staleCount++;
+            }
+
+            builder.Append(' ').Append(match.Path).Append(" -> ").Append(memberName).Append('\n');
+        }
+
+        if (staleCount > 0)
+        {
+            builder.Append(NavigateOutcome.StaleFootnote(staleCount)).Append('\n');
+        }
+
+        return new NavigateOutcome(builder.ToString().TrimEnd('\n'), Found: true, Tiers: [], ExtractionTiers: []);
+    }
+
+    /// <summary>
+    /// §8.5.3 item 3: a <c>derives-from</c> hit answering an implements/inherits question is
+    /// an over-approximation — the parser could not tell base class from interface — and must
+    /// say so, or the union quietly turns "could not tell" into "yes".
+    /// </summary>
+    private static void AppendOverApproximationNote(System.Text.StringBuilder builder, IEnumerable<string> predicates)
+    {
+        var list = predicates as IReadOnlyCollection<string> ?? predicates.ToList();
+        var derivesFrom = list.Count(p => p == "derives-from");
+        if (derivesFrom == 0)
+        {
+            return;
+        }
+
+        builder.Append("note: ").Append(derivesFrom).Append(" of ").Append(list.Count)
+            .Append(" results are from languages whose syntax does not distinguish base classes "
+                + "from interfaces (C#, Python); those are base-list entries, not confirmed interface "
+                + "implementations.\n");
+    }
+
+    private static string? ObjectNameOf(SqliteConnection connection, long factId)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT o.path FROM fact f JOIN entity o ON o.id = f.object_id WHERE f.id = $id;";
+        command.Parameters.AddWithValue("$id", factId);
+        return command.ExecuteScalar() is string path ? CodePaths.SymbolNameOf(path) ?? path : null;
     }
 
     private static string TierLabel(SymbolMatchTier tier) => tier switch

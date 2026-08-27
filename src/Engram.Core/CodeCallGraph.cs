@@ -39,13 +39,23 @@ public sealed record CallerMatch(
 
 public sealed record CalleeMatch(string? DeclarationPath, string Callee, CallRankSignal Signal, int? AnalyzerTier = null);
 
+/// <param name="DistinctSpellings">
+/// Every distinct <c>symbol-name</c> spelling <see cref="CodeCallGraph.Callers"/> leaf-matched
+/// (§1b): more than one means the query name is ambiguous and the callers below may include
+/// unrelated symbols sharing a leaf. Empty when there is nothing to be ambiguous about
+/// (<see cref="Found"/> false, or the query resolved but nothing leaf-matched).
+/// </param>
 public sealed record CallersResult(
     IReadOnlyList<CallerMatch> Callers,
     int DeclarationCount,
     int TotalMatches,
     bool Found,
     ExtractionCoverage Coverage = ExtractionCoverage.Unknown,
-    SymbolMatchTier QueryTier = SymbolMatchTier.Exact);
+    SymbolMatchTier QueryTier = SymbolMatchTier.Exact,
+    IReadOnlyList<string> DistinctSpellings = null!)
+{
+    public IReadOnlyList<string> DistinctSpellings { get; init; } = DistinctSpellings ?? [];
+}
 
 public sealed record CalleesResult(
     IReadOnlyList<CalleeMatch> Callees,
@@ -79,6 +89,7 @@ public static class CodeCallGraph
         var declarationFiles = declarations.Select(d => FileOf(d.Path)).Distinct(StringComparer.Ordinal).ToList();
 
         var objects = MatchingSymbolNames(connection, leaves);
+        var distinctSpellings = objects.Select(o => o.Name).Distinct(StringComparer.Ordinal).ToList();
         var calls = LiveCallsToObjects(connection, objects.Select(o => o.Path).ToList(), repoNeedle);
 
         var ranked = calls
@@ -93,7 +104,8 @@ public static class CodeCallGraph
 
         var coverage = AggregateCoverage(connection, declarationFiles);
         return new CallersResult(
-            ranked.Take(limit).ToList(), declarations.Count, ranked.Count, Found: true, coverage, declarations[0].Tier);
+            ranked.Take(limit).ToList(), declarations.Count, ranked.Count, Found: true, coverage, declarations[0].Tier,
+            distinctSpellings);
     }
 
     /// <summary>

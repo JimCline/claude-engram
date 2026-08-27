@@ -215,7 +215,7 @@ public class RoslynSidecarTests
     {
         var filePath = "/projects/demo/code/repo/src/Widget.cs";
         var tierZero = CodeAnalyzer.Analyze(filePath, BraceStyleCs, LanguageRegistry.Resolve("Widget.cs"));
-        var analysis = new DeepAnalysis("Widget.cs", [], [], null, [new DeepCall("Outer", "Inner", 3)], Tier: 2);
+        var analysis = new DeepAnalysis("Widget.cs", [], [], null, [new DeepCall("Outer", "Inner", 3)], [], Tier: 2);
 
         var merged = DeepTier.Merge(filePath, tierZero, analysis);
 
@@ -232,7 +232,7 @@ public class RoslynSidecarTests
     {
         var filePath = "/projects/demo/code/repo/src/Widget.cs";
         var tierZero = CodeAnalyzer.Analyze(filePath, BraceStyleCs, LanguageRegistry.Resolve("Widget.cs"));
-        var analysis = new DeepAnalysis("Widget.cs", [], [], null, [new DeepCall(null, "configure", 1)], Tier: 2);
+        var analysis = new DeepAnalysis("Widget.cs", [], [], null, [new DeepCall(null, "configure", 1)], [], Tier: 2);
 
         var merged = DeepTier.Merge(filePath, tierZero, analysis);
 
@@ -251,6 +251,7 @@ public class RoslynSidecarTests
         var analysis = new DeepAnalysis(
             "Widget.cs", [], [], null,
             [new DeepCall("Outer", "Inner", 5), new DeepCall("Outer", "Inner", 2), new DeepCall("Outer", "Inner", 9)],
+            [],
             Tier: 2);
 
         var merged = DeepTier.Merge(filePath, tierZero, analysis);
@@ -283,7 +284,7 @@ public class RoslynSidecarTests
         var tierZero = CodeAnalyzer.Analyze(filePath, BraceStyleCs, LanguageRegistry.Resolve("Widget.cs"));
 
         var merged = DeepTier.Merge(
-            filePath, tierZero, new DeepAnalysis("Widget.cs", [], [], "did not parse", [], Tier: 2));
+            filePath, tierZero, new DeepAnalysis("Widget.cs", [], [], "did not parse", [], [], Tier: 2));
 
         Assert.Equal(tierZero, merged);
     }
