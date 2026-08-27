@@ -455,6 +455,79 @@ public sealed class CodeNavigationPhase3Tests
         Assert.Equal(2, live.Count);
     }
 
+    // docs/specs/callees-fanout-resolution.md §3.2, trap 1 ("LIMIT is per name and a batch
+    // makes it global"): a leaf with 1001 candidates must not consume the whole SQL LIMIT and
+    // starve a sibling leaf resolved in the same batch out of its own candidate.
+    [Fact]
+    public void Callees_OneLeafExceedsThePerNameCap_DoesNotStarveASiblingLeafInTheSameBatch()
+    {
+        using var sandbox = new SandboxHome();
+        using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
+
+        SeedSymbol(connection, "/projects/p/code/r/caller.ts#outer", "outer");
+        for (var i = 0; i < 1001; i++)
+        {
+            SeedSymbol(connection, $"/projects/p/code/r/big{i}.ts#Big", "Big");
+        }
+
+        SeedSymbol(connection, "/projects/p/code/r/small0.ts#Small", "Small");
+        SeedCall(connection, "/projects/p/code/r/caller.ts#outer", "Big");
+        SeedCall(connection, "/projects/p/code/r/caller.ts#outer", "Small");
+
+        // Called directly (not through EngramMcpTools.Navigate) because Navigate clamps its
+        // own `limit` parameter to [1, 100] regardless of what is passed — a batch-unrelated
+        // ceiling that would otherwise hide "Small" behind 100 alphabetically-earlier "Big" rows.
+        var result = CodeCallGraph.Callees(connection, "outer", repoNeedle: null, limit: 2000);
+
+        var bigCount = result.Callees.Count(c => c.Callee == "Big");
+        Assert.True(bigCount <= 1000, $"expected at most 1000 'Big' candidates, found {bigCount}");
+        Assert.Contains(result.Callees, c => c.Callee == "Small" && c.DeclarationPath == "/projects/p/code/r/small0.ts#Small");
+    }
+
+    // §3.2, traps 2 and the tier partition itself: two leaves in the same batch, one resolved
+    // at tier 1 (exact) and one only at tier 2 (case-insensitive) — both must resolve to their
+    // correct declaration, proving the residue partition and the lower-cased grouping key work.
+    [Fact]
+    public void Callees_TwoLeavesInOneBatch_OneExactOneCaseInsensitiveOnly_BothResolveCorrectly()
+    {
+        using var sandbox = new SandboxHome();
+        using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
+
+        SeedSymbol(connection, "/projects/p/code/r/caller2.ts#outer2", "outer2");
+        SeedSymbol(connection, "/projects/p/code/r/exact.ts#Exact", "Exact");
+        SeedSymbol(connection, "/projects/p/code/r/caseonly.ts#caseonly", "caseonly");
+        SeedCall(connection, "/projects/p/code/r/caller2.ts#outer2", "Exact");
+        SeedCall(connection, "/projects/p/code/r/caller2.ts#outer2", "CaseOnly");
+
+        var result = CodeCallGraph.Callees(connection, "outer2", repoNeedle: null, limit: 100);
+
+        Assert.Contains(result.Callees, c => c.Callee == "Exact" && c.DeclarationPath == "/projects/p/code/r/exact.ts#Exact");
+        Assert.Contains(result.Callees, c => c.Callee == "CaseOnly" && c.DeclarationPath == "/projects/p/code/r/caseonly.ts#caseonly");
+    }
+
+    // §3.2, trap 3 (32,766 SQL-variable ceiling / chunk boundary): 501 distinct leaves in one
+    // call exceeds the 500-per-chunk batch size, so this only passes if both chunks are
+    // queried and their results unioned rather than the second chunk being dropped.
+    [Fact]
+    public void Callees_FanOutAboveTheChunkSize_ResolvesLeavesFromBothChunks()
+    {
+        using var sandbox = new SandboxHome();
+        using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
+
+        SeedSymbol(connection, "/projects/p/code/r/caller3.ts#outer3", "outer3");
+        for (var i = 0; i < 501; i++)
+        {
+            SeedSymbol(connection, $"/projects/p/code/r/leaf{i}.ts#Leaf{i}", $"Leaf{i}");
+            SeedCall(connection, "/projects/p/code/r/caller3.ts#outer3", $"Leaf{i}");
+        }
+
+        var result = CodeCallGraph.Callees(connection, "outer3", repoNeedle: null, limit: 1000);
+
+        Assert.Contains(result.Callees, c => c.Callee == "Leaf0" && c.DeclarationPath == "/projects/p/code/r/leaf0.ts#Leaf0");
+        Assert.Contains(result.Callees, c => c.Callee == "Leaf499" && c.DeclarationPath == "/projects/p/code/r/leaf499.ts#Leaf499");
+        Assert.Contains(result.Callees, c => c.Callee == "Leaf500" && c.DeclarationPath == "/projects/p/code/r/leaf500.ts#Leaf500");
+    }
+
     private static string? GrammarDir()
     {
         var dir = Environment.GetEnvironmentVariable("ENGRAM_TEST_TREE_SITTER_DIR");
