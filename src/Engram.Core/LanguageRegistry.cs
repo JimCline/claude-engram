@@ -78,7 +78,8 @@ public sealed record LanguageDefinition(
     string? ImportQuery = null,
     string? CallQuery = null,
     InheritancePredicate InheritancePredicate = InheritancePredicate.None,
-    string? InheritanceQuery = null)
+    string? InheritanceQuery = null,
+    bool NestedTypeEdgesDropped = false)
 {
     /// <summary>The grammar that parses one of this row's extensions, or null at tier 0/2.</summary>
     public TreeSitterGrammar? GrammarFor(string extension)
@@ -300,7 +301,8 @@ public static class LanguageRegistry
                     """,
                 ExpectedSymbols: ["Widget", "Point", "Color"],
                 ExpectedImports: ["System.Text", "System.Math"]),
-            InheritancePredicate: InheritancePredicate.DerivesFrom),
+            InheritancePredicate: InheritancePredicate.DerivesFrom,
+            NestedTypeEdgesDropped: true),
         new(
             Id: "typescript",
             DisplayName: "TypeScript",
@@ -398,7 +400,8 @@ public static class LanguageRegistry
             ImportQuery: ScriptImports,
             CallQuery: TypeScriptCalls,
             InheritancePredicate: InheritancePredicate.Split,
-            InheritanceQuery: TypeScriptInheritance),
+            InheritanceQuery: TypeScriptInheritance,
+            NestedTypeEdgesDropped: true),
         new(
             Id: "javascript",
             DisplayName: "JavaScript",
@@ -451,7 +454,8 @@ public static class LanguageRegistry
             ImportQuery: ScriptImports,
             CallQuery: JavaScriptCalls,
             InheritancePredicate: InheritancePredicate.Split,
-            InheritanceQuery: JavaScriptInheritance),
+            InheritanceQuery: JavaScriptInheritance,
+            NestedTypeEdgesDropped: true),
         new(
             Id: "markdown",
             DisplayName: "Markdown",

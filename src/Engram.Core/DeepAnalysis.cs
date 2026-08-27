@@ -186,9 +186,16 @@ public static class DeepTier
             }
         }
 
+        // F4 residual: a partial type's base list can be declared on more than one of its
+        // partial declarations (two `partial class Foo : IBar` parts, say), each producing
+        // the same DeepInherit entry — the same byte-identical-candidate hazard the
+        // contains dedup above exists to prevent, and the same fix.
+        var inheritsSeen = new HashSet<(string TypeFragment, string Predicate, string BaseName)>();
+
         foreach (var inherit in analysis.Inherits)
         {
-            if (!topLevel.TryGetValue(inherit.TypeName, out var typeFragment))
+            if (!topLevel.TryGetValue(inherit.TypeName, out var typeFragment)
+                || !inheritsSeen.Add((typeFragment, inherit.Predicate, inherit.BaseName)))
             {
                 continue;
             }

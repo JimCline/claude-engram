@@ -170,6 +170,26 @@ public class DeepTierFragmentsTests
         Assert.Equal("Get", contains.Object);
     }
 
+    // F4 residual (second review of graph-enhance): a partial type can carry its base list
+    // on more than one partial declaration (two `partial class Foo : IBar` parts each
+    // repeating the base), producing the same byte-identical-candidate hazard the contains
+    // dedup above fixes. Falsify by removing the inheritsSeen guard: this count goes to 2.
+    [Fact]
+    public void Merge_APartialTypesRepeatedBaseList_YieldsOnlyOneInheritsCandidate()
+    {
+        var first = Symbol("Foo") with { Declaration = "partial class Foo : IBar" };
+        var second = Symbol("Foo") with { Declaration = "partial class Foo : IBar" };
+        var inherits = new[] { new DeepInherit("Foo", "IBar", "derives-from") };
+
+        var analysis = new DeepAnalysis(
+            "Foo.cs", [first, second], [], null, [], inherits, Tier: 2);
+
+        var merged = DeepTier.Merge("/projects/p/code/r/Foo.cs", [], analysis);
+
+        var derives = Assert.Single(merged, c => c.Predicate == "derives-from");
+        Assert.Equal("IBar", derives.Object);
+    }
+
     // item 6 / §7.1: a missing deep tier stamps tier 0, never the registry's entitled tier —
     // Merge takes its tier from analysis.Tier alone, so a caller that never ran a deep analyzer
     // (tierZero only, no Merge call) must not read as anything but tier 0. Falsify by defaulting

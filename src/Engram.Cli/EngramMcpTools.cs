@@ -1170,6 +1170,7 @@ public sealed class EngramMcpTools
         }
 
         AppendOverApproximationNote(builder, displayed.Select(r => r.Fact.Predicate));
+        AppendNestedTypeGapNoteIfApplicable(builder, displayed.Select(r => r.Match.Path));
 
         if (staleCount > 0)
         {
@@ -1220,7 +1221,7 @@ public sealed class EngramMcpTools
             var miss =
                 $"No recorded type names '{query}' as a base or interface (this is a name-as-written "
                     + "match, not a resolved symbol — checked exact spelling only).";
-            if (HasTypeArgumentMarker(query))
+            if (HasTypeArgumentMarker(query) || HasParameterizedSpelling(connection, query))
             {
                 miss += " " + GenericsGapNote;
             }
@@ -1243,8 +1244,9 @@ public sealed class EngramMcpTools
         // declared whenever the query could plausibly have been affected by it — not only
         // on a total miss, which was the original, incomplete asymmetry. The gap class
         // itself (generics missed by exact match) is a static property of this relation;
-        // only whether to print it is decided per call, from the query's own spelling.
-        if (HasTypeArgumentMarker(query))
+        // whether to print it is decided per call, from either side's spelling: the query
+        // itself, or a stored candidate spelled with type arguments the query lacks.
+        if (HasTypeArgumentMarker(query) || HasParameterizedSpelling(connection, query))
         {
             builder.Append("note: ").Append(GenericsGapNote).Append('\n');
         }
@@ -1262,6 +1264,7 @@ public sealed class EngramMcpTools
         }
 
         AppendOverApproximationNote(builder, displayed.Select(r => r.Predicate));
+        AppendNestedTypeGapNoteIfApplicable(builder, displayed.Select(r => r.SubjectPath));
 
         if (staleCount > 0)
         {
@@ -1322,6 +1325,8 @@ public sealed class EngramMcpTools
             builder.Append(' ').Append(match.Path).Append(" -> ").Append(memberName).Append('\n');
         }
 
+        AppendNestedTypeGapNoteIfApplicable(builder, displayed.Select(r => r.Match.Path));
+
         if (staleCount > 0)
         {
             builder.Append(NavigateOutcome.StaleFootnote(staleCount)).Append('\n');
@@ -1360,6 +1365,62 @@ public sealed class EngramMcpTools
             + "parameterized spelling of this type (e.g. a different generic argument) would be missed.";
 
     private static bool HasTypeArgumentMarker(string text) => text.Contains('<', StringComparison.Ordinal);
+
+    // §8.5.3 item 4: the dominant case is the query spelled bare (`IComparer`) against a
+    // stored base-list entry spelled with type arguments (`IComparer<T>`) — the query itself
+    // then carries no marker, so HasTypeArgumentMarker(query) alone never fires exactly when
+    // the caveat is most needed. Probe the object side directly: does any stored symbol-name
+    // start with this spelling followed by '<'? % and _ are LIKE metacharacters and symbol
+    // names routinely contain '_', so the probed spelling must be escaped, not just embedded.
+    private static bool HasParameterizedSpelling(SqliteConnection connection, string query)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText =
+            "SELECT 1 FROM entity WHERE kind = 'symbol-name' AND path LIKE $prefix ESCAPE '\\' LIMIT 1;";
+        command.Parameters.AddWithValue("$prefix", EscapeLikePattern(CodePaths.ForSymbolName(query)) + "<%");
+        return command.ExecuteScalar() is not null;
+    }
+
+    private static string EscapeLikePattern(string text) =>
+        text.Replace("\\", "\\\\", StringComparison.Ordinal)
+            .Replace("%", "\\%", StringComparison.Ordinal)
+            .Replace("_", "\\_", StringComparison.Ordinal);
+
+    // §8.5.3 item 4 / §10.2: the second required static gap class, extraction-side rather
+    // than query-side — DeepTier.Merge (src/Engram.Core/DeepAnalysis.cs) resolves both base
+    // lists and containment against a file's top-level declarations only, so a type nested
+    // inside another type drops its own inheritance and containment edges silently. Declared
+    // per LanguageDefinition row (the same mechanism InheritancePredicate uses), fired only
+    // when a displayed result actually belongs to a language whose row declares it.
+    private const string NestedTypeGapNoteTail =
+        " not address nested-type declarations (§8.6); base-list and containment edges for a "
+            + "type nested inside another type are dropped rather than shown here.";
+
+    private static void AppendNestedTypeGapNoteIfApplicable(
+        System.Text.StringBuilder builder, IEnumerable<string> subjectPaths)
+    {
+        var languages = subjectPaths
+            .Select(FileOf)
+            .Select(LanguageRegistry.Resolve)
+            .Where(l => l.NestedTypeEdgesDropped)
+            .Select(l => l.DisplayName)
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+
+        if (languages.Count == 0)
+        {
+            return;
+        }
+
+        builder.Append("note: ").Append(string.Join(", ", languages))
+            .Append(languages.Count == 1 ? " does" : " do").Append(NestedTypeGapNoteTail).Append('\n');
+    }
+
+    private static string FileOf(string path)
+    {
+        var hash = path.IndexOf('#', StringComparison.Ordinal);
+        return hash < 0 ? path : path[..hash];
+    }
 
     private static string? ObjectNameOf(SqliteConnection connection, long factId)
     {

@@ -113,6 +113,24 @@ public sealed class CodeNavigationInheritanceTests
         Assert.Contains("differently", result);
     }
 
+    // F6a (second review of graph-enhance): the dominant case is the query spelled bare
+    // against a candidate stored with type arguments, e.g. `implementers IComparer` against
+    // a base-list entry spelled `IComparer<T>`. The query itself carries no marker, so
+    // checking the query alone never fires exactly when the caveat is most needed.
+    [Fact]
+    public void Implementers_CandidateCarriesTypeArguments_QueryDoesNot_StillDeclaresTheExactMatchGap()
+    {
+        using var sandbox = new SandboxHome();
+        using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
+
+        SeedSymbol(connection, "/projects/p/code/r/a.ts#Dog", "Dog");
+        SeedEdge(connection, "/projects/p/code/r/a.ts#Dog", "inherits", "IComparer<T>");
+
+        var result = EngramMcpTools.Navigate(sandbox.Home, Session, "IComparer", "implementers");
+
+        Assert.Contains("differently parameterized", result);
+    }
+
     [Fact]
     public void Implementers_QueryIsNotGeneric_CarriesNoExactMatchGapNote()
     {
@@ -149,6 +167,53 @@ public sealed class CodeNavigationInheritanceTests
         Assert.Contains("(showing 1 of 3)", result);
     }
 
+    // F6b (second review of graph-enhance): the second required static gap class, distinct
+    // from the generics one above — DeepTier.Merge only resolves inheritance and containment
+    // against a file's top-level declarations (§8.6), so a nested type's own edges are
+    // silently dropped for every language F5 made this universal for. Declared per
+    // LanguageDefinition row, fired whenever a displayed result belongs to such a language.
+    [Fact]
+    public void Implements_ResultFromANestedTypeDroppingLanguage_CarriesTheGapNote()
+    {
+        using var sandbox = new SandboxHome();
+        using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
+
+        SeedSymbol(connection, "/projects/p/code/r/a.ts#Widget", "Widget");
+        SeedEdge(connection, "/projects/p/code/r/a.ts#Widget", "inherits", "Base");
+
+        var result = EngramMcpTools.Navigate(sandbox.Home, Session, "Widget", "implements");
+
+        Assert.Contains("nested-type declarations", result);
+    }
+
+    [Fact]
+    public void Implementers_ResultFromANestedTypeDroppingLanguage_CarriesTheGapNote()
+    {
+        using var sandbox = new SandboxHome();
+        using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
+
+        SeedSymbol(connection, "/projects/p/code/r/a.ts#Dog", "Dog");
+        SeedEdge(connection, "/projects/p/code/r/a.ts#Dog", "inherits", "Animal");
+
+        var result = EngramMcpTools.Navigate(sandbox.Home, Session, "Animal", "implementers");
+
+        Assert.Contains("nested-type declarations", result);
+    }
+
+    [Fact]
+    public void Implements_ResultFromALanguageNotDeclaringTheGap_CarriesNoGapNote()
+    {
+        using var sandbox = new SandboxHome();
+        using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
+
+        SeedSymbol(connection, "/projects/p/code/r/a.md#Widget", "Widget");
+        SeedEdge(connection, "/projects/p/code/r/a.md#Widget", "derives-from", "Base");
+
+        var result = EngramMcpTools.Navigate(sandbox.Home, Session, "Widget", "implements");
+
+        Assert.DoesNotContain("nested-type declarations", result);
+    }
+
     [Fact]
     public void Members_ReturnsContainsEdgesForTheType()
     {
@@ -161,6 +226,20 @@ public sealed class CodeNavigationInheritanceTests
         var result = EngramMcpTools.Navigate(sandbox.Home, Session, "Widget", "members");
 
         Assert.Contains("run", result);
+    }
+
+    [Fact]
+    public void Members_ResultFromANestedTypeDroppingLanguage_CarriesTheGapNote()
+    {
+        using var sandbox = new SandboxHome();
+        using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
+
+        SeedSymbol(connection, "/projects/p/code/r/a.ts#Widget", "Widget");
+        SeedEdge(connection, "/projects/p/code/r/a.ts#Widget", "contains", "run");
+
+        var result = EngramMcpTools.Navigate(sandbox.Home, Session, "Widget", "members");
+
+        Assert.Contains("nested-type declarations", result);
     }
 
     // F2: same limit-ignored defect as Implements, on the members path.
