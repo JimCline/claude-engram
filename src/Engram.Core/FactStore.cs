@@ -335,7 +335,7 @@ public static class FactStore
         var sql = SelectFactColumns
             + " WHERE f.valid_to IS NULL"
             + (scope is null ? string.Empty : " AND f.scope = $scope")
-            + (excludeEdges ? " AND f.predicate NOT IN (" + CodePredicates.EdgeBearingSqlList + ")" : string.Empty)
+            + (excludeEdges ? " AND NOT (f.regenerable IS 1 AND f.object_id IS NOT NULL)" : string.Empty)
             + " ORDER BY f.id;";
 
         using var command = connection.CreateCommand();
@@ -528,7 +528,7 @@ public static class FactStore
             SELECT e.path, f.predicate, COUNT(*)
               FROM fact f
               JOIN entity e ON e.id = f.subject_id
-             WHERE f.predicate NOT IN ({CodePredicates.EdgeBearingSqlList})
+             WHERE NOT (f.regenerable IS 1 AND f.object_id IS NOT NULL)
              GROUP BY e.path, f.predicate
             HAVING COUNT(*) > 1;
             """;

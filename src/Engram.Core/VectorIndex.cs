@@ -162,6 +162,7 @@ public static class VectorIndex
              FROM fact f
              LEFT JOIN {TableName} v ON v.fact_id = f.id
              WHERE f.valid_to IS NULL AND v.fact_id IS NULL
+               AND NOT (f.regenerable IS 1 AND f.object_id IS NOT NULL)
              ORDER BY f.id
              LIMIT $limit;
              """;
@@ -188,7 +189,8 @@ public static class VectorIndex
              SELECT COUNT(*)
              FROM fact f
              LEFT JOIN {TableName} v ON v.fact_id = f.id
-             WHERE f.valid_to IS NULL AND v.fact_id IS NULL;
+             WHERE f.valid_to IS NULL AND v.fact_id IS NULL
+               AND NOT (f.regenerable IS 1 AND f.object_id IS NOT NULL);
              """;
 
         return Convert.ToInt32(command.ExecuteScalar(), System.Globalization.CultureInfo.InvariantCulture);
@@ -209,7 +211,9 @@ public static class VectorIndex
         ArgumentNullException.ThrowIfNull(connection);
 
         using var command = connection.CreateCommand();
-        command.CommandText = "SELECT COUNT(*) FROM fact WHERE valid_to IS NULL;";
+        command.CommandText =
+            "SELECT COUNT(*) FROM fact WHERE valid_to IS NULL "
+            + "AND NOT (regenerable IS 1 AND object_id IS NOT NULL);";
 
         return Convert.ToInt32(command.ExecuteScalar(), System.Globalization.CultureInfo.InvariantCulture);
     }
@@ -414,6 +418,59 @@ public static class VectorIndex
         ArgumentNullException.ThrowIfNull(connection);
 
         Execute(connection, transaction, $"DELETE FROM {TableName};");
+    }
+
+    /// <summary>
+    /// Vectors whose fact is no longer lane-eligible (edge-fact-lane-eligibility.md §3.3),
+    /// grouped by predicate — the dry-run counts for <c>embed --prune</c>. Grouping is not
+    /// cosmetic: it is what shows the reader that most of a delete is pre-existing
+    /// <c>calls</c>/<c>imports</c> vectors, not the four newer predicates.
+    /// </summary>
+    public static IReadOnlyList<(string Predicate, int Count)> CountIneligibleByPredicate(
+        SqliteConnection connection)
+    {
+        ArgumentNullException.ThrowIfNull(connection);
+
+        using var command = connection.CreateCommand();
+        command.CommandText =
+            $"""
+             SELECT f.predicate, COUNT(*)
+             FROM {TableName} v
+             JOIN fact f ON f.id = v.fact_id
+             WHERE f.regenerable IS 1 AND f.object_id IS NOT NULL
+             GROUP BY f.predicate
+             ORDER BY f.predicate;
+             """;
+
+        var counts = new List<(string, int)>();
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            counts.Add((reader.GetString(0), reader.GetInt32(1)));
+        }
+
+        return counts;
+    }
+
+    /// <summary>
+    /// Deletes vectors whose fact is no longer lane-eligible. <see cref="Clear"/>-shaped — a
+    /// targeted <c>DELETE</c>, never <see cref="Drop"/> — so the table's space pin survives,
+    /// because nothing about the embedding space changed (edge-fact-lane-eligibility.md §3.3).
+    /// Every eligible vector stays untouched.
+    /// </summary>
+    public static int PruneIneligible(SqliteConnection connection, SqliteTransaction? transaction = null)
+    {
+        ArgumentNullException.ThrowIfNull(connection);
+
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText =
+            $"""
+             DELETE FROM {TableName}
+             WHERE fact_id IN (SELECT id FROM fact WHERE regenerable IS 1 AND object_id IS NOT NULL);
+             """;
+
+        return command.ExecuteNonQuery();
     }
 
     /// <summary>

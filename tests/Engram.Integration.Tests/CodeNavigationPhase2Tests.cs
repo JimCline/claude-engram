@@ -201,6 +201,49 @@ public sealed class CodeNavigationPhase2Tests
         drop.ExecuteNonQuery();
     }
 
+    /// <summary>
+    /// The mirror case for the test above (edge-fact-lane-eligibility.md §2.3's load-bearing
+    /// half): an authored fact that happens to carry an object is not regenerable, so it must
+    /// stay indexed in both fact_fts and fact_token exactly like any other authored fact. Without
+    /// this, a suite proving only the exclusion side would still pass with the `regenerable`
+    /// clause deleted from every trigger and query.
+    /// </summary>
+    [Fact]
+    public void AuthoredFactWithAnObject_StaysInFactFtsAndFactToken_MirrorCase()
+    {
+        using var sandbox = new SandboxHome();
+        using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
+
+        var factId = FactStore.Remember(
+            connection,
+            new FactWrite(
+                "/projects/acme/notes", "note", "prefers",
+                "prefers trunk over mainline for releases", "project", "stated",
+                Regenerable: false,
+                ObjectPath: "/projects/acme/trunk",
+                ObjectKind: "branch"),
+            T0).FactId;
+
+        using var vocab = connection.CreateCommand();
+        vocab.CommandText =
+            "CREATE VIRTUAL TABLE IF NOT EXISTS temp.vocab_check USING fts5vocab('main', 'fact_fts', 'instance');";
+        vocab.ExecuteNonQuery();
+
+        using var inVocab = connection.CreateCommand();
+        inVocab.CommandText = "SELECT count(*) FROM temp.vocab_check WHERE doc = $id;";
+        inVocab.Parameters.AddWithValue("$id", factId);
+        Assert.True((long)inVocab.ExecuteScalar()! > 0);
+
+        using var inToken = connection.CreateCommand();
+        inToken.CommandText = "SELECT count(*) FROM fact_token WHERE fact_id = $id;";
+        inToken.Parameters.AddWithValue("$id", factId);
+        Assert.True((long)inToken.ExecuteScalar()! > 0);
+
+        using var drop = connection.CreateCommand();
+        drop.CommandText = "DROP TABLE temp.vocab_check;";
+        drop.ExecuteNonQuery();
+    }
+
     // §10 item 7: the recall path's candidate row count over N facts + 5N edges is N, asserted
     // through FactCatalog.ReadLongTerm — the retrieval path itself (§5.5) — rather than through
     // FactStore.ReadLive(excludeEdges: true) directly, which would only prove the parameter works
@@ -246,15 +289,18 @@ public sealed class CodeNavigationPhase2Tests
     [Fact]
     public void EveryEdgeBearingCandidate_CarriesANonNullObject_StaticGuard()
     {
-        // Asserts over the real emission site (CodeAnalyzer's own candidates) rather than
-        // CodePredicates.EdgeBearing's cardinality — a correct Phase 3 addition of "calls" would
+        // Asserts over the real emission site (CodeAnalyzer's own candidates) rather than the
+        // eligibility condition's cardinality — a correct Phase 3 addition of "calls" would
         // false-fail an Assert.Single on the set, which is not what this guard is for. Falsify by
-        // removing `Object:` from CodeAnalyzer.AddImports.
+        // removing `Object:` from CodeAnalyzer.AddImports. The known edge predicates are named
+        // literally here because a candidate is a pre-write value with no Regenerable/ObjectId of
+        // its own — those are assigned when FactStore.Remember writes the row.
         var source = "using System.Text;\nusing System.Linq;\n\npublic sealed class Widget { }";
         var language = LanguageRegistry.All.Single(l => l.Id == "csharp");
         var candidates = CodeAnalyzer.Analyze("/projects/x/code/Program.cs", source, language);
 
-        var edgeBearing = candidates.Where(c => CodePredicates.EdgeBearing.Contains(c.Predicate)).ToList();
+        var edgePredicates = new HashSet<string>(StringComparer.Ordinal) { "imports", "calls" };
+        var edgeBearing = candidates.Where(c => edgePredicates.Contains(c.Predicate)).ToList();
         Assert.NotEmpty(edgeBearing);
         Assert.All(edgeBearing, c => Assert.NotNull(c.Object));
     }
@@ -272,9 +318,16 @@ public sealed class CodeNavigationPhase2Tests
         using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
         RunIndex(connection, sandbox, repo);
 
+        // ReadLive excludes every regenerable, object-bearing fact by design (D57/edge-fact-lane-
+        // eligibility.md), so the edge-bearing half of the corpus is checked directly against
+        // `fact` rather than through ReadLive's output.
         var liveFacts = FactStore.ReadLive(connection);
-        Assert.Contains(liveFacts, f => !CodePredicates.EdgeBearing.Contains(f.Predicate));
-        Assert.Contains(liveFacts, f => CodePredicates.EdgeBearing.Contains(f.Predicate));
+        Assert.NotEmpty(liveFacts);
+
+        using var edgeCheck = connection.CreateCommand();
+        edgeCheck.CommandText =
+            "SELECT 1 FROM fact WHERE valid_to IS NULL AND regenerable IS 1 AND object_id IS NOT NULL LIMIT 1;";
+        Assert.NotNull(edgeCheck.ExecuteScalar());
 
         using var command = connection.CreateCommand();
         command.CommandText =
@@ -322,17 +375,27 @@ public sealed class CodeNavigationPhase2Tests
         using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
         RunIndex(connection, sandbox, repo);
 
-        var edgeFactIds = FactStore.ReadLive(connection)
-            .Where(f => CodePredicates.EdgeBearing.Contains(f.Predicate))
-            .Select(f => f.Id)
-            .ToList();
+        // ReadLive excludes edge-bearing facts by design, so this reads `fact` directly rather
+        // than filtering ReadLive's output.
+        using var idCommand = connection.CreateCommand();
+        idCommand.CommandText =
+            "SELECT id FROM fact WHERE valid_to IS NULL AND regenerable IS 1 AND object_id IS NOT NULL;";
+        var edgeFactIds = new List<long>();
+        using (var idReader = idCommand.ExecuteReader())
+        {
+            while (idReader.Read())
+            {
+                edgeFactIds.Add(idReader.GetInt64(0));
+            }
+        }
+
         Assert.NotEmpty(edgeFactIds);
 
         using var command = connection.CreateCommand();
         command.CommandText =
-            $"""
+            """
             SELECT e.path FROM fact f JOIN entity e ON e.id = f.object_id
-             WHERE f.valid_to IS NULL AND f.predicate IN ({CodePredicates.EdgeBearingSqlList})
+             WHERE f.valid_to IS NULL AND f.regenerable IS 1 AND f.object_id IS NOT NULL
                AND e.path NOT LIKE '/symbol-names/%';
             """;
         using var reader = command.ExecuteReader();

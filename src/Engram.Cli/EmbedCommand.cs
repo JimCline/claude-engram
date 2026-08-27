@@ -96,9 +96,14 @@ public static class EmbedCommand
             return Rebuild(homePath, args, stdout, stderr);
         }
 
+        if (args.Contains("--prune"))
+        {
+            return Prune(homePath, args, stdout, stderr);
+        }
+
         if (!args.Contains("--probe"))
         {
-            stderr.WriteLine("error: engram embed needs --status, --probe or --rebuild.");
+            stderr.WriteLine("error: engram embed needs --status, --probe, --rebuild or --prune.");
             return 2;
         }
 
@@ -267,6 +272,85 @@ public static class EmbedCommand
         });
 
         return result.Outcome is BackfillOutcome.Completed ? 0 : 1;
+    }
+
+    /// <summary>
+    /// <c>engram embed --prune</c> — delete vectors whose fact is no longer lane-eligible
+    /// (docs/specs/edge-fact-lane-eligibility.md §3.3). Dry run unless <c>--apply</c> is given.
+    /// </summary>
+    /// <remarks>
+    /// Targeted delete, not <c>--rebuild</c>: every eligible vector stays, so this costs no
+    /// embedder calls. <see cref="VectorIndex.Clear"/>-shaped, not <see cref="VectorIndex.Drop"/>
+    /// — the table's space pin survives, because nothing about the embedding space changed.
+    /// Refuses while the server is up for the same reason <see cref="Rebuild"/> does:
+    /// <c>EmbeddingBacklog</c> is the one owner of vector production, and a live backlog could
+    /// re-add a row this delete is removing.
+    /// </remarks>
+    private static int Prune(string? homePath, string[] args, TextWriter stdout, TextWriter stderr)
+    {
+        var home = EngramHome.ResolveFromProcess(homePath);
+        if (!File.Exists(home.DatabasePath))
+        {
+            stderr.WriteLine($"error: no store at {home.DatabasePath} — run 'engram init' first");
+            return 1;
+        }
+
+        var lifecycle = new ServerLifecycle(
+            new ProcessInspector(),
+            new HttpServerHealthChecker(),
+            new ProcessServerLauncher());
+
+        if (lifecycle.Status(
+                home,
+                EngramVersion.Current,
+                ServerLifecycleTimeouts.Default.HealthCheckTimeout)
+            .ServerIsAlive)
+        {
+            stderr.WriteLine("error: the server is running, and it owns vector production via EmbeddingBacklog.");
+            stderr.WriteLine("       Pruning underneath it could race a live backfill re-adding a deleted row.");
+            stderr.WriteLine("       Run 'engram stop' first, then prune, then 'engram start'.");
+            return 1;
+        }
+
+        using var connection = EngramDatabase.OpenInitialized(home);
+
+        if (VectorExtension.Load(connection, home.LibDir) is not VectorExtensionState.Loaded and var state)
+        {
+            stderr.WriteLine(state == VectorExtensionState.NotInstalled
+                ? $"error: sqlite-vec is not in {home.LibDir}, so there is no index to prune."
+                : $"error: sqlite-vec is in {home.LibDir} and would not load — wrong architecture, or truncated.");
+            return 1;
+        }
+
+        var counts = VectorIndex.CountIneligibleByPredicate(connection);
+        if (counts.Count == 0)
+        {
+            stdout.WriteLine("No ineligible vectors — nothing to prune.");
+            return 0;
+        }
+
+        var total = counts.Sum(c => c.Count);
+        stdout.WriteLine($"{total} vector(s) belong to facts no longer lane-eligible "
+            + "(edge-fact-lane-eligibility.md §3.3), by predicate:");
+        foreach (var (predicate, count) in counts)
+        {
+            stdout.WriteLine($"  {predicate,-20} {count}");
+        }
+
+        if (!args.Contains("--apply"))
+        {
+            stdout.WriteLine();
+            stdout.WriteLine($"Dry run only — nothing was changed. Re-run with --apply to delete {total} vector(s).");
+            return 0;
+        }
+
+        using var transaction = EngramDatabase.BeginWrite(connection);
+        var deleted = VectorIndex.PruneIneligible(connection, transaction);
+        transaction.Commit();
+
+        stdout.WriteLine();
+        stdout.WriteLine($"Pruned {deleted} vector(s).");
+        return 0;
     }
 
     private static void WritePlan(RebuildPlan plan, TextWriter stdout)

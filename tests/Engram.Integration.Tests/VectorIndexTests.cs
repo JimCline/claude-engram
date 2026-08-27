@@ -426,4 +426,70 @@ public class VectorIndexTests
         VectorIndex.EnsureCreated(sandbox.Connection, new EmbeddingSpace("other-embedder", 8));
         Assert.Equal(new EmbeddingSpace("other-embedder", 8), VectorIndex.ReadSpace(sandbox.Connection));
     }
+
+    // --- prune (edge-fact-lane-eligibility.md §3.3) ------------------------------------------
+
+    [Fact]
+    public void PruneIneligible_DeletesOnlyVectorsWhoseFactIsNoLongerEligible()
+    {
+        Assert.SkipUnless(VectorExtensionFile.Path is not null, VectorExtensionFile.SkipReason);
+
+        using var sandbox = new VectorSandbox();
+        VectorIndex.EnsureCreated(sandbox.Connection, Space);
+
+        var eligible = sandbox.AddFact("a", "authored belief");
+        var callEdge = sandbox.AddEdgeFact("caller", "calls", "callee");
+        var importsEdge = sandbox.AddEdgeFact("mod", "imports", "dep");
+        VectorIndex.Write(sandbox.Connection, transaction: null, eligible, At(0));
+        VectorIndex.Write(sandbox.Connection, transaction: null, callEdge, At(0.1));
+        VectorIndex.Write(sandbox.Connection, transaction: null, importsEdge, At(0.2));
+
+        var deleted = VectorIndex.PruneIneligible(sandbox.Connection);
+
+        Assert.Equal(2, deleted);
+        Assert.Equal(1, VectorIndex.Count(sandbox.Connection));
+    }
+
+    [Fact]
+    public void CountIneligibleByPredicate_GroupsByPredicate()
+    {
+        Assert.SkipUnless(VectorExtensionFile.Path is not null, VectorExtensionFile.SkipReason);
+
+        using var sandbox = new VectorSandbox();
+        VectorIndex.EnsureCreated(sandbox.Connection, Space);
+
+        var call1 = sandbox.AddEdgeFact("caller1", "calls", "callee1");
+        var call2 = sandbox.AddEdgeFact("caller2", "calls", "callee2");
+        var importEdge = sandbox.AddEdgeFact("mod", "imports", "dep");
+        VectorIndex.Write(sandbox.Connection, transaction: null, call1, At(0));
+        VectorIndex.Write(sandbox.Connection, transaction: null, call2, At(0.1));
+        VectorIndex.Write(sandbox.Connection, transaction: null, importEdge, At(0.2));
+
+        var counts = VectorIndex.CountIneligibleByPredicate(sandbox.Connection);
+
+        Assert.Equal(2, counts.Count);
+        Assert.Contains(counts, c => c.Predicate == "calls" && c.Count == 2);
+        Assert.Contains(counts, c => c.Predicate == "imports" && c.Count == 1);
+    }
+
+    /// <summary>
+    /// Falsification: with the eligibility condition weakened to match everything, the eligible
+    /// fact's vector is deleted too — proving the WHERE clause, not just the DELETE, is what the
+    /// first test above depends on. Broken and confirmed to redden, then restored.
+    /// </summary>
+    [Fact]
+    public void PruneIneligible_LeavesTheEligibleVectorUntouched_MirrorCase()
+    {
+        Assert.SkipUnless(VectorExtensionFile.Path is not null, VectorExtensionFile.SkipReason);
+
+        using var sandbox = new VectorSandbox();
+        VectorIndex.EnsureCreated(sandbox.Connection, Space);
+
+        var eligible = sandbox.AddFact("a", "authored belief");
+        VectorIndex.Write(sandbox.Connection, transaction: null, eligible, At(0));
+
+        VectorIndex.PruneIneligible(sandbox.Connection);
+
+        Assert.Equal(1, VectorIndex.Count(sandbox.Connection));
+    }
 }

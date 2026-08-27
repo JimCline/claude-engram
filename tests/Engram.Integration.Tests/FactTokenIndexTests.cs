@@ -186,6 +186,69 @@ public class FactTokenIndexTests
         Assert.Equal(before, ReadTokensFor(connection, factId));
     }
 
+    /// <summary>
+    /// The falsification target for edge-fact-lane-eligibility.md's fact_token half: a
+    /// regenerable, object-bearing fact must get no row at all, from either <see cref="Add"/>'s
+    /// direct write or <see cref="FactTokenIndex.Rebuild"/>'s from-scratch pass, and must never be
+    /// flagged by <see cref="FactTokenIndex.CountMissing"/>. Breaking the <c>regenerable &amp;&amp;
+    /// hasObject</c> guard in <c>Add</c> (or the matching WHERE clause in <c>ReadLiveForIndexing</c>)
+    /// turns every assertion here red; restoring it turns them green.
+    /// </summary>
+    [Fact]
+    public void RegenerableObjectBearingFact_GetsNoTokenRow()
+    {
+        using var sandbox = new SandboxHome();
+        using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
+
+        var factId = WriteEdge(connection, "caller", "calls", "callee");
+
+        Assert.Empty(ReadTokensFor(connection, factId));
+        Assert.Equal(0, FactTokenIndex.CountMissing(connection));
+
+        FactTokenIndex.Rebuild(connection);
+        Assert.Empty(ReadTokensFor(connection, factId));
+    }
+
+    /// <summary>
+    /// The mirror case: an authored fact that happens to carry an object must stay indexed exactly
+    /// like any other live fact — the exclusion is on <c>regenerable</c>, not on having an object
+    /// at all. Deleting the <c>regenerable &amp;&amp;</c> half of the guard (leaving only
+    /// <c>hasObject</c>) turns this red while leaving the test above green, which is what makes it
+    /// a distinct guard rather than a restatement of it.
+    /// </summary>
+    [Fact]
+    public void AuthoredFactWithAnObject_StaysIndexed()
+    {
+        using var sandbox = new SandboxHome();
+        using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
+
+        var factId = FactStore.Remember(
+            connection,
+            new FactWrite(
+                "/projects/acme/notes", "note", "prefers",
+                "prefers trunk over mainline for releases", "project", "stated",
+                Regenerable: false,
+                ObjectPath: "/projects/acme/trunk",
+                ObjectKind: "branch"),
+            T0).FactId;
+
+        var tokens = ReadTokensFor(connection, factId);
+        Assert.Contains("trunk", tokens);
+        Assert.Equal(0, FactTokenIndex.CountMissing(connection));
+
+        AssertMatchesFromScratchRebuild(connection);
+    }
+
+    private static long WriteEdge(SqliteConnection connection, string name, string predicate, string objectName) =>
+        FactStore.Remember(
+            connection,
+            new FactWrite(
+                $"/code/{name}", "symbol", predicate, $"{predicate} {objectName}", "code", "observed",
+                Regenerable: true,
+                ObjectPath: $"/code/{objectName}",
+                ObjectKind: "symbol-name"),
+            T0).FactId;
+
     private static void AssertMatchesFromScratchRebuild(SqliteConnection connection)
     {
         var incremental = ReadAllRows(connection);
