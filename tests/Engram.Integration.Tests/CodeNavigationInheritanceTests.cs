@@ -83,6 +83,50 @@ public sealed class CodeNavigationInheritanceTests
         Assert.Contains("Dog", result);
     }
 
+    // F6 (§8.5.3 item 4 / §10.2, Architect ruling): implementers' exact-match-only design
+    // is a known, statically-declared gap for this relation — it must surface whenever the
+    // query's own spelling shows it could have been affected, on a hit as much as a miss.
+    [Fact]
+    public void Implementers_QueryLooksGeneric_DeclaresTheExactMatchGap_OnAHit()
+    {
+        using var sandbox = new SandboxHome();
+        using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
+
+        SeedSymbol(connection, "/projects/p/code/r/a.ts#Dog", "Dog");
+        SeedEdge(connection, "/projects/p/code/r/a.ts#Dog", "inherits", "Comparer<T>");
+
+        var result = EngramMcpTools.Navigate(sandbox.Home, Session, "Comparer<T>", "implementers");
+
+        Assert.Contains("exact spelling only", result);
+    }
+
+    [Fact]
+    public void Implementers_QueryLooksGeneric_DeclaresTheExactMatchGap_OnATotalMiss()
+    {
+        using var sandbox = new SandboxHome();
+        using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
+
+        SeedSymbol(connection, "/projects/p/code/r/a.ts#Dog", "Dog");
+
+        var result = EngramMcpTools.Navigate(sandbox.Home, Session, "Comparer<T>", "implementers");
+
+        Assert.Contains("differently", result);
+    }
+
+    [Fact]
+    public void Implementers_QueryIsNotGeneric_CarriesNoExactMatchGapNote()
+    {
+        using var sandbox = new SandboxHome();
+        using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
+
+        SeedSymbol(connection, "/projects/p/code/r/a.ts#Dog", "Dog");
+        SeedEdge(connection, "/projects/p/code/r/a.ts#Dog", "inherits", "Animal");
+
+        var result = EngramMcpTools.Navigate(sandbox.Home, Session, "Animal", "implementers");
+
+        Assert.DoesNotContain("differently parameterized", result);
+    }
+
     // F3 (review of graph-enhance): the header reported every matched row (up to 3x limit,
     // one query per predicate) while only `limit` rows actually printed — a mismatch. The
     // header must describe what was displayed, not what was matched.

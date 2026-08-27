@@ -1217,9 +1217,15 @@ public sealed class EngramMcpTools
 
         if (rows.Count == 0)
         {
-            return NavigateOutcome.NotFound(
+            var miss =
                 $"No recorded type names '{query}' as a base or interface (this is a name-as-written "
-                    + "match, not a resolved symbol — checked exact spelling only).");
+                    + "match, not a resolved symbol — checked exact spelling only).";
+            if (HasTypeArgumentMarker(query))
+            {
+                miss += " " + GenericsGapNote;
+            }
+
+            return NavigateOutcome.NotFound(miss);
         }
 
         var displayed = rows.Take(limit).ToList();
@@ -1231,6 +1237,17 @@ public sealed class EngramMcpTools
         }
 
         builder.Append(":\n");
+
+        // §8.5.3 item 4 / §10.2 (Architect ruling): a returned list makes an implicit
+        // completeness claim, so this relation's exact-match-only limitation must be
+        // declared whenever the query could plausibly have been affected by it — not only
+        // on a total miss, which was the original, incomplete asymmetry. The gap class
+        // itself (generics missed by exact match) is a static property of this relation;
+        // only whether to print it is decided per call, from the query's own spelling.
+        if (HasTypeArgumentMarker(query))
+        {
+            builder.Append("note: ").Append(GenericsGapNote).Append('\n');
+        }
 
         var staleCount = 0;
         foreach (var (subjectPath, predicate, _) in displayed)
@@ -1332,6 +1349,17 @@ public sealed class EngramMcpTools
                 + "from interfaces (C#, Python); those are base-list entries, not confirmed interface "
                 + "implementations.\n");
     }
+
+    // §8.5.3 item 4 / §10.2: a statically-known gap of the `implementers` relation itself
+    // (query side, not per-file data) — exact-name matching cannot find a base-list entry
+    // spelled with different type arguments than the query. Fix-or-declare: not fixed, so
+    // declared, and surfaced only when the query's own spelling shows it could plausibly
+    // have been affected, per the same discipline `[stale]` already uses.
+    private const string GenericsGapNote =
+        "'implementers' matches base-list entries by exact spelling only; a differently "
+            + "parameterized spelling of this type (e.g. a different generic argument) would be missed.";
+
+    private static bool HasTypeArgumentMarker(string text) => text.Contains('<', StringComparison.Ordinal);
 
     private static string? ObjectNameOf(SqliteConnection connection, long factId)
     {
