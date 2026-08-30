@@ -53,7 +53,7 @@ public class McpServerTests
 
             var historyText = await client.CallToolTextAsync(
                 "engram_expand",
-                new JsonObject { ["id"] = first, ["view"] = "history" },
+                new JsonObject { ["fact_id"] = first, ["view"] = "history" },
                 cancellationToken);
             Assert.Contains("conflicts_with", historyText);
             Assert.Contains(second, historyText);
@@ -112,7 +112,7 @@ public class McpServerTests
 
             var historyText = await client.CallToolTextAsync(
                 "engram_expand",
-                new JsonObject { ["id"] = first, ["view"] = "history" },
+                new JsonObject { ["fact_id"] = first, ["view"] = "history" },
                 cancellationToken);
             Assert.Contains("conflicts_with", historyText);
             Assert.Contains(second, historyText);

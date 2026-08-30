@@ -251,16 +251,16 @@ public sealed class EngramMcpTools
         EngramHome home,
         McpSessionId session,
         McpHomeState homeState,
-        [Description("The bracketed id of the fact to retract, e.g. \"f42\".")] string id)
+        [Description("The bracketed id of the fact to retract, e.g. \"f42\".")] string fact_id)
     {
         if (!homeState.Initialized)
         {
             return "Engram home is not initialised (run 'engram init'); nothing was retracted.";
         }
 
-        if (!FactCatalog.TryParseHandle(id, out var factId))
+        if (!FactCatalog.TryParseHandle(fact_id, out var factId))
         {
-            return $"'{id}' is not a fact handle; they look like 'f42'. Nothing was retracted.";
+            return $"'{fact_id}' is not a fact handle; they look like 'f42'. Nothing was retracted.";
         }
 
         // Any live fact — seeded, captured from the user, or a note this session took.
@@ -276,11 +276,11 @@ public sealed class EngramMcpTools
         // a fact is gone while recall keeps returning it.
         if (!closed)
         {
-            return $"No live fact with id '{id}'. It may already have been superseded or retracted; "
+            return $"No live fact with id '{fact_id}'. It may already have been superseded or retracted; "
                 + "call engram_recall to see what stands.";
         }
 
-        return $"Retracted [{id}]. It will not appear in recall again. The retraction is recorded "
+        return $"Retracted [{fact_id}]. It will not appear in recall again. The retraction is recorded "
             + "rather than the original erased, because facts here are only ever closed, never deleted.";
     }
 
@@ -347,21 +347,21 @@ public sealed class EngramMcpTools
         EngramHome home,
         McpSessionId session,
         McpHomeState homeState,
-        [Description("The bracketed fact id, e.g. \"f42\".")] string id,
+        [Description("The bracketed fact id, e.g. \"f42\".")] string fact_id,
         [Description("One of: history, related, evidence, source, details.")] string view,
         [Description("Maximum tokens returned per call. Defaults to 800.")] int budget_tokens = 800,
         [Description("Character offset to continue a paged details view from. Defaults to 0.")] int offset = 0)
     {
-        if (!FactCatalog.TryParseHandle(id, out var factId))
+        if (!FactCatalog.TryParseHandle(fact_id, out var factId))
         {
-            return $"'{id}' is not a fact handle; they look like 'f42'.";
+            return $"'{fact_id}' is not a fact handle; they look like 'f42'.";
         }
 
         using var connection = EngramDatabase.OpenInitialized(home);
         var fact = FactStore.ReadById(connection, factId);
         if (fact is null)
         {
-            return $"No fact with id '{id}' — call engram_recall to find handles.";
+            return $"No fact with id '{fact_id}' — call engram_recall to find handles.";
         }
 
         if (homeState.Initialized)

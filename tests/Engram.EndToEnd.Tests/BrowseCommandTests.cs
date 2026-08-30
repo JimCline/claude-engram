@@ -30,7 +30,7 @@ public class BrowseCommandTests
             // retract every one, the strongest case for an empty root.
             for (var id = 1; id <= 45; id++)
             {
-                await client.CallToolTextAsync("engram_forget", new JsonObject { ["id"] = "f" + id }, cancellationToken);
+                await client.CallToolTextAsync("engram_forget", new JsonObject { ["fact_id"] = "f" + id }, cancellationToken);
             }
         }
         finally

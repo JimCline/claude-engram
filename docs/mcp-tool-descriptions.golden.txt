@@ -7,7 +7,7 @@ List what Engram's memory holds under a path — children, fact counts, and the 
 
 tool: engram_expand
 The full story behind one fact handle: its supersession history, related facts on the same subject, its evidence, or where it was learned. Call it when a fact engram_recall returned needs scrutiny before you rely on it. The details view returns everything the handle holds, paged by budget_tokens and offset.
-  param: id
+  param: fact_id
   The bracketed fact id, e.g. "f42".
   param: view
   One of: history, related, evidence, source, details.
@@ -18,7 +18,7 @@ The full story behind one fact handle: its supersession history, related facts o
 
 tool: engram_forget
 Retract a stored fact by its bracketed id (e.g. "f42"). Use it whenever the user says something stored is wrong, private, or no longer true, and to clear a session note that turned out to be mistaken. Retracted facts stop appearing in recall immediately, and stay retracted — nothing re-seeds them. Call engram_recall first if you need to find the id.
-  param: id
+  param: fact_id
   The bracketed id of the fact to retract, e.g. "f42".
 
 tool: engram_index_repo
