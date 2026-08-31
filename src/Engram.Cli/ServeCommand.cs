@@ -142,6 +142,7 @@ internal static class ServeCommand
             // metric both depend on that header existing and being stable for a
             // session's lifetime, so this must stay false. Do not "simplify" this to
             // the default — that silently drops session identity with no error anywhere.
+            .WithRequestFilters(f => f.AddCallToolFilter(McpCallNudge.Filter))
             .WithHttpTransport(options => options.Stateless = false);
 
         if (registered.Contains(typeof(EngramMcpTools)))
