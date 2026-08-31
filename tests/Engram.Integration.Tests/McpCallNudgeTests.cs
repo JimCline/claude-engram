@@ -1,5 +1,8 @@
 using System.Text.Json;
+using System.Threading.Channels;
 using Engram.Cli;
+using ModelContextProtocol.Protocol;
+using ModelContextProtocol.Server;
 
 namespace Engram.Integration.Tests;
 
@@ -56,5 +59,64 @@ public class McpCallNudgeTests
         // Engram.Cli's dependency set, so a plain InvalidOperationException stands in for "any
         // exception a tool body can throw that isn't a binding failure."
         Assert.False(McpCallNudge.IsArgumentBindingFailure(new InvalidOperationException("database is locked")));
+    }
+
+    // F1 (Reviewer, review-mcp-param-error-nudge): the tests above exercise the predicate
+    // function directly, so widening McpCallNudge.Filter's own `catch (Exception e) when (...)`
+    // to a bare `catch (Exception e)` would pass all of them undetected — exactly the hazard
+    // §4.1 names. This one goes through Filter itself.
+    [Fact]
+    public async Task Filter_ANonBindingFailure_PropagatesWithoutBeingCaught()
+    {
+        var request = BuildRequest("engram_test_tool", arguments: null);
+        var filtered = McpCallNudge.Filter((_, _) => throw new OperationCanceledException());
+
+        await Assert.ThrowsAsync<OperationCanceledException>(
+            async () => await filtered(request, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task Filter_ABindingFailure_ReturnsTheNudgeInsteadOfPropagating()
+    {
+        var arguments = new Dictionary<string, JsonElement>
+        {
+            ["view"] = JsonDocument.Parse("\"history\"").RootElement,
+        };
+        var request = BuildRequest("engram_expand", arguments);
+        var filtered = McpCallNudge.Filter(
+            (_, _) => throw new ArgumentException("The arguments dictionary is missing a value for the required parameter 'fact_id'."));
+
+        var result = await filtered(request, CancellationToken.None);
+
+        Assert.True(result.IsError);
+        var text = Assert.Single(result.Content) is TextContentBlock block ? block.Text : null;
+        Assert.NotNull(text);
+        Assert.Contains("engram_expand", text);
+        Assert.Contains("the arguments did not match this tool's schema, so nothing ran", text);
+        Assert.Contains("Received: view", text);
+    }
+
+    // Minimal but real RequestContext<CallToolRequestParams>: NudgeResult dereferences
+    // request.Params on the matching path, so a null request would NRE rather than exercise the
+    // code under test. McpServer.Create needs only an ITransport and never starts a message loop
+    // here (Filter/NudgeResult touch neither), so a no-op transport is enough.
+    private static RequestContext<CallToolRequestParams> BuildRequest(string toolName, IDictionary<string, JsonElement>? arguments)
+    {
+        var server = McpServer.Create(new NoopTransport(), new McpServerOptions());
+        var jsonRpcRequest = new JsonRpcRequest { Method = "tools/call", Id = new RequestId(1) };
+        var callParams = new CallToolRequestParams { Name = toolName, Arguments = arguments };
+        return new RequestContext<CallToolRequestParams>(server, jsonRpcRequest, callParams);
+    }
+
+    private sealed class NoopTransport : ITransport
+    {
+        public string? SessionId => null;
+
+        public ChannelReader<JsonRpcMessage> MessageReader { get; } = Channel.CreateUnbounded<JsonRpcMessage>().Reader;
+
+        public Task SendMessageAsync(JsonRpcMessage message, CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
+
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 }
