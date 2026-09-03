@@ -317,6 +317,10 @@ public static class CodeIndexer
             RepoEnrollment.StampFullScan(connection, transaction, stampIdentity, now);
             ClearSuppressedReason(connection, transaction, stampIdentity);
             transaction.Commit();
+            // Keyed by the same resolver the lookup-nudge hook uses to look it up, so the two
+            // cannot drift apart on how a checkout root is spelled.
+            RepoIndexStamp.Append(
+                home.RepoIndexStampPath, now, RepoEnrollment.FindCheckoutRoot(root) ?? root, stampIdentity, RepoIndexStamp.Indexed);
         }
         else if (suppressedReason is not null)
         {

@@ -793,8 +793,63 @@ internal static class HookCommand
             return 0;
         }
 
+        // The deny asserts that Engram indexes this repo's code graph, so it may only fire where
+        // that is true — an enrolled checkout indexed at least once. Anywhere else (never asked,
+        // declined, deferred, enrolled but not yet scanned, no checkout at all) it stays silent and
+        // the once-per-session shot is left unspent for a later lookup the graph can answer. Read
+        // from the file stamp, never the table: this hook may not open the database (D4, D66).
+        var checkoutRoot = RepoEnrollment.FindCheckoutRoot(payload.Cwd ?? Directory.GetCurrentDirectory());
+        if (checkoutRoot is null)
+        {
+            return 0;
+        }
+
+        var stamp = RepoIndexStamp.Read(home.RepoIndexStampPath, checkoutRoot);
+        if (stamp is not { State: RepoEnrollmentState.Enrolled, LastIndexedAt: not null })
+        {
+            return 0;
+        }
+
+        // The outcome file's lines are composite exact-match keys; the tab separator is safe only
+        // because LooksLikeSymbol already rejected any query containing whitespace, so nothing here
+        // parses — it only compares.
+        var nudgedKey = $"{sessionId}\t{query}";
+
         if (SessionNudgeState.Contains(home.LookupNudgeStatePath, sessionId))
         {
+            // Already nudged this session. Re-running the very query that was denied is the deny's
+            // own escape hatch being taken, and it is the one behaviour compliance is measured by
+            // (1 − overridden / nudged, all inside the hook's own id space — D43). Any other query
+            // proceeds unremarked; a rephrased re-run reads as compliance, under-counting on purpose.
+            if (!SessionNudgeState.Contains(home.LookupNudgeOutcomePath, nudgedKey))
+            {
+                return 0;
+            }
+
+            // The marker holds the ≤2-appends-per-session invariant, and it lands before the
+            // telemetry for the same reason the nudge writes state before the deny.
+            var marker = $"{sessionId}\toverridden\t{query}";
+            if (SessionNudgeState.Contains(home.LookupNudgeOutcomePath, marker)
+                || !SessionNudgeState.TryAppend(home.LookupNudgeOutcomePath, marker))
+            {
+                return 0;
+            }
+
+            try
+            {
+                Telemetry.Append(home, new TelemetryRecord(
+                    Timestamp: DateTimeOffset.UtcNow.ToString("o"),
+                    SessionId: sessionId,
+                    Kind: TelemetryEventKind.LookupNudge,
+                    Query: query,
+                    Phase: LookupNudgePhaseOverridden,
+                    Repo: stamp.Identity));
+            }
+            catch
+            {
+            }
+
+            // Observed, never commented on: a second message here would be the nag D37 forbids.
             return 0;
         }
 
@@ -805,13 +860,19 @@ internal static class HookCommand
             return 0;
         }
 
+        // Result ignored: if this line is lost the override can never be detected for this
+        // session, but the deny still fires — the signal is lost, the behaviour is not.
+        SessionNudgeState.TryAppend(home.LookupNudgeOutcomePath, nudgedKey);
+
         try
         {
             Telemetry.Append(home, new TelemetryRecord(
                 Timestamp: DateTimeOffset.UtcNow.ToString("o"),
                 SessionId: sessionId,
                 Kind: TelemetryEventKind.LookupNudge,
-                Query: query));
+                Query: query,
+                Phase: LookupNudgePhaseNudged,
+                Repo: stamp.Identity));
         }
         catch
         {
@@ -824,13 +885,20 @@ internal static class HookCommand
         return 0;
     }
 
+    /// <summary>The <c>phase</c> a <c>lookup-nudge</c> record carries at the deny.</summary>
+    internal const string LookupNudgePhaseNudged = "nudged";
+
+    /// <summary>
+    /// The <c>phase</c> written once when the nudged session re-runs the exact query it was denied.
+    /// </summary>
+    internal const string LookupNudgePhaseOverridden = "overridden";
+
     private static string LookupNudgeDenyReason(string query) =>
         $"Engram lookup nudge: \"{query}\" is shaped like a symbol, and Engram indexes this repo's "
         + "code graph. Try engram_navigate first — relation defined_at for where it lives, callers "
-        + "or callees to trace a call chain, imports for a file's dependencies. If the repo has "
-        + "not been indexed yet, engram_index_repo builds the graph. If Engram has nothing, or you "
-        + "are searching text rather than resolving a symbol, re-run the exact same call and it "
-        + "will proceed; this reminder fires once per session.";
+        + "or callees to trace a call chain, imports for a file's dependencies. If Engram has "
+        + "nothing, or you are searching text rather than resolving a symbol, re-run the exact same "
+        + "call and it will proceed; this reminder fires once per session.";
 
     private static void WriteJson<T>(TextWriter stdout, System.Text.Json.Serialization.Metadata.JsonTypeInfo<T> typeInfo, T value)
     {

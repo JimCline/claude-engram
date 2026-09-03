@@ -371,6 +371,56 @@ public class RepoCommandTests
         RepoIndexRun.Freshen(connection, home, config, settings, root, enrolledIdentity, apply: true, budget: null, now);
 
         Assert.NotNull(ReadLastFullScanAt(connection, enrolledIdentity));
+
+        // The hook-readable mirror of that stamp (code-nav-adoption-spec L1) must land under the
+        // same identity, or the lookup nudge reports a repo the table never heard of.
+        var stamp = RepoIndexStamp.Read(home.RepoIndexStampPath, root);
+        Assert.Equal(enrolledIdentity, stamp?.Identity);
+        Assert.Equal(now.ToUnixTimeSeconds(), stamp?.LastIndexedAt);
+    }
+
+    /// <summary>
+    /// Every enrollment verb writes the file stamp the lookup-nudge hook reads instead of the
+    /// table (D4/D66), and it is written here — the one point below both the CLI verb and the MCP
+    /// tool — so the file and the table cannot disagree by having different authors.
+    /// </summary>
+    [Theory]
+    [InlineData("enroll", RepoEnrollmentState.Enrolled)]
+    [InlineData("decline", RepoEnrollmentState.Declined)]
+    [InlineData("later", RepoEnrollmentState.Deferred)]
+    public void ApplyDecision_WritesTheFileStamp(string decision, RepoEnrollmentState expected)
+    {
+        using var sandbox = new SandboxHome();
+        var root = Path.Combine(sandbox.Home.Root, "checkout");
+        Directory.CreateDirectory(root);
+        var now = DateTimeOffset.UtcNow;
+
+        using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
+        var result = RepoCommand.ApplyDecision(sandbox.Home, connection, root, decision, "cli", now);
+
+        var stamp = RepoIndexStamp.Read(sandbox.Home.RepoIndexStampPath, root);
+        Assert.NotNull(stamp);
+        Assert.Equal(result.Identity, stamp.Identity);
+        Assert.Equal(expected, stamp.State);
+        Assert.Equal(now.ToUnixTimeSeconds(), stamp.DecidedAt);
+        Assert.Null(stamp.LastIndexedAt);
+    }
+
+    [Fact]
+    public void ApplyDecision_Reset_ReturnsTheStampToNeverAsked()
+    {
+        using var sandbox = new SandboxHome();
+        var root = Path.Combine(sandbox.Home.Root, "checkout");
+        Directory.CreateDirectory(root);
+        var now = DateTimeOffset.UtcNow;
+
+        using var connection = EngramDatabase.OpenInitialized(sandbox.Home);
+        RepoCommand.ApplyDecision(sandbox.Home, connection, root, "enroll", "cli", now);
+        RepoCommand.ApplyDecision(sandbox.Home, connection, root, "reset", "cli", now.AddMinutes(1));
+
+        var stamp = RepoIndexStamp.Read(sandbox.Home.RepoIndexStampPath, root);
+        Assert.NotNull(stamp);
+        Assert.Null(stamp.State);
     }
 
     private static long? ReadLastFullScanAt(SqliteConnection connection, string identity)

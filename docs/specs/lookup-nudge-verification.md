@@ -30,9 +30,18 @@ changing it.
 3. `SymbolQueryDetector.LooksLikeSymbol(query)` false → exit 0, silent.
 4. `[memory] precedence = off` → exit 0, silent.
 5. No `session_id` → exit 0, silent.
-6. Session already in `lookup-nudge.state` → exit 0, silent.
-7. Append session to state; if the append fails → exit 0, silent.
-8. Append a `lookup-nudge` telemetry record carrying the query.
+5b. No enclosing git checkout for `cwd`, or `repo-index.state` (`RepoIndexStamp`, written by
+   `RepoCommand.ApplyDecision` and the indexer's full-scan stamp — never read from the database)
+   does not fold to *enrolled and indexed at least once* for that checkout root → exit 0, silent,
+   shot **not** spent (`docs/code-nav-adoption-spec.md` L1).
+6. Session already in `lookup-nudge.state` → exit 0, silent — but first: if
+   `lookup-nudge-outcome.state` holds `{session_id}\t{query}` (this is the query that was denied)
+   and not yet `{session_id}\toverridden\t{query}`, append that marker and one `lookup-nudge`
+   record with `phase: overridden` and the same `repo`. Never any stdout on this branch.
+7. Append session to state; if the append fails → exit 0, silent. Then append
+   `{session_id}\t{query}` to `lookup-nudge-outcome.state` (result ignored).
+8. Append a `lookup-nudge` telemetry record carrying the query, `phase: nudged`, and `repo` (the
+   stamp's identity).
 9. Emit `hookSpecificOutput` with `permissionDecision: "deny"` and the reason from `LookupNudgeDenyReason`.
 
 ## Task 1 — Integration test (tier 2)
@@ -52,7 +61,9 @@ Cases required:
 5. **Second call in the same session stays silent.** Two identical symbol-shaped payloads with the same `session_id` → first denies, second produces no stdout. (The once-per-session rule.)
 6. **A different session still denies.** Same payload, different `session_id`, after case 5 → denies. (Proves the state file is keyed on session, not global.)
 7. **`precedence = off` disarms it.** Write `[memory] precedence = off` into the sandbox config → symbol-shaped payload produces no stdout. Mirror however `MemoryGuardHookTests` sets precedence.
-8. **Telemetry.** After a deny, `telemetry.jsonl` contains a record whose `kind` is `lookup-nudge`. Filter by kind — do **not** assert a total line count (CLAUDE.md: the session-start child writes into the same log, and total-count assertions have broken four end-to-end tests before).
+8. **Telemetry.** After a deny, `telemetry.jsonl` contains a record whose `kind` is `lookup-nudge` **and** whose `phase` is `nudged`, carrying `repo`. Filter by kind *and phase* — a `lookup-nudge` line is one end of the event, not one nudge — and do **not** assert a total line count (CLAUDE.md: the session-start child writes into the same log, and total-count assertions have broken four end-to-end tests before).
+9. **Override.** (i) Re-running the denied query in the same session proceeds (empty stdout) and writes exactly one `lookup-nudge` record with `phase: overridden`; (ii) a second re-run writes none; (iii) a *different* symbol-shaped query after the nudge proceeds and writes nothing; (iv) the `overridden` record's `repo` equals the `nudged` record's. Filter by kind **and** phase; never a total. Falsify: delete the marker check and (ii) goes red; key the nudged line on `session_id` alone and (iii) goes red.
+10. **Gate.** With no `repo-index.state` entry for the payload's `cwd` checkout, or one folding to `decline`/`later`/`enroll`-without-`indexed`, a symbol-shaped Grep is silent, `lookup-nudge.state` is not written, and no telemetry record appears. Every deny case above therefore seeds an `enroll` + `indexed` stamp for its checkout first.
 
 **Prove the tests can fail.** After they pass, break `SymbolQueryDetector.LooksLikeSymbol` (e.g.
 make it `return false;`) and confirm the deny cases go red; then restore and confirm green again.

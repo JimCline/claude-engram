@@ -5,6 +5,7 @@ using Engram.Core;
 
 namespace Engram.Integration.Tests;
 
+[Collection(ConsoleStdinCollection.Name)]
 public class MemoryGuardHookTests
 {
     private static string BuildPayload(string? sessionId, string? filePath)
@@ -24,10 +25,7 @@ public class MemoryGuardHookTests
         return root.ToJsonString();
     }
 
-    // Console.SetIn is process-global, not per-test — safe here only because this class is
-    // currently the only tier-2 consumer of CliApp stdin. xunit runs different test classes on
-    // parallel threads by default, so a second stdin-reading test class added later would race
-    // this one silently rather than fail loudly.
+    // Console.SetIn is process-global, not per-test — see ConsoleStdinCollection.
     private static (int ExitCode, string Stdout, string Stderr) Run(SandboxHome sandbox, string? sessionId, string? filePath)
     {
         Console.SetIn(new StringReader(BuildPayload(sessionId, filePath)));

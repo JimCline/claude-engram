@@ -195,6 +195,8 @@ internal static class RepoCommand
                     nameof(decision), decision, "expected enroll, decline, later, or reset.");
         }
 
+        RepoIndexStamp.Append(home.RepoIndexStampPath, now, root, identity, decision);
+
         Telemetry.Append(home, new TelemetryRecord(
             Timestamp: now.UtcDateTime.ToString("o"),
             SessionId: sessionId,

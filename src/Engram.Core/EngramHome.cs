@@ -110,6 +110,21 @@ public sealed class EngramHome
     public string LookupNudgeStatePath { get; }
 
     /// <summary>
+    /// What each nudged session was nudged about and whether it overrode: exact-match lines
+    /// <c>{session_id}\t{query}</c> at the deny and <c>{session_id}\toverridden\t{query}</c> at the
+    /// first re-run of that query, read and written through <see cref="SessionNudgeState"/>
+    /// unchanged. Its own file so <see cref="LookupNudgeStatePath"/> keeps its one-key-per-line
+    /// meaning.
+    /// </summary>
+    public string LookupNudgeOutcomePath { get; }
+
+    /// <summary>
+    /// Per-checkout enrollment and last-index events, one per line, for the <c>lookup-nudge</c>
+    /// hook to read without opening the database. See <see cref="RepoIndexStamp"/>.
+    /// </summary>
+    public string RepoIndexStampPath { get; }
+
+    /// <summary>
     /// Claude Code's user-scope settings file. It is outside the Engram home on purpose — it
     /// belongs to Claude Code — but it is resolved here because this is the only place allowed
     /// to turn a home directory into a path.
@@ -143,6 +158,8 @@ public sealed class EngramHome
         GrantedPermissionsPath = Path.Combine(root, "granted-permissions.json");
         MemoryGuardStatePath = Path.Combine(root, "memory-guard.state");
         LookupNudgeStatePath = Path.Combine(root, "lookup-nudge.state");
+        LookupNudgeOutcomePath = Path.Combine(root, "lookup-nudge-outcome.state");
+        RepoIndexStampPath = Path.Combine(root, "repo-index.state");
         ClaudeSettingsPath = Path.Combine(userProfileDirectory, ".claude", "settings.json");
         ClaudeProjectsDir = Path.Combine(userProfileDirectory, ".claude", "projects");
     }

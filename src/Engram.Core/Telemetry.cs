@@ -87,7 +87,8 @@ public static class TelemetryEventKind
 
     /// <summary>
     /// The <c>lookup-nudge</c> PreToolUse hook deferring a symbol-shaped Grep/Glob/shell search to
-    /// <c>engram_navigate</c>, once per session.
+    /// <c>engram_navigate</c>, once per session, and only on a checkout the graph has indexed.
+    /// Carries <c>phase</c> and <c>repo</c>; count by phase, not by line.
     /// </summary>
     /// <remarks>
     /// Its own kind for the same reason <see cref="MemoryGuard"/> is: a nudge toward a tool is not
@@ -173,8 +174,10 @@ public sealed record TelemetryRecord(
     [property: JsonPropertyName("agent_type")] string? AgentType = null,
 
     /// <summary>
-    /// Where a piece of work stands: <c>started</c>, <c>finished</c>, <c>failed</c>. Only kinds
-    /// that have a duration set it. It is deliberately not a count — a nearby number in a field
+    /// Where a piece of work stands: <c>started</c>, <c>finished</c>, <c>failed</c> for kinds that
+    /// have a duration; <c>nudged</c> for a <see cref="TelemetryEventKind.LookupNudge"/> deny, whose
+    /// other end — <c>overridden</c> — is the same session re-issuing the same query. A reader counting
+    /// <c>lookup-nudge</c> lines must therefore filter by phase, not kind alone. It is deliberately not a count — a nearby number in a field
     /// meaning something else is how D43 happened — and detail belongs in the note the doing
     /// process already writes (D54), not duplicated into an append-only log.
     /// </summary>
@@ -192,7 +195,9 @@ public sealed record TelemetryRecord(
     [property: JsonPropertyName("path")] string? Path = null,
 
     /// <summary>
-    /// The repository an event is about. Only <c>index</c> sets it today.
+    /// The repository an event is about. <c>index</c>, <c>enrollment</c> and <c>lookup-nudge</c>
+    /// set it — the last so a nudge on an indexed checkout can be told from one that could never
+    /// have been answered.
     /// </summary>
     /// <remarks>
     /// It is the event's subject, not a count, so D56's no-counts rule does not bar it — without

@@ -723,13 +723,13 @@ public sealed class EngramMcpTools
 
     [McpServerTool(Name = "engram_navigate")]
     [Description(
-        "Where is a symbol defined, what does a file import, who calls/is called by a symbol, what " +
-        "does a type inherit/implement or who implements it, or what members a type declares — a " +
-        "deterministic lookup over indexed code, not a search. Use it instead of Read/Grep to answer " +
-        "'where is Z defined', 'what does Y import', 'who calls Z', 'what does Z call', 'what does Z " +
-        "implement', 'who implements Z', or 'what members does Z have'. relation is defined_at, " +
-        "imports, callers, callees, implements, implementers, or members. implements/implementers/" +
-        "members drop base-list and containment edges for types nested inside another type.")]
+        "Looking for code by name — where a symbol is defined, who calls or is called by it, what a " +
+        "type inherits/implements or who implements it, what members it declares, what a file " +
+        "imports — is a deterministic lookup over indexed code, not a search: reach for this BEFORE " +
+        "Read/Grep/Glob. relation is defined_at, imports, callers, callees, implements, " +
+        "implementers, or members. If the answer is empty or the repo is not indexed, call " +
+        "engram_index_repo and retry, then fall back to Grep. implements/implementers/members drop " +
+        "base-list and containment edges for types nested inside another type.")]
     public static string Navigate(
         EngramHome home,
         McpSessionId session,
