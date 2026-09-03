@@ -2419,11 +2419,15 @@ Four attempted breaks each failed a test: restoring `hook > mcp` as the conditio
 renaming the JSON key. The first failed four tests at once, which is the measure of how far the
 wrong model had spread — those tests previously asserted it.
 
-**The limitation underneath, left open.** The MCP server cannot attribute a tool call to the Claude
-Code session that caused it: the client does not forward its session id, and the transport's is its
-own. So "what fraction of sessions used memory" — the number D18 gates M4 on — is not computable
-today. The adoption percentages are over MCP sessions, a population that by construction called a
-tool at least once, and they are labelled that way rather than rounded up to "sessions".
+**The limitation underneath, now half closed (D73).** The MCP server cannot attribute a tool call
+to the Claude Code session that caused it: the client does not forward its session id, and the
+transport's is its own. The adoption percentages *this probe prints* are therefore still over MCP
+sessions, a population that by construction called a tool at least once, and they are labelled that
+way rather than rounded up to "sessions". But "what fraction of sessions used memory" — the number
+D18 gates M4 on — now has a mechanism: the `tool-observed` hook records every Engram tool call under
+the hook's own session id, so the question is answerable inside one id space, never by joining two.
+Records begin once the plugin and binary ship together with that hook; none exist at the time of
+writing, and the probe has not been taught to compute the number.
 
 ### D44 — coverage is lane agreement, as the spec always said
 
@@ -5261,3 +5265,35 @@ Uniformity is the corroborating argument: `imports` objects are name-keyed modul
 so this is the substrate's general rule and not a special case for `calls`. A name→declaration side
 index in the `fact_token` style is deliberately deferred, gated on measured edge volume and a
 timing rather than a plan (D60).
+
+## D73 — Engram tool calls are observed in hook space, so attribution needs no join
+
+D43 left "which Claude Code sessions ever called `engram_remember`" uncomputable: `remember`
+records carry the transport's `Mcp-Session-Id`, `session-start` carries Claude Code's, and no value
+appears in both. The fix is not a join — the client never forwards its id — but a second observer.
+`PostToolUse` fires on MCP tools by name, in the hook's own id space, so a hook matched on
+`mcp__plugin_engram_engram__.*` writes one `tool-observed` record per Engram tool call, with the
+tool's short name as `tool` and the payload's `agent_id`/`agent_type`, under the same session id
+`session-start`, `pre-compact` and `post-compact` already use. Every per-session question about
+memory use becomes a filter over one id space — once records exist. At the time of writing none do:
+the hook entry ships with the plugin and the verb with the binary, and the matcher has not yet fired
+in a live session. **Nobody may read a `tool-observed` number until one live record has been seen
+whose `session_id` matches that session's `session-start`.**
+
+Two ceilings, recorded rather than fixed. `Telemetry.Append` is best-effort under contention — D55
+measured 30% loss inside the full test suite at the 500 ms budget — so N2's "share of sessions with
+zero remembers" is an **upper bound**: a non-zero count is trustworthy, a zero on its own is not
+proof of absence. And `EngramToolPrefix` strips `mcp__plugin_engram_engram__engram_`, so an Engram
+tool not named `engram_*` would silently not match; all eight tools today carry the prefix, and the
+matcher in `hooks.json` is wider than the verb's check on purpose, so widening the verb is the whole
+fix if that ever changes.
+
+Three shapes were rejected. Folding it into the `remember`/`recall` kinds would double D18/D43's
+counts, since the server already writes one record per call. Minting a session id when the payload
+has none would produce exactly the unjoinable row the kind exists to remove, so a missing id writes
+nothing. And a `TimeSpan.Zero` retry budget was not copied from `file-touched`: that hook fires per
+edit and holds a 10 ms budget; this one fires per Engram tool call (~60/day) and takes the default.
+It never opens the database — the whole point is that a session's tool use becomes countable from
+the log alone. This is measurement only: the observer decides nothing and emits no output, and any
+nudge built on what it shows is a later, separately gated decision
+(`docs/proactive-remember-adoption-spec.md`).

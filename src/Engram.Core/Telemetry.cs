@@ -99,6 +99,19 @@ public static class TelemetryEventKind
     /// </remarks>
     public const string LookupNudge = "lookup-nudge";
 
+    /// <summary>
+    /// A call to one of Engram's own MCP tools, seen from the <c>PostToolUse</c> hook and so
+    /// carrying the Claude Code session id rather than the transport's.
+    /// </summary>
+    /// <remarks>
+    /// The server already writes a <c>remember</c>/<c>recall</c>/… record for the same call, keyed
+    /// by <c>Mcp-Session-Id</c>; this is the other half of that pair, in the hook's id space, which
+    /// is what D43 said nothing could provide. It is its own kind rather than folded into the tool's
+    /// — counting both as <c>remember</c> would double the adoption numbers D18/D43 read. Subject is
+    /// <see cref="TelemetryRecord.Tool"/>; no count field. Never opens the database.
+    /// </remarks>
+    public const string ToolObserved = "tool-observed";
+
     /// <summary>A run of <c>engram index</c>, which had recorded nothing at all until now.</summary>
     public const string Index = "index";
 
@@ -154,8 +167,8 @@ public static class TelemetryEventKind
     [
         Recall, Remember, Digest, Browse, Expand, Revise, Timeline, Judge,
         SessionStart, ServerStart, ServerStop, SessionOpen, SubagentStart, PreCompact, PostCompact,
-        FileTouched, UserPrompt, MemoryGuard, LookupNudge, Index, Embedding, Enrollment, Sync,
-        Navigate, Report,
+        FileTouched, UserPrompt, MemoryGuard, LookupNudge, ToolObserved, Index, Embedding, Enrollment,
+        Sync, Navigate, Report,
     ];
 }
 
@@ -207,6 +220,12 @@ public sealed record TelemetryRecord(
     /// <c>repo_path</c>, which is a different, later-assigned name for the same repo.
     /// </remarks>
     [property: JsonPropertyName("repo")] string? Repo = null,
+
+    /// <summary>
+    /// The Engram tool a <see cref="TelemetryEventKind.ToolObserved"/> event saw called, by short
+    /// name: <c>remember</c>, <c>recall</c>, <c>navigate</c>, … Only that kind sets it.
+    /// </summary>
+    [property: JsonPropertyName("tool")] string? Tool = null,
 
     /// <summary>
     /// The enrollment verb this event records: <c>enroll</c>, <c>decline</c>, <c>later</c>, or

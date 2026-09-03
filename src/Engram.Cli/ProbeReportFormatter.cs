@@ -41,7 +41,8 @@ internal static class ProbeReportFormatter
 
         // Said every run, because the obvious reading of two session counts is to subtract them,
         // and this pair does not admit it — the ids come from different issuers and never match.
-        stdout.WriteLine("          (disjoint id spaces: an MCP session is recorded only when a memory tool is called)");
+        stdout.WriteLine("          (disjoint id spaces: an MCP session is recorded only when a memory tool is called;");
+        stdout.WriteLine("           per-hook-session tool use is in tool-observed records, not in these percentages)");
         stdout.WriteLine($"  recall    {report.SessionsWithRecall.Count}/{report.McpSessions}  ({FormatPercent(report.SessionsWithRecall.Percent)})");
         stdout.WriteLine($"  remember  {report.SessionsWithRemember.Count}/{report.McpSessions}  ({FormatPercent(report.SessionsWithRemember.Percent)})");
         stdout.WriteLine($"  digest    {report.SessionsWithDigest.Count}/{report.McpSessions}  ({FormatPercent(report.SessionsWithDigest.Percent)})");

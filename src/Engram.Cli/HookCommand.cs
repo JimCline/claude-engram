@@ -18,7 +18,7 @@ internal static class HookCommand
 
         var eventName = rest[0];
         if (eventName is not ("session-start" or "subagent-start" or "pre-compact" or "post-compact"
-            or "user-prompt" or "file-touched" or "memory-guard" or "lookup-nudge"))
+            or "user-prompt" or "file-touched" or "memory-guard" or "lookup-nudge" or "tool-observed"))
         {
             return Usage(stderr);
         }
@@ -51,6 +51,7 @@ internal static class HookCommand
             "file-touched" => RunFileTouched(home, ReadPayload()),
             "memory-guard" => RunMemoryGuard(home, stdout, ReadPayload()),
             "lookup-nudge" => RunLookupNudge(home, stdout, ReadPayload()),
+            "tool-observed" => RunToolObserved(home, ReadPayload()),
             _ => 0,
         };
     }
@@ -762,6 +763,50 @@ internal static class HookCommand
     // The classifier, not the matcher, is what keeps this cheap in practice — see
     // SymbolQueryDetector, where every rule is a reason to stay silent. Ordinary word searches,
     // literals, TODOs and glob paths fall out before any I/O happens.
+    internal const string EngramToolPrefix = "mcp__plugin_engram_engram__engram_";
+
+    /// <summary>
+    /// Records that one of Engram's own MCP tools was called, in the hook's session-id space.
+    /// Never opens the database (D4/D66 class); no stdout.
+    /// </summary>
+    /// <remarks>
+    /// A payload with no session id writes nothing rather than minting one: an unjoinable row is
+    /// the defect this record exists to remove. The default retry budget applies — this fires once
+    /// per Engram tool call, not per edit, so it is not in <c>file-touched</c>'s frequency class.
+    /// </remarks>
+    private static int RunToolObserved(EngramHome home, HookStdinInput? payload)
+    {
+        if (payload?.SessionId is not { Length: > 0 } sessionId)
+        {
+            return 0;
+        }
+
+        if (payload.ToolName is not { } toolName
+            || !toolName.StartsWith(EngramToolPrefix, StringComparison.Ordinal)
+            || toolName.Length == EngramToolPrefix.Length)
+        {
+            return 0;
+        }
+
+        try
+        {
+            Telemetry.Append(
+                home,
+                new TelemetryRecord(
+                    Timestamp: DateTime.UtcNow.ToString("o"),
+                    SessionId: sessionId,
+                    Kind: TelemetryEventKind.ToolObserved,
+                    AgentId: payload.AgentId,
+                    AgentType: payload.AgentType,
+                    Tool: toolName[EngramToolPrefix.Length..]));
+        }
+        catch
+        {
+        }
+
+        return 0;
+    }
+
     private static int RunLookupNudge(EngramHome home, TextWriter stdout, HookStdinInput? payload)
     {
         if (payload?.ToolInput is not { } toolInput)

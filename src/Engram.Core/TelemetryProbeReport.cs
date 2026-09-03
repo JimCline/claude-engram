@@ -43,7 +43,10 @@ public sealed record TelemetryCompactionSurvivalStat(
 /// produced "N session(s) ran without Engram's MCP server reachable; memory was unavailable",
 /// which was reported for every session where the model simply never asked for memory. A zero
 /// against a non-zero is the one comparison that survives, because it needs no correspondence
-/// between the spaces.
+/// between the spaces. What the hook space *can* now say on its own: <c>tool-observed</c> records
+/// carry the Claude Code session id per Engram tool call, so "which hook sessions called
+/// <c>remember</c>" is answerable there without any join — this report does not compute it yet
+/// (D73).
 /// </param>
 public sealed record TelemetryProbeReport(
     [property: JsonPropertyName("date_range")] TelemetryDateRange DateRange,
